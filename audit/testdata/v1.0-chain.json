@@ -1,0 +1,82 @@
+[
+  {
+    "id": "v2-restart",
+    "occurred_at": "2026-04-01T10:00:00Z",
+    "actor": {
+      "type": "system",
+      "name": "barista"
+    },
+    "action": "system.audit.chain_restart",
+    "target_type": "system",
+    "target_id": "",
+    "cluster_id": "",
+    "data_json": "",
+    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "3c0ce3b95e9a1403a84f177f25e6dcee93d83fc8821423ae005b183c53e77d7d",
+    "canonical_version": 2
+  },
+  {
+    "id": "evt-002",
+    "occurred_at": "2026-04-01T10:01:00Z",
+    "actor": {
+      "type": "user",
+      "name": "alice"
+    },
+    "action": "auth.login",
+    "target_type": "user",
+    "target_id": "user-alice",
+    "cluster_id": "",
+    "data_json": "",
+    "prev_hash": "3c0ce3b95e9a1403a84f177f25e6dcee93d83fc8821423ae005b183c53e77d7d",
+    "hash": "a6a818c3f0ec9afeebcf544209f4bfa78592984a249b341b4dc9956bf03180c2",
+    "canonical_version": 2
+  },
+  {
+    "id": "evt-003",
+    "occurred_at": "2026-04-01T10:02:00Z",
+    "actor": {
+      "type": "user",
+      "name": "alice"
+    },
+    "action": "app.create",
+    "target_type": "app",
+    "target_id": "app-foo",
+    "cluster_id": "cluster-1",
+    "data_json": "{\"name\":\"foo\"}",
+    "prev_hash": "a6a818c3f0ec9afeebcf544209f4bfa78592984a249b341b4dc9956bf03180c2",
+    "hash": "62666f3c64170f292ba25f2e79f92e6c4ffe841b60231b9c7b6b114510425a08",
+    "canonical_version": 2
+  },
+  {
+    "id": "evt-004",
+    "occurred_at": "2026-04-01T10:03:00Z",
+    "actor": {
+      "type": "service_account",
+      "name": "scim-provisioner"
+    },
+    "action": "group.create",
+    "target_type": "group",
+    "target_id": "grp-engineering",
+    "cluster_id": "",
+    "data_json": "{\"display_name\":\"engineering\"}",
+    "prev_hash": "62666f3c64170f292ba25f2e79f92e6c4ffe841b60231b9c7b6b114510425a08",
+    "hash": "988b2539dd00127a49f49e5162fbc3bfc7e23391e1c82b9ddc4decc28da9b71a",
+    "canonical_version": 2
+  },
+  {
+    "id": "evt-005",
+    "occurred_at": "2026-04-01T10:04:00Z",
+    "actor": {
+      "type": "user",
+      "name": "alice"
+    },
+    "action": "deployment.create",
+    "target_type": "deployment",
+    "target_id": "dep-001",
+    "cluster_id": "cluster-1",
+    "data_json": "{\"image\":\"foo:v1\"}",
+    "prev_hash": "988b2539dd00127a49f49e5162fbc3bfc7e23391e1c82b9ddc4decc28da9b71a",
+    "hash": "8c4d7dd753229da297bc60c5b1f610713d21ba8fd115b8bb16c7c836a4c01288",
+    "canonical_version": 2
+  }
+]

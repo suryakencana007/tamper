@@ -1,0 +1,252 @@
+package crypto
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+// ErrInvalidToken collapses every JWT failure mode (bad signature,
+// expired, malformed, wrong issuer, missing sub, etc.) so handlers
+// return one stable status code and don't leak which check failed.
+var ErrInvalidToken = errors.New("auth: invalid token")
+
+// JWTConfig is tamper's native JWT options struct. It intentionally
+// carries no dependency on any host application's config package — the
+// caller populates it from wherever their configuration lives.
+type JWTConfig struct {
+	Secret string
+	TTL    time.Duration
+	Issuer string
+}
+
+// JWTService issues and verifies HS256 JWTs. One instance per process;
+// the auth service holds it inside its struct.
+type JWTService struct {
+	secret []byte
+	ttl    time.Duration
+	issuer string
+	// now is the clock source; tests override via Testing().SetNow.
+	now func() time.Time
+}
+
+// NewJWTService constructs a JWTService from a JWTConfig. Panics on
+// empty secret — callers are expected to validate their config at
+// startup; reaching NewJWTService with an empty secret is a programmer
+// error.
+func NewJWTService(cfg JWTConfig) *JWTService {
+	if cfg.Secret == "" {
+		panic("auth: jwt secret is empty — config validation should have caught this")
+	}
+	return &JWTService{
+		secret: []byte(cfg.Secret),
+		ttl:    cfg.TTL,
+		issuer: cfg.Issuer,
+		now:    time.Now,
+	}
+}
+
+// AccessClaims is the v1.14 shape of the access-token JWT. Extends
+// jwt.RegisteredClaims with auth_time + acr per OIDC Core 1.0 §2 +
+// §3.1.2.1. Refresh-token rotation carries auth_time + acr forward
+// unchanged — only IdP-side authentication (OIDC callback, SAML
+// callback, local-password Login, TOTP-verify) advances them.
+//
+// Pre-v1.14 JWTs in the wild parse tolerantly: missing auth_time
+// reads as 0, missing acr reads as "". Middleware (RequireFreshAuth)
+// treats both as "trips the step-up gate" — the migration is
+// naturally graceful via refresh-rotation.
+type AccessClaims struct {
+	AuthTime int64  `json:"auth_time"`
+	ACR      string `json:"acr"`
+	jwt.RegisteredClaims
+}
+
+// ACR URN constants — well-known Authentication Context Class Reference
+// values stamped on access JWTs. Centralised here so call sites don't
+// sprinkle string literals.
+const (
+	// ACRLocalPassword is stamped on access JWTs minted from local-
+	// password Login. Intentionally NOT in any default
+	// RequireFreshAuth acrValues set — local-password DOES NOT satisfy
+	// step-up by design (the security promise). Operators using
+	// local-password for sensitive endpoints must federate first +
+	// re-auth via OIDC/SAML.
+	ACRLocalPassword = "urn:tamper:auth:local-password" //nolint:gosec // G101: well-known URN identifier, not a credential
+
+	// ACRIncommonSilver is the OIDC step-up default (tamper namespace,
+	// corresponding to urn:mace:incommon:iap:silver). Most OIDC IdPs
+	// (Keycloak, Auth0, Okta, Azure AD) emit this when a step-up flow
+	// with second-factor (TOTP, FIDO2, etc.) completes.
+	ACRIncommonSilver = "urn:mace:incommon:iap:silver"
+
+	// ACRSAMLPassword is the SAML default (tamper namespace,
+	// corresponding to urn:oasis:names:tc:SAML:2.0:ac:classes:Password).
+	// Stamped by the SAML callback when the assertion doesn't carry a
+	// richer AuthnContextClassRef.
+	ACRSAMLPassword = "urn:oasis:names:tc:SAML:2.0:ac:classes:Password" //nolint:gosec // G101: well-known URN identifier, not a credential
+)
+
+// Issue returns a signed HS256 token with sub=userID, iat=now,
+// exp=now+ttl, iss=cfg.Issuer, auth_time=now, acr=ACRLocalPassword.
+// Backward-compat shim for v0.1-era callers — new v1.14 callers MUST
+// use IssueAccess directly so they thread the IdP-supplied auth_time +
+// acr through.
+//
+// Empty userID is rejected with ErrInvalidToken.
+func (j *JWTService) Issue(userID string) (string, error) {
+	return j.IssueAccess(userID, j.now().Unix(), ACRLocalPassword)
+}
+
+// IssueAccess mints a v1.14-shape access JWT with auth_time + acr
+// claims. Refresh rotation MUST pass through the previous JWT's
+// auth_time (NOT j.now()) — see Sprint 1 Task 01 contract.
+//
+// Empty userID, zero/negative authTime, or empty acr all reject with
+// ErrInvalidToken so the caller can't accidentally mint a JWT that
+// would always trip the step-up gate.
+func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
+	}
+	if authTime <= 0 {
+		return "", fmt.Errorf("%w: auth_time must be positive", ErrInvalidToken)
+	}
+	if acr == "" {
+		return "", fmt.Errorf("%w: acr must be non-empty", ErrInvalidToken)
+	}
+	now := j.now()
+	claims := AccessClaims{
+		AuthTime: authTime,
+		ACR:      acr,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID,
+			Issuer:    j.issuer,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(j.ttl)),
+		},
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := tok.SignedString(j.secret)
+	if err != nil {
+		return "", fmt.Errorf("auth: sign jwt: %w", err)
+	}
+	return signed, nil
+}
+
+// Verify parses and validates tokenStr, returning the subject (user ID)
+// on success. Any failure is wrapped in ErrInvalidToken so callers can
+// compare with errors.Is.
+//
+// Retained for the non-step-up code path; RequireAuth middleware uses
+// VerifyAccess instead so the typed claims can be stashed for
+// RequireFreshAuth downstream.
+func (j *JWTService) Verify(tokenStr string) (string, error) {
+	claims, err := j.VerifyAccess(tokenStr)
+	if err != nil {
+		return "", err
+	}
+	return claims.Subject, nil
+}
+
+// VerifyAccess parses tokenStr as a v1.14-shape AccessClaims JWT.
+// Returns the typed claims on success so middleware can inspect
+// auth_time + acr without a re-parse. ErrInvalidToken wraps every
+// failure mode.
+//
+// Legacy-tolerant: pre-v1.14 JWTs carry no auth_time + no acr; those
+// fields parse as zero values. The middleware downstream treats
+// AuthTime=0 as "older than any maxAge" and ACR="" as "matches no
+// acrValues" — both trip the step-up gate, which is the intended
+// migration path (operators get a forced re-auth on sensitive
+// endpoints once, then their refreshed JWTs carry the new claims).
+func (j *JWTService) VerifyAccess(tokenStr string) (*AccessClaims, error) {
+	claims := &AccessClaims{}
+	tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc,
+		jwt.WithTimeFunc(j.now),
+		jwt.WithIssuer(j.issuer),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	if !tok.Valid {
+		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if claims.Subject == "" {
+		return nil, fmt.Errorf("%w: sub is missing", ErrInvalidToken)
+	}
+	return claims, nil
+}
+
+func (j *JWTService) keyFunc(t *jwt.Token) (any, error) {
+	if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+		return nil, fmt.Errorf("%w: unexpected signing method %q", ErrInvalidToken, t.Method.Alg())
+	}
+	return j.secret, nil
+}
+
+// totpPendingClaims is the v0.8 task 02 short-lived session token
+// minted between password-success and TOTP-verify on logins where 2FA
+// is required. Custom `Purpose` field discriminates from the standard
+// access JWT — Verify rejects an access JWT submitted to the totp-
+// verify endpoint and vice versa, so an attacker can't reuse a leaked
+// access token to skip the 2FA step.
+type totpPendingClaims struct {
+	Purpose string `json:"purpose"`
+	jwt.RegisteredClaims
+}
+
+// IssueTOTPPending mints a short-lived (5 min) JWT carrying the user
+// id + Purpose="totp_pending". Returned to the SPA after a successful
+// password check on a 2FA-enrolled account; the SPA submits it back
+// on /api/auth/totp/verify alongside the 6-digit code.
+func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
+	}
+	now := j.now()
+	claims := totpPendingClaims{
+		Purpose: "totp_pending",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID,
+			Issuer:    j.issuer,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
+		},
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := tok.SignedString(j.secret)
+	if err != nil {
+		return "", fmt.Errorf("auth: sign totp-pending jwt: %w", err)
+	}
+	return signed, nil
+}
+
+// VerifyTOTPPending parses + validates a totp-pending session token
+// and returns the subject (user id). Rejects any token whose Purpose
+// claim isn't "totp_pending" — guards against access JWTs being
+// submitted to the totp-verify endpoint.
+func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
+	claims := &totpPendingClaims{}
+	tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc,
+		jwt.WithTimeFunc(j.now),
+		jwt.WithIssuer(j.issuer),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	if !tok.Valid {
+		return "", fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if claims.Purpose != "totp_pending" {
+		return "", fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
+	}
+	if claims.Subject == "" {
+		return "", fmt.Errorf("%w: sub is missing", ErrInvalidToken)
+	}
+	return claims.Subject, nil
+}

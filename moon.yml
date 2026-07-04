@@ -1,0 +1,16 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+layer: 'library'
+language: 'go'
+
+# The Tamper enterprise auth/authz library (skeleton). Module
+# github.com/suryakencana007/barista/packages/tamper.
+tasks:
+  build:
+    command: 'go'
+    args: ['build', './...']
+  test:
+    command: 'go'
+    args: ['test', './...']
+  vet:
+    command: 'go'
+    args: ['vet', './...']

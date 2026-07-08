@@ -207,7 +207,21 @@ dec, err := tp.Authz.Check(ctx, subj, "doc.delete", res) // SQL-RBAC today, swap
   consults the PDP. The system-admin bypass inconsistency was resolved by
   unifying both `ClusterACLService` legs on `EffectiveSystemRole`
   (group-promoted admins now work on the cluster path like everywhere
-  else). Org/project bindings join the store when their gates adopt the
-  PDP (natural Phase-1c extension or alongside Phase 2).
+  else).
+- ~~Phase 1c — org gate~~ **Shipped**: `org_members` bindings in the
+  store, the three org tiers in the policy (`org.view` / `org.manage` /
+  `org.own`, system bypass = EffectiveOrgRole's implicit owner), and
+  `RequireOrgMember` consults the PDP via a **two-check flow** that
+  preserves the cross-org leak rule: deny on `org.view` → 404
+  ORG_NOT_FOUND (membership invisible), deny on the tier action → 403
+  INSUFFICIENT_ORG_ROLE. Pattern note: "distinguish 404 from 403" maps
+  onto the PDP as two actions, not a special decision shape.
+- **Project gates stay service-side** (deliberate): project checks have
+  no middleware seam — they ARE the authoritative in-handler/service
+  checks (`GetWithRole` + `HasAtLeast`, implicit owner via
+  `projects.owner_id`, org-membership precondition as an AND-composition
+  the policy language deliberately excludes). Moving them means replacing
+  service-layer authority, which is a Phase-2-adjacent decision, not an
+  edge-gate migration.
 - Repo split criteria: tag the first standalone `tamper` version once
   Phase 2 (identity core) has survived a full Barista release cycle.

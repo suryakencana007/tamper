@@ -111,7 +111,7 @@ and — for anything touching auth or audit — the Docker deploy-artifact walk
 
 | Phase | What moves | Generalization needed |
 |---|---|---|
-| **1 — authz spine** | `Authorizer` PDP interface + RBAC engine over a pluggable `BindingStore`, generalized from Barista's fixed-enum roles + `group_roles` + cluster-ACL pattern. **1a (interface + engine + MemStore): shipped.** 1b: Barista `BindingStore` adapter + first real gate routed through it. | The scope taxonomy (system/org/project/cluster) becomes the *app's instantiation*, not hard-coded. Pairs with Barista's deferred custom-role RBAC (Option 4) — but the interface lands first over fixed-enum SQL-RBAC. |
+| **1 — authz spine** | `Authorizer` PDP interface + RBAC engine over a pluggable `BindingStore`, generalized from Barista's fixed-enum roles + `group_roles` + cluster-ACL pattern. **1a (interface + engine + MemStore): shipped. 1b (Barista adapter): shipped** — `internal/authz` implements `BindingStore` over the real tables (no new SQL), registers Barista's hierarchy + policy, and the per-cluster HTTP-edge gates (`RequireClusterRole`) consult the PDP. The system-admin bypass inconsistency was fixed en route (both `EffectiveRole` legs now honor group-promoted admins via `EffectiveSystemRole`). | The scope taxonomy (system/org/project/cluster) becomes the *app's instantiation*, not hard-coded. Pairs with Barista's deferred custom-role RBAC (Option 4) — but the interface lands first over fixed-enum SQL-RBAC. |
 | **2 — identity core** | users / credentials / refresh-session rotation + revocation / TOTP enrollment / `user_identities` multi-IdP linking, behind a store interface with the sqlite impl as default | Barista's sqlc queries lift nearly wholesale; ACR values configurable (the seam already exists in the façade). |
 | **3 — federation** | OIDC / SAML / SCIM provider services over the identity core | The biggest chunk. The services are already DB-decoupled via querier interfaces; the KEK envelope (client secrets, TOTP secrets) already lives in `tamper/crypto`. |
 | **4 — transport** | `tamper/espresso` adapter: mountable auth routes (login / refresh / OIDC / SAML ACS / SCIM) + `RequireAuth` / `RequireFreshAuth` / `RequireServiceAccount` middleware | Core stays transport-agnostic; Espresso is the first-class adapter (flagship synergy), others possible later. |
@@ -200,15 +200,14 @@ dec, err := tp.Authz.Check(ctx, subj, "doc.delete", res) // SQL-RBAC today, swap
   **Settled (Phase 1a)**: small comparable structs `{Type, ID string}`;
   reverse queries return `(set, unbounded, err)` so global grants don't
   force the PDP to enumerate the app's resource catalog.
-- **Phase 1b — Barista adapter**: implement `BindingStore` over Barista's
-  tables (`users.system_role`, `org_members`, `project_members` +
-  `projects.owner_id`, `cluster_user_roles`, `group_roles` via direct
-  `group_members`), register the Hierarchy/Policy for its taxonomy, and
-  route one real gate (candidate: `ClusterACLService.EffectiveRole` +
-  `RequireClusterRole`) through the Authorizer. Known wrinkle to resolve
-  there: Barista's system-admin bypass is inconsistent today (cluster path
-  reads the inline `users.system_role`; org path honors group-promoted
-  admins via `EffectiveSystemRole`) — the adapter must pick one semantic
-  and document the change.
+- ~~Phase 1b — Barista adapter~~ **Shipped**: `internal/authz` implements
+  `BindingStore` over `users.system_role` + `cluster_user_roles` +
+  `group_roles` (direct `group_members` only — nested groups confer
+  nothing, guaranteed at the store layer), and `RequireClusterRole`
+  consults the PDP. The system-admin bypass inconsistency was resolved by
+  unifying both `ClusterACLService` legs on `EffectiveSystemRole`
+  (group-promoted admins now work on the cluster path like everywhere
+  else). Org/project bindings join the store when their gates adopt the
+  PDP (natural Phase-1c extension or alongside Phase 2).
 - Repo split criteria: tag the first standalone `tamper` version once
   Phase 2 (identity core) has survived a full Barista release cycle.

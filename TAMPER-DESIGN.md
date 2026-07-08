@@ -73,7 +73,10 @@ Shipped subpackages:
   `NoopLogger`, chain anchors (`chain_restart` / `chain_migrate`), in-place
   migration, `VerifyChainPostMigration` boot guard, and the
   `audit/sqlitestore` persistence layer.
-- **`authz/`** — doc stub only. Phase 1, next up.
+- **`authz/`** — the `Authorizer` PDP interface (Check / CheckBulk /
+  ListResources / ListSubjects), the built-in `RBAC` engine over a pluggable
+  `BindingStore`, and `MemStore` (reference store + test double). Phase 1a —
+  engine shipped; the Barista adapter (1b) is the remaining leg.
 
 ## The extraction playbook (proven twice — reuse it verbatim)
 
@@ -108,7 +111,7 @@ and — for anything touching auth or audit — the Docker deploy-artifact walk
 
 | Phase | What moves | Generalization needed |
 |---|---|---|
-| **1 — authz spine** | `Authorizer` PDP interface + SQL-RBAC backend, lifted from Barista's fixed-enum roles + `group_roles` + cluster-ACL pattern | The scope taxonomy (system/org/project/cluster) becomes the *app's instantiation*, not hard-coded. Pairs with Barista's deferred custom-role RBAC (Option 4) — but the interface lands first over fixed-enum SQL-RBAC. |
+| **1 — authz spine** | `Authorizer` PDP interface + RBAC engine over a pluggable `BindingStore`, generalized from Barista's fixed-enum roles + `group_roles` + cluster-ACL pattern. **1a (interface + engine + MemStore): shipped.** 1b: Barista `BindingStore` adapter + first real gate routed through it. | The scope taxonomy (system/org/project/cluster) becomes the *app's instantiation*, not hard-coded. Pairs with Barista's deferred custom-role RBAC (Option 4) — but the interface lands first over fixed-enum SQL-RBAC. |
 | **2 — identity core** | users / credentials / refresh-session rotation + revocation / TOTP enrollment / `user_identities` multi-IdP linking, behind a store interface with the sqlite impl as default | Barista's sqlc queries lift nearly wholesale; ACR values configurable (the seam already exists in the façade). |
 | **3 — federation** | OIDC / SAML / SCIM provider services over the identity core | The biggest chunk. The services are already DB-decoupled via querier interfaces; the KEK envelope (client secrets, TOTP secrets) already lives in `tamper/crypto`. |
 | **4 — transport** | `tamper/espresso` adapter: mountable auth routes (login / refresh / OIDC / SAML ACS / SCIM) + `RequireAuth` / `RequireFreshAuth` / `RequireServiceAccount` middleware | Core stays transport-agnostic; Espresso is the first-class adapter (flagship synergy), others possible later. |
@@ -116,11 +119,12 @@ and — for anything touching auth or audit — the Docker deploy-artifact walk
 Phases land in order — each depends on the one before. No phase begins until
 the previous one has a Barista façade in production.
 
-## The `Authorizer` — the framework's spine (Phase 1 sketch)
+## The `Authorizer` — the framework's spine (shipped, Phase 1a)
 
 ```go
-// Subject / Action / Resource are opaque, app-defined identifiers.
-// Tamper never hard-codes a resource taxonomy.
+// Subject / Resource are small comparable structs {Type, ID string} —
+// opaque, app-defined; Tamper never hard-codes a taxonomy. Groups are NOT
+// subjects: group indirection is the BindingStore's concern.
 type Decision struct {
 	Allowed bool
 	Reason  string // for audit + debugging, never for control flow
@@ -129,11 +133,34 @@ type Decision struct {
 type Authorizer interface {
 	Check(ctx context.Context, sub Subject, act Action, res Resource) (Decision, error)
 	CheckBulk(ctx context.Context, reqs []CheckRequest) ([]Decision, error)
-	// Reverse queries — what the UI and audit surfaces need.
-	ListResources(ctx context.Context, sub Subject, act Action, typ ResourceType) ([]Resource, error)
-	ListSubjects(ctx context.Context, act Action, res Resource) ([]Subject, error)
+	// Reverse queries — what the UI and audit surfaces need. unbounded
+	// means "not limited to an enumerable set" (e.g. a system-wide role):
+	// the caller owns the resource catalog and treats it as ALL.
+	ListResources(ctx context.Context, sub Subject, act Action, resourceType string) (resources []Resource, unbounded bool, err error)
+	ListSubjects(ctx context.Context, act Action, res Resource) (subjects []Subject, unbounded bool, err error)
 }
 ```
+
+The built-in `RBAC` engine evaluates a `Policy` — per-action OR-requirements
+`{Type, Min Role}` against per-type ordered role ladders (`Hierarchy`) —
+over a `BindingStore` that returns EFFECTIVE bindings. Shapes generalized
+from Barista's production model, deliberately including its constraints:
+
+- Effective role = **max rank** across direct + store-resolved indirect
+  bindings (Barista: `EffectiveRole` = max(manual, group-derived)).
+- Group indirection lives in the store, not the engine — Barista's nested
+  groups confer NO effective roles today (all joins are
+  `member_type='user'`), and an engine that walked group graphs would
+  silently invent inheritance the app never had.
+- Cross-scope implication is only "a global role satisfies a scoped action"
+  (system cluster-admin → any cluster/org), modeled as a different-type
+  requirement consulting `Resource{Type, ""}` — no scope-containment graph.
+- Conjunctive gates (org membership as a *precondition* for project
+  visibility) are NOT in the policy language — they stay app-side
+  composition, keeping every rule auditable at a glance.
+- Deny-by-default is contractual: unknown actions, unknown roles (rank 0),
+  and store errors all resolve to deny; misconfigured policies fail at
+  `NewRBAC` (boot), not as silent per-request denies.
 
 Backend spectrum, in adoption order:
 
@@ -169,8 +196,19 @@ dec, err := tp.Authz.Check(ctx, subj, "doc.delete", res) // SQL-RBAC today, swap
   byte-identical to Barista's original today; no drift yet). Add a
   tamper-side sqlc config + moon target — or document manual regen — before
   the audit schema next changes. Flagged in Barista's `sqlc.yaml`.
-- Phase 1 `Authorizer`: decide `Subject`/`Resource` representation (string
-  ids vs typed structs) against the reverse-query requirements before
-  writing the interface.
+- ~~Phase 1 `Authorizer`: decide `Subject`/`Resource` representation~~
+  **Settled (Phase 1a)**: small comparable structs `{Type, ID string}`;
+  reverse queries return `(set, unbounded, err)` so global grants don't
+  force the PDP to enumerate the app's resource catalog.
+- **Phase 1b — Barista adapter**: implement `BindingStore` over Barista's
+  tables (`users.system_role`, `org_members`, `project_members` +
+  `projects.owner_id`, `cluster_user_roles`, `group_roles` via direct
+  `group_members`), register the Hierarchy/Policy for its taxonomy, and
+  route one real gate (candidate: `ClusterACLService.EffectiveRole` +
+  `RequireClusterRole`) through the Authorizer. Known wrinkle to resolve
+  there: Barista's system-admin bypass is inconsistent today (cluster path
+  reads the inline `users.system_role`; org path honors group-promoted
+  admins via `EffectiveSystemRole`) — the adapter must pick one semantic
+  and document the change.
 - Repo split criteria: tag the first standalone `tamper` version once
   Phase 2 (identity core) has survived a full Barista release cycle.

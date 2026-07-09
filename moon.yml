@@ -2,7 +2,7 @@ $schema: 'https://moonrepo.dev/schemas/project.json'
 layer: 'library'
 language: 'go'
 
-# The Tamper enterprise auth/authz library (skeleton). Module
+# The Tamper enterprise auth/authz framework. Module
 # github.com/suryakencana007/barista/packages/tamper.
 tasks:
   build:
@@ -10,7 +10,12 @@ tasks:
     args: ['build', './...']
   test:
     command: 'go'
-    args: ['test', './...']
+    # -race + explicit timeout to match barista:test conventions. This
+    # target is CI-gating (ci.yml runs it alongside barista:ci) — the
+    # tamper suites (crypto/audit/authz/identity) don't run under
+    # barista:test, and packages Barista doesn't import yet (identity
+    # until Phase 2b) wouldn't even COMPILE in CI without it.
+    args: ['test', '-race', '-timeout=10m', './...']
   vet:
     command: 'go'
     args: ['vet', './...']

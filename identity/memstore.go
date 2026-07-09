@@ -1,0 +1,169 @@
+package identity
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+)
+
+// MemStore is an in-memory Store — the reference implementation and
+// test double. Linear/map lookups; fine for tests and small embedded
+// uses, not a production store.
+type MemStore struct {
+	mu        sync.RWMutex
+	usersByID map[string]User
+	emailToID map[string]string
+	sessions  map[string]RefreshSession // by session id
+	hashToID  map[string]string         // token hash -> session id
+}
+
+var _ Store = (*MemStore)(nil)
+
+// NewMemStore returns an empty store.
+func NewMemStore() *MemStore {
+	return &MemStore{
+		usersByID: make(map[string]User),
+		emailToID: make(map[string]string),
+		sessions:  make(map[string]RefreshSession),
+		hashToID:  make(map[string]string),
+	}
+}
+
+// CreateUser implements Store. firstUser is accepted and ignored — the
+// reference store has no bootstrap policy.
+func (m *MemStore) CreateUser(_ context.Context, u NewUser, _ bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, taken := m.emailToID[u.Email]; taken {
+		return fmt.Errorf("%w: %s", ErrEmailTaken, u.Email)
+	}
+	m.usersByID[u.ID] = User{
+		ID:           u.ID,
+		Email:        u.Email,
+		PasswordHash: u.PasswordHash,
+		Active:       true,
+		CreatedAt:    u.CreatedAt,
+	}
+	m.emailToID[u.Email] = u.ID
+	return nil
+}
+
+// Seed inserts a fully-specified user (tests: federated-only accounts,
+// pre-enrolled TOTP, deactivated users).
+func (m *MemStore) Seed(u User) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.usersByID[u.ID] = u
+	m.emailToID[u.Email] = u.ID
+}
+
+// SetActive flips a user's active flag (tests: deactivation mid-session).
+func (m *MemStore) SetActive(id string, active bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if u, ok := m.usersByID[id]; ok {
+		u.Active = active
+		m.usersByID[id] = u
+	}
+}
+
+// UserByID implements Store.
+func (m *MemStore) UserByID(_ context.Context, id string) (User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	u, ok := m.usersByID[id]
+	if !ok {
+		return User{}, fmt.Errorf("%w: user %s", ErrNotFound, id)
+	}
+	return u, nil
+}
+
+// UserByEmail implements Store.
+func (m *MemStore) UserByEmail(_ context.Context, email string) (User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.emailToID[email]
+	if !ok {
+		return User{}, fmt.Errorf("%w: email %s", ErrNotFound, email)
+	}
+	return m.usersByID[id], nil
+}
+
+// CountUsers implements Store.
+func (m *MemStore) CountUsers(_ context.Context) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return int64(len(m.usersByID)), nil
+}
+
+// CreateRefreshSession implements Store.
+func (m *MemStore) CreateRefreshSession(_ context.Context, s RefreshSession) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[s.ID] = s
+	m.hashToID[s.TokenHash] = s.ID
+	return nil
+}
+
+// RefreshSessionByHash implements Store.
+func (m *MemStore) RefreshSessionByHash(_ context.Context, tokenHash string) (RefreshSession, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.hashToID[tokenHash]
+	if !ok {
+		return RefreshSession{}, fmt.Errorf("%w: session", ErrNotFound)
+	}
+	return m.sessions[id], nil
+}
+
+// RevokeRefreshSession implements Store (idempotent).
+func (m *MemStore) RevokeRefreshSession(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok || s.Revoked() {
+		return nil
+	}
+	s.RevokedAt = at
+	m.sessions[id] = s
+	return nil
+}
+
+// RevokeAllRefreshSessionsForUser implements Store.
+func (m *MemStore) RevokeAllRefreshSessionsForUser(_ context.Context, userID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, s := range m.sessions {
+		if s.UserID == userID && !s.Revoked() {
+			s.RevokedAt = at
+			m.sessions[id] = s
+		}
+	}
+	return nil
+}
+
+// SessionByHash exposes a raw session row for test assertions (e.g. the
+// carry-forward pin needs to inspect the successor row's ACR/AuthTime).
+func (m *MemStore) SessionByHash(tokenHash string) (RefreshSession, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.hashToID[tokenHash]
+	if !ok {
+		return RefreshSession{}, false
+	}
+	return m.sessions[id], true
+}
+
+// LiveSessionCount reports the user's unrevoked sessions (tests).
+func (m *MemStore) LiveSessionCount(userID string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, s := range m.sessions {
+		if s.UserID == userID && !s.Revoked() {
+			n++
+		}
+	}
+	return n
+}

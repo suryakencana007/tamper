@@ -24,6 +24,7 @@ const (
 type Core struct {
 	store        Store
 	jwt          *crypto.JWTService // nil = token-less instance; mint flows error
+	keys         *crypto.KeySet     // nil = TOTP envelope flows error (ErrNoKeySet)
 	refreshTTL   time.Duration      // 0 disables refresh sessions entirely
 	totpRequired bool
 	defaultACR   string

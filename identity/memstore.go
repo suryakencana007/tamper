@@ -16,6 +16,7 @@ type MemStore struct {
 	emailToID map[string]string
 	sessions  map[string]RefreshSession // by session id
 	hashToID  map[string]string         // token hash -> session id
+	totp      map[string]TOTPState      // by user id
 }
 
 var _ Store = (*MemStore)(nil)
@@ -27,6 +28,7 @@ func NewMemStore() *MemStore {
 		emailToID: make(map[string]string),
 		sessions:  make(map[string]RefreshSession),
 		hashToID:  make(map[string]string),
+		totp:      make(map[string]TOTPState),
 	}
 }
 
@@ -153,6 +155,58 @@ func (m *MemStore) SessionByHash(tokenHash string) (RefreshSession, bool) {
 		return RefreshSession{}, false
 	}
 	return m.sessions[id], true
+}
+
+// TOTPState implements Store.
+func (m *MemStore) TOTPState(_ context.Context, userID string) (TOTPState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.usersByID[userID]; !ok {
+		return TOTPState{}, fmt.Errorf("%w: user %s", ErrNotFound, userID)
+	}
+	return m.totp[userID], nil
+}
+
+// SetTOTPPending implements Store.
+func (m *MemStore) SetTOTPPending(_ context.Context, userID string, envelope []byte, hashes []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.totp[userID] = TOTPState{Enrolled: false, Envelope: envelope, RecoveryCodeHashes: hashes}
+	return nil
+}
+
+// EnableTOTP implements Store.
+func (m *MemStore) EnableTOTP(_ context.Context, userID string, envelope []byte, hashes []string, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.totp[userID] = TOTPState{Enrolled: true, Envelope: envelope, RecoveryCodeHashes: hashes}
+	if u, ok := m.usersByID[userID]; ok {
+		u.TOTPEnrolled = true
+		m.usersByID[userID] = u
+	}
+	return nil
+}
+
+// SetRecoveryCodeHashes implements Store.
+func (m *MemStore) SetRecoveryCodeHashes(_ context.Context, userID string, hashes []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.totp[userID]
+	s.RecoveryCodeHashes = hashes
+	m.totp[userID] = s
+	return nil
+}
+
+// ClearTOTP implements Store (idempotent).
+func (m *MemStore) ClearTOTP(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.totp, userID)
+	if u, ok := m.usersByID[userID]; ok {
+		u.TOTPEnrolled = false
+		m.usersByID[userID] = u
+	}
+	return nil
 }
 
 // LiveSessionCount reports the user's unrevoked sessions (tests).

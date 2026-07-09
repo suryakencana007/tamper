@@ -42,4 +42,32 @@ type Store interface {
 	// RevokeAllRefreshSessionsForUser is the "sign out everywhere"
 	// surface — marks every live session for the user revoked.
 	RevokeAllRefreshSessionsForUser(ctx context.Context, userID string, at time.Time) error
+
+	// --- TOTP sub-surface (Phase 2c). The envelope is OPAQUE sealed
+	// bytes (crypto.KeySet output); how the app persists it (and any
+	// legacy dual-write columns) is the adapter's concern. ---
+
+	// TOTPState returns the user's second-factor state. A pending
+	// enrollment has Envelope+hashes with Enrolled=false. ErrNotFound
+	// when the user doesn't exist.
+	TOTPState(ctx context.Context, userID string) (TOTPState, error)
+	// SetTOTPPending stages a (re-startable) enrollment: envelope +
+	// recovery hashes persisted, enrolled stays false.
+	SetTOTPPending(ctx context.Context, userID string, envelope []byte, recoveryCodeHashes []string) error
+	// EnableTOTP persists the enrolled state (envelope + hashes +
+	// enrolledAt, enrolled=true).
+	EnableTOTP(ctx context.Context, userID string, envelope []byte, recoveryCodeHashes []string, enrolledAt time.Time) error
+	// SetRecoveryCodeHashes replaces the recovery-code hash list
+	// (single-use consumption).
+	SetRecoveryCodeHashes(ctx context.Context, userID string, hashes []string) error
+	// ClearTOTP removes every TOTP column for the user (disable/admin
+	// reset). Idempotent.
+	ClearTOTP(ctx context.Context, userID string) error
+}
+
+// TOTPState is the store's projection of a user's second-factor state.
+type TOTPState struct {
+	Enrolled           bool
+	Envelope           []byte // sealed secret; empty = nothing staged/enrolled
+	RecoveryCodeHashes []string
 }

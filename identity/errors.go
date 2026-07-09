@@ -50,4 +50,18 @@ var (
 	// instances are allowed to be token-less; minting from one is a
 	// programmer error surfaced loudly).
 	ErrNoTokenService = errors.New("identity: core has no token service")
+
+	// ErrNoKeySet — a TOTP flow that seals/opens the secret envelope
+	// was invoked on a Core constructed without a KeySet.
+	ErrNoKeySet = errors.New("identity: core has no keyset")
+
+	// ErrInvalidTOTP — code/recovery-code rejection (also covers
+	// "phase 2 before phase 1": nothing to verify against, the caller
+	// re-routes to phase 1).
+	ErrInvalidTOTP = errors.New("identity: invalid totp code")
+
+	// ErrTOTPAlreadyEnrolled / ErrTOTPNotEnrolled — enrollment
+	// state-machine guards.
+	ErrTOTPAlreadyEnrolled = errors.New("identity: totp already enrolled")
+	ErrTOTPNotEnrolled     = errors.New("identity: totp not enrolled")
 )

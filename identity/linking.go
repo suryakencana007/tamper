@@ -126,6 +126,13 @@ func (c *Core) Link(ctx context.Context, userID, provider, subject string) (Iden
 	// lookup and insert. Re-fetch and re-decide.
 	raced, refErr := c.store.IdentityByProviderSubject(ctx, provider, subject)
 	if refErr != nil {
+		if errors.Is(refErr, ErrNotFound) {
+			// Double race: the winner unlinked between our failed insert
+			// and this refetch. Report the conflict we actually lost to —
+			// a bare ErrNotFound here would read as "user not found" to
+			// callers that fold ErrNotFound onto the link target.
+			return Identity{}, ErrLinkConflict
+		}
 		return Identity{}, fmt.Errorf("identity: link race refetch: %w", refErr)
 	}
 	if raced.UserID == userID {

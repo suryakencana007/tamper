@@ -129,6 +129,18 @@ func TestLink(t *testing.T) {
 		}
 	})
 
+	t.Run("double race (insert taken, refetch gone) is ErrLinkConflict not ErrNotFound", func(t *testing.T) {
+		store := &doubleRaceStore{MemStore: NewMemStore()}
+		c, err := New(store, testJWT(), WithRefreshTTL(30*24*time.Hour), WithDefaultACR(testACR))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		store.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "h", Active: true})
+		if _, err := c.Link(ctx, "u1", "oidc-google", "sub-1"); !errors.Is(err, ErrLinkConflict) {
+			t.Fatalf("err = %v, want ErrLinkConflict (a bare ErrNotFound reads as user-not-found to callers)", err)
+		}
+	})
+
 	t.Run("cross-user link is ErrLinkConflict (no veto — link is remediation)", func(t *testing.T) {
 		c, store := testCore(t)
 		store.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "h", Active: true})
@@ -227,4 +239,19 @@ func TestListIdentities(t *testing.T) {
 	if len(list) != 2 || list[0].Provider != "oidc-google" || list[1].Provider != "saml-corp" {
 		t.Fatalf("list must be oldest-first: %+v", list)
 	}
+}
+
+// doubleRaceStore simulates the pathological Link interleaving: the
+// insert loses a unique-violation race AND the winner unlinks before
+// the refetch, so the lookup misses both before and after the insert.
+type doubleRaceStore struct {
+	*MemStore
+}
+
+func (s *doubleRaceStore) IdentityByProviderSubject(context.Context, string, string) (Identity, error) {
+	return Identity{}, ErrNotFound
+}
+
+func (s *doubleRaceStore) InsertIdentity(context.Context, NewIdentity) error {
+	return ErrIdentityTaken
 }

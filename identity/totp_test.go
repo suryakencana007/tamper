@@ -92,6 +92,43 @@ func TestTOTPTwoPhaseEnrollment(t *testing.T) {
 	}
 }
 
+// TestEnrollTOTPOverwrite pins the one-shot's idempotent-overwrite
+// contract: unlike the two-phase ceremony, EnrollTOTP on an ALREADY-
+// enrolled user rotates the secret in place (no ErrTOTPAlreadyEnrolled)
+// via a single atomic write, so a re-enroll never transiently strips
+// the existing second factor.
+func TestEnrollTOTPOverwrite(t *testing.T) {
+	ctx := context.Background()
+	c, store, userID := totpCore(t)
+
+	first, err := c.EnrollTOTP(ctx, userID)
+	if err != nil {
+		t.Fatalf("EnrollTOTP #1: %v", err)
+	}
+	env1, _ := store.TOTPState(ctx, userID)
+
+	// Re-enroll while fully enrolled: must succeed with a FRESH secret,
+	// not ErrTOTPAlreadyEnrolled, and the user stays enrolled throughout.
+	second, err := c.EnrollTOTP(ctx, userID)
+	if err != nil {
+		t.Fatalf("EnrollTOTP #2 (overwrite) must not error: %v", err)
+	}
+	if second.Secret == first.Secret {
+		t.Fatal("re-enroll must rotate the secret")
+	}
+	env2, _ := store.TOTPState(ctx, userID)
+	if !env2.Enrolled {
+		t.Fatal("user must remain enrolled after overwrite (never transiently cleared)")
+	}
+	if string(env1.Envelope) == string(env2.Envelope) {
+		t.Fatal("re-enroll must rotate the stored envelope")
+	}
+	// The new secret verifies; the old one does not.
+	if err := c.VerifyTOTP(ctx, userID, codeFor(t, second.Secret)); err != nil {
+		t.Fatalf("new secret must verify: %v", err)
+	}
+}
+
 func TestTOTPPhase2BeforePhase1(t *testing.T) {
 	c, _, userID := totpCore(t)
 	if _, _, err := c.CompleteTOTPEnrollment(context.Background(), userID, "123456"); !errors.Is(err, ErrInvalidTOTP) {

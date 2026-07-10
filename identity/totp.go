@@ -106,21 +106,49 @@ func (c *Core) CompleteTOTPEnrollment(ctx context.Context, userID, code string) 
 }
 
 // EnrollTOTP is the one-shot enrollment (no verification round-trip):
-// stage + immediately enable. Used by flows where the caller verifies
-// pairing out-of-band. Same guards as StartTOTPEnrollment.
+// mint + seal + enable in a SINGLE store write. Used by flows where the
+// caller verifies pairing out-of-band.
+//
+// Unlike the two-phase ceremony (StartTOTPEnrollment/CompleteTOTPEnrollment,
+// which reject an already-enrolled user with ErrTOTPAlreadyEnrolled),
+// the one-shot is an idempotent OVERWRITE: re-enrolling rotates the
+// secret + recovery codes in place. This is deliberate — it is the
+// direct "reset my authenticator" verb — and the atomicity matters: a
+// single EnableTOTP write means a failure never leaves the user with a
+// half-cleared second factor (a stage-then-enable or clear-then-enroll
+// sequence could strip an existing enrollment on a mid-sequence error).
 func (c *Core) EnrollTOTP(ctx context.Context, userID string) (TOTPEnrollment, error) {
-	enrollment, err := c.StartTOTPEnrollment(ctx, userID)
+	if c.keys == nil {
+		return TOTPEnrollment{}, ErrNoKeySet
+	}
+	user, err := c.store.UserByID(ctx, userID)
 	if err != nil {
 		return TOTPEnrollment{}, err
 	}
-	state, err := c.store.TOTPState(ctx, userID)
+	secret, err := crypto.GenerateTOTPSecret()
 	if err != nil {
-		return TOTPEnrollment{}, err
+		return TOTPEnrollment{}, fmt.Errorf("identity: generate totp secret: %w", err)
 	}
-	if err := c.store.EnableTOTP(ctx, userID, state.Envelope, state.RecoveryCodeHashes, c.now()); err != nil {
+	envelope, err := c.keys.Seal([]byte(secret))
+	if err != nil {
+		return TOTPEnrollment{}, fmt.Errorf("identity: seal totp secret: %w", err)
+	}
+	codes, err := crypto.GenerateTOTPRecoveryCodes()
+	if err != nil {
+		return TOTPEnrollment{}, fmt.Errorf("identity: generate recovery codes: %w", err)
+	}
+	hashes, err := crypto.HashRecoveryCodes(codes)
+	if err != nil {
+		return TOTPEnrollment{}, fmt.Errorf("identity: hash recovery codes: %w", err)
+	}
+	if err := c.store.EnableTOTP(ctx, userID, envelope, hashes, c.now()); err != nil {
 		return TOTPEnrollment{}, fmt.Errorf("identity: enable totp: %w", err)
 	}
-	return enrollment, nil
+	return TOTPEnrollment{
+		Secret:        secret,
+		OTPAuthURI:    crypto.OTPAuthURI(secret, user.Email),
+		RecoveryCodes: codes,
+	}, nil
 }
 
 // VerifyTOTP checks a code against the enrolled secret. ErrTOTPNotEnrolled

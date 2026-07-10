@@ -64,4 +64,20 @@ var (
 	// state-machine guards.
 	ErrTOTPAlreadyEnrolled = errors.New("identity: totp already enrolled")
 	ErrTOTPNotEnrolled     = errors.New("identity: totp not enrolled")
+
+	// --- identity linking (Phase 2d) ---
+
+	// ErrLinkConflict — the (provider, subject) is already linked to a
+	// DIFFERENT user. (Same-user re-link is idempotent, not an error.)
+	ErrLinkConflict = errors.New("identity: provider identity linked to another user")
+
+	// ErrIdentityTaken — the (provider, subject) unique-index violation
+	// surfaced by the store on insert (the identity analogue of
+	// ErrEmailTaken). Used both directly and, on the race path, as the
+	// signal to re-fetch and re-decide idempotent-vs-conflict.
+	ErrIdentityTaken = errors.New("identity: provider identity already linked")
+
+	// ErrLastAuthMethod — unlinking would leave a federated-only user
+	// (empty password hash) with zero sign-in methods.
+	ErrLastAuthMethod = errors.New("identity: cannot unlink the last authentication method")
 )

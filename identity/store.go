@@ -63,6 +63,43 @@ type Store interface {
 	// ClearTOTP removes every TOTP column for the user (disable/admin
 	// reset). Idempotent.
 	ClearTOTP(ctx context.Context, userID string) error
+
+	// --- identity linking sub-surface (Phase 2d) ---
+	//
+	// user_identities semantics: (Provider, Subject) is UNIQUE (one
+	// external credential -> one user); the app owns the schema + unique
+	// index + FK cascade. The core leans on the unique index for its
+	// race handling, so InsertIdentity / ProvisionUserWithIdentity MUST
+	// surface the (provider,subject) violation as ErrIdentityTaken.
+
+	// IdentityByProviderSubject returns the identity for an exact
+	// (provider, subject); ErrNotFound when unlinked — the JIT-vs-repeat
+	// decision signal.
+	IdentityByProviderSubject(ctx context.Context, provider, subject string) (Identity, error)
+	// IdentityByID returns one identity by its own id; ErrNotFound when
+	// absent (feeds the unlink ownership check).
+	IdentityByID(ctx context.Context, id string) (Identity, error)
+	// IdentitiesByUserID lists a user's identities, oldest LinkedAt
+	// first; empty (non-nil) slice for none.
+	IdentitiesByUserID(ctx context.Context, userID string) ([]Identity, error)
+	// InsertIdentity links an identity to an EXISTING user;
+	// ErrIdentityTaken on the (provider,subject) unique violation.
+	InsertIdentity(ctx context.Context, ni NewIdentity) error
+	// TouchIdentityLastLogin bumps last_login_at, keyed by identity id.
+	TouchIdentityLastLogin(ctx context.Context, id string, at time.Time) error
+	// DeleteIdentity removes one identity unconditionally (the
+	// last-auth-method guard lives in the Core, not here).
+	DeleteIdentity(ctx context.Context, id string) error
+	// CountIdentitiesByUserID counts a user's linked identities.
+	CountIdentitiesByUserID(ctx context.Context, userID string) (int64, error)
+	// ProvisionUserWithIdentity creates a user AND its first identity
+	// ATOMICALLY (both rows or neither) — the JIT federated-signup path.
+	// The adapter owns the transaction; the core has no tx concept. The
+	// firstUser bootstrap signal is applied at insert exactly like
+	// CreateUser. Returns ErrEmailTaken on the users unique violation,
+	// ErrIdentityTaken on the user_identities one — the core folds both
+	// onto the "someone else won the race" outcome.
+	ProvisionUserWithIdentity(ctx context.Context, u NewUser, ni NewIdentity, firstUser bool) (User, Identity, error)
 }
 
 // TOTPState is the store's projection of a user's second-factor state.

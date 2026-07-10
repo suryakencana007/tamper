@@ -77,13 +77,48 @@ type Tokens struct {
 	RefreshExpiresAt time.Time
 }
 
+// Identity is one linked external credential: a (Provider, Subject)
+// pair bound to exactly one user. Provider is an opaque app-defined
+// string (Barista uses OIDC provider ids and saml_providers ids in the
+// same space). LastLoginAt is nil for an identity that has been linked
+// but never used to sign in.
+type Identity struct {
+	ID          string
+	UserID      string
+	Provider    string
+	Subject     string
+	LinkedAt    time.Time
+	LastLoginAt *time.Time
+}
+
+// NewIdentity is the row the core asks the Store to insert. For an
+// explicit link LastLoginAt is nil; for a JIT provision it equals
+// LinkedAt (the first sign-in is the link event).
+type NewIdentity struct {
+	ID          string
+	UserID      string
+	Provider    string
+	Subject     string
+	LinkedAt    time.Time
+	LastLoginAt *time.Time
+}
+
 // Hooks are the app-side extension points. All hooks are optional.
 type Hooks struct {
-	// OnRegistered runs after the user row is created and before tokens
-	// are minted. firstUser reports whether the store was empty at
-	// decision time — the bootstrap signal (Barista promotes the first
-	// user to cluster-admin and enrolls everyone into the default org).
-	// Best-effort by contract: the hook owns its own error handling and
-	// logging; registration does not roll back on hook failure.
+	// OnRegistered runs after a local (password) user row is created and
+	// before tokens are minted. firstUser reports whether the store was
+	// empty at decision time — the bootstrap signal (Barista promotes
+	// the first user to cluster-admin and enrolls everyone into the
+	// default org). Best-effort by contract: the hook owns its own error
+	// handling and logging; registration does not roll back on hook
+	// failure.
 	OnRegistered func(ctx context.Context, user User, firstUser bool)
+
+	// OnProvisioned runs after a FEDERATED user is JIT-created with its
+	// first identity (ProvisionUserWithIdentity), post-commit. Same
+	// firstUser bootstrap signal + best-effort contract as OnRegistered;
+	// the two exist separately so the app can distinguish a
+	// password-registration side effect from a federated-provision one
+	// (Barista runs the same default-org enroll from both).
+	OnProvisioned func(ctx context.Context, user User, identity Identity, firstUser bool)
 }

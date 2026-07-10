@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -11,12 +12,13 @@ import (
 // test double. Linear/map lookups; fine for tests and small embedded
 // uses, not a production store.
 type MemStore struct {
-	mu        sync.RWMutex
-	usersByID map[string]User
-	emailToID map[string]string
-	sessions  map[string]RefreshSession // by session id
-	hashToID  map[string]string         // token hash -> session id
-	totp      map[string]TOTPState      // by user id
+	mu         sync.RWMutex
+	usersByID  map[string]User
+	emailToID  map[string]string
+	sessions   map[string]RefreshSession // by session id
+	hashToID   map[string]string         // token hash -> session id
+	totp       map[string]TOTPState      // by user id
+	identities map[string]Identity       // by identity id
 }
 
 var _ Store = (*MemStore)(nil)
@@ -24,11 +26,12 @@ var _ Store = (*MemStore)(nil)
 // NewMemStore returns an empty store.
 func NewMemStore() *MemStore {
 	return &MemStore{
-		usersByID: make(map[string]User),
-		emailToID: make(map[string]string),
-		sessions:  make(map[string]RefreshSession),
-		hashToID:  make(map[string]string),
-		totp:      make(map[string]TOTPState),
+		usersByID:  make(map[string]User),
+		emailToID:  make(map[string]string),
+		sessions:   make(map[string]RefreshSession),
+		hashToID:   make(map[string]string),
+		totp:       make(map[string]TOTPState),
+		identities: make(map[string]Identity),
 	}
 }
 
@@ -207,6 +210,125 @@ func (m *MemStore) ClearTOTP(_ context.Context, userID string) error {
 		m.usersByID[userID] = u
 	}
 	return nil
+}
+
+// --- identity linking (Phase 2d) ---
+
+// IdentityByProviderSubject implements Store.
+func (m *MemStore) IdentityByProviderSubject(_ context.Context, provider, subject string) (Identity, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, id := range m.identities {
+		if id.Provider == provider && id.Subject == subject {
+			return id, nil
+		}
+	}
+	return Identity{}, fmt.Errorf("%w: identity %s/%s", ErrNotFound, provider, subject)
+}
+
+// IdentityByID implements Store.
+func (m *MemStore) IdentityByID(_ context.Context, id string) (Identity, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ident, ok := m.identities[id]
+	if !ok {
+		return Identity{}, fmt.Errorf("%w: identity %s", ErrNotFound, id)
+	}
+	return ident, nil
+}
+
+// IdentitiesByUserID implements Store (oldest LinkedAt first, non-nil).
+func (m *MemStore) IdentitiesByUserID(_ context.Context, userID string) ([]Identity, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Identity, 0)
+	for _, id := range m.identities {
+		if id.UserID == userID {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LinkedAt.Before(out[j].LinkedAt) })
+	return out, nil
+}
+
+// InsertIdentity implements Store (ErrIdentityTaken on collision).
+func (m *MemStore) InsertIdentity(_ context.Context, ni NewIdentity) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.insertIdentityLocked(ni)
+}
+
+// insertIdentityLocked is the shared insert used by InsertIdentity and
+// the provision tx; caller holds the write lock.
+func (m *MemStore) insertIdentityLocked(ni NewIdentity) error {
+	for _, id := range m.identities {
+		if id.Provider == ni.Provider && id.Subject == ni.Subject {
+			return fmt.Errorf("%w: %s/%s", ErrIdentityTaken, ni.Provider, ni.Subject)
+		}
+	}
+	m.identities[ni.ID] = Identity{
+		ID: ni.ID, UserID: ni.UserID, Provider: ni.Provider, Subject: ni.Subject,
+		LinkedAt: ni.LinkedAt, LastLoginAt: ni.LastLoginAt,
+	}
+	return nil
+}
+
+// TouchIdentityLastLogin implements Store.
+func (m *MemStore) TouchIdentityLastLogin(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ident, ok := m.identities[id]
+	if !ok {
+		return fmt.Errorf("%w: identity %s", ErrNotFound, id)
+	}
+	t := at
+	ident.LastLoginAt = &t
+	m.identities[id] = ident
+	return nil
+}
+
+// DeleteIdentity implements Store (unconditional, idempotent).
+func (m *MemStore) DeleteIdentity(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.identities, id)
+	return nil
+}
+
+// CountIdentitiesByUserID implements Store.
+func (m *MemStore) CountIdentitiesByUserID(_ context.Context, userID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var n int64
+	for _, id := range m.identities {
+		if id.UserID == userID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// ProvisionUserWithIdentity implements Store — atomic both-or-neither
+// under the single mutex (the in-memory analogue of the adapter's tx).
+func (m *MemStore) ProvisionUserWithIdentity(_ context.Context, u NewUser, ni NewIdentity, _ bool) (User, Identity, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, taken := m.emailToID[u.Email]; taken {
+		return User{}, Identity{}, fmt.Errorf("%w: %s", ErrEmailTaken, u.Email)
+	}
+	// Insert the identity first (into a copy-checked map); if it
+	// collides, nothing is committed.
+	for _, id := range m.identities {
+		if id.Provider == ni.Provider && id.Subject == ni.Subject {
+			return User{}, Identity{}, fmt.Errorf("%w: %s/%s", ErrIdentityTaken, ni.Provider, ni.Subject)
+		}
+	}
+	user := User{ID: u.ID, Email: u.Email, PasswordHash: u.PasswordHash, Active: true, CreatedAt: u.CreatedAt}
+	ident := Identity{ID: ni.ID, UserID: ni.UserID, Provider: ni.Provider, Subject: ni.Subject, LinkedAt: ni.LinkedAt, LastLoginAt: ni.LastLoginAt}
+	m.usersByID[u.ID] = user
+	m.emailToID[u.Email] = u.ID
+	m.identities[ni.ID] = ident
+	return user, ident, nil
 }
 
 // LiveSessionCount reports the user's unrevoked sessions (tests).

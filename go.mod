@@ -8,6 +8,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/pquerna/otp v1.5.0
+	github.com/scim2/filter-parser/v2 v2.2.1
 	golang.org/x/crypto v0.53.0
 	golang.org/x/oauth2 v0.36.0
 	modernc.org/sqlite v1.53.0
@@ -16,6 +17,7 @@ require (
 require (
 	github.com/beevik/etree v1.5.0 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
+	github.com/di-wu/parser v0.2.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect

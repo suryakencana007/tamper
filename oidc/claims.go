@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	coreoidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -182,3 +183,53 @@ func JSONRawFromClaims(claims *Claims) json.RawMessage {
 // _ keeps the coreoidc import alive in the off-chance the file's
 // only consumer ends up using only oauth2.
 var _ coreoidc.IDToken
+
+// AuthTime reads the IdP's auth_time claim (Unix seconds) from the
+// verified ID-token raw claim map, mirroring the SAML
+// ParsedAssertion.AuthnTime view. Per OIDC Core 1.0 §2, auth_time is
+// the Unix timestamp of end-user authentication; when absent (some
+// IdPs don't emit it without a max_age request param), falls back to
+// nowFn().Unix().
+//
+// SECURITY (federation foot-gun): auth_time MUST come from the IdP
+// when present — otherwise an attacker controlling callback timing
+// could feign fresh authentication and collapse the step-up boundary.
+// The three number shapes are all handled because a JSON decoder's
+// mode determines which lands: float64 (default), int64, or
+// json.Number (UseNumber decoders); missing json.Number silently
+// weakens the boundary.
+func (c *Claims) AuthTime(nowFn func() time.Time) int64 {
+	if c != nil {
+		if v, ok := c.Raw["auth_time"]; ok {
+			switch t := v.(type) {
+			case float64:
+				if t > 0 {
+					return int64(t)
+				}
+			case int64:
+				if t > 0 {
+					return t
+				}
+			case json.Number:
+				if n, err := t.Int64(); err == nil && n > 0 {
+					return n
+				}
+			}
+		}
+	}
+	return nowFn().Unix()
+}
+
+// ACR reads the IdP's acr claim (Authentication Context Class
+// Reference URN) from the verified ID-token raw claim map, mirroring
+// ParsedAssertion.ACR. Returns fallback when the claim is absent or
+// empty — the app supplies its assurance-level default (most modern
+// IdPs emit something stronger when step-up is requested).
+func (c *Claims) ACR(fallback string) string {
+	if c != nil {
+		if v, ok := c.Raw["acr"].(string); ok && v != "" {
+			return v
+		}
+	}
+	return fallback
+}

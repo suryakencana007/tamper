@@ -348,3 +348,48 @@ func writeStepUpError(w http.ResponseWriter, maxAge time.Duration, acrValues []s
 		},
 	})
 }
+
+// StepUpSatisfied reports whether an IdP-delivered authentication
+// honoured a step-up request. Pure predicate shared by the OIDC
+// exchange and the SAML ACS flows (both correlate what the app asked
+// for at /start against what the IdP delivered):
+//
+//   - Returns false when nothing was requested (maxAge<=0 AND no
+//     acrValues) — there is no step-up to satisfy.
+//   - When a maxAge was requested, the delivered auth_time must be
+//     present (>0) and the age (now - authTime) must not exceed it.
+//   - When acrValues were requested, the delivered acr must match at
+//     least one (the satisfaction set).
+//
+// Callers emit their success-audit event only when this returns true;
+// an unsatisfied step-up still mints a token, but the downstream
+// fresh-auth gate rejects it, so signalling success here would
+// mislead operators.
+func StepUpSatisfied(requestedMaxAge int64, requestedACRValues []string, deliveredAuthTime int64, deliveredACR string, now int64) bool {
+	if requestedMaxAge <= 0 && len(requestedACRValues) == 0 {
+		return false
+	}
+	if requestedMaxAge > 0 {
+		if deliveredAuthTime <= 0 {
+			return false
+		}
+		// Age = now - auth_time. A negative or zero age is fine (the
+		// IdP authenticated the user in the very recent past).
+		if now-deliveredAuthTime > requestedMaxAge {
+			return false
+		}
+	}
+	if len(requestedACRValues) > 0 {
+		matched := false
+		for _, want := range requestedACRValues {
+			if want == deliveredACR {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}

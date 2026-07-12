@@ -85,7 +85,7 @@ func mapAuthWireError(err error, validationMsg func(error) string) error {
 		return espressofw.ErrUnauthorized("account is deactivated").WithCode("USER_INACTIVE")
 	case errors.Is(err, identity.ErrInvalidCredentials), errors.Is(err, identity.ErrInvalidSession):
 		return espressofw.ErrUnauthorized("invalid credentials").WithCode("INVALID_CREDENTIALS")
-	case errors.Is(err, identity.ErrInvalidEmail), errors.Is(err, identity.ErrPasswordPolicy):
+	case errors.Is(err, identity.ErrInvalidEmail), errors.Is(err, identity.ErrPasswordPolicy), errors.Is(err, identity.ErrInvalidInput):
 		return espressofw.ErrBadRequest(validationMsg(err)).WithCode("VALIDATION_ERROR")
 	default:
 		return espressofw.ErrInternal("internal error").Wrap(err)

@@ -323,6 +323,11 @@ func (a *AuthRoutes) EnrollSession(ctx context.Context, req *espressofw.JSON[TOT
 		Data: TOTPEnrollSessionRes{
 			OTPAuthURI:    phase1.OTPAuthURI,
 			RecoveryCodes: phase1.RecoveryCodes,
+			// The user key is ALWAYS present on this envelope (the
+			// proving app's struct-value omitempty was a no-op, so
+			// phase 1 shipped the zero projection — byte parity says
+			// we do too).
+			User: a.cfg.ProjectUser(ctx, nil),
 		},
 	}, nil
 }

@@ -45,6 +45,12 @@ var (
 	// ErrNotFound — store sentinel for a missing row (user or session).
 	ErrNotFound = errors.New("identity: not found")
 
+	// ErrInvalidInput is the generic validation sentinel for inputs
+	// the more specific sentinels (email shape, password policy)
+	// don't cover — transport adapters map it to their
+	// validation-error wire code.
+	ErrInvalidInput = errors.New("identity: invalid input")
+
 	// ErrNoTokenService — a token-minting flow was invoked on a Core
 	// constructed without a JWT service (crypto-ops / bootstrap
 	// instances are allowed to be token-less; minting from one is a

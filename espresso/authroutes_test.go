@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	espressofw "github.com/suryakencana007/espresso/v2"
@@ -179,5 +180,33 @@ func TestAuthRoutes_LogoutIdempotentClear(t *testing.T) {
 	}
 	if len(svc.logout) != 1 || svc.logout[0] != "tok-1" {
 		t.Fatalf("revocation calls: %v", svc.logout)
+	}
+}
+
+func (f *fakeIdentity) EnrollTOTPViaSession(_ context.Context, _, currentCode string) (*TOTPEnrollment, *AuthResult, error) {
+	if currentCode == "" {
+		return &TOTPEnrollment{OTPAuthURI: "otpauth://x", RecoveryCodes: []string{"a-b"}}, nil, nil
+	}
+	return nil, &AuthResult{User: &identity.User{ID: "u9"}, Tokens: identity.Tokens{Access: "acc"}}, nil
+}
+
+// The enroll-session phase-1 envelope carries the user key ALWAYS —
+// the proving app's struct-value omitempty was a no-op, so byte
+// parity requires the zero projection here (4c-delegate review
+// finding).
+func TestAuthRoutes_EnrollSessionPhase1KeepsUserKey(t *testing.T) {
+	a := testRoutes(t, &fakeIdentity{})
+	res, err := a.EnrollSession(context.Background(), &espressofw.JSON[TOTPEnrollSessionReq]{
+		Data: TOTPEnrollSessionReq{SessionToken: "s"},
+	})
+	if err != nil {
+		t.Fatalf("EnrollSession: %v", err)
+	}
+	if res.Data.OTPAuthURI != "otpauth://x" || len(res.Data.User) == 0 {
+		t.Fatalf("phase-1 must keep the user key with the zero projection: %+v", res.Data)
+	}
+	b, _ := json.Marshal(res.Data)
+	if !strings.Contains(string(b), `"user":{"id":"","email":""}`) {
+		t.Fatalf("phase-1 body drifted: %s", b)
 	}
 }

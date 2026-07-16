@@ -147,10 +147,12 @@ OnFederatedAssertion func(context.Context, SAMLVerified) (FederationOutcome, err
 
 ---
 
-# Amendments (ratified during 4d-3a)
+# Amendments (ratified during 4d-3)
 
-The decision above was written against the **pre-4d-2** tree. Building
-the 4d-3a byte-golden instrument surfaced six places where it
+The decision above was written against the **pre-4d-2** tree. A1–A8 were
+ratified in 4d-3a, from building the byte-golden instrument; **A9 was
+ratified in 4d-3b**, caught by adversarial review of the hook
+extraction. Between them they mark nine places where the plan
 contradicts the code, tamper's landed 4c surface, or Espresso itself.
 The code is the authority. Each amendment below supersedes the
 corresponding text above; 4d-4 (SAML) inherits all of them.
@@ -340,6 +342,70 @@ failure would have three candidate causes.
 Rationale: 4d-3b is the risky *idea* at no framework cost; 4d-3c is the
 risky *mechanics* with the idea settled. The original ordering proves
 both at once, making any failure unattributable.
+
+## A9 — The hook receives the resolved `*oidc.Provider`. It must NEVER re-resolve it.
+
+`OnFederatedExchange` takes the provider as a parameter:
+
+```go
+OnFederatedExchange func(context.Context, *oidc.Provider, OIDCVerified) (FederationOutcome, error)
+```
+
+**Why the obvious alternative is wrong.** `OIDCVerified` carries
+`ProviderID` but not `GroupsClaim` (the group-claim mapping is app
+policy and does not belong in the verification spine). The tempting
+inference is that the hook should re-resolve the provider from
+`v.ProviderID`. 4d-3b did exactly that, and adversarial review caught it
+— confirmed by two independent lenses, one rating it **high**.
+
+The registry is not the cheap map read it looks like. `lookupOIDCRegistry`
+→ `Manager.GetRegistry` is a **TTL-cached** read that falls through to
+`rebuildLocked` — a DB `ListEnabledProviders` plus live OIDC discovery
+per provider. A second lookup inside the hook sits on the far side of
+the IdP token-exchange + JWKS round trip (100ms–2s), i.e. **after the
+single-use authorization code has been burned**. Four outcomes the
+pre-lift code could not produce, each replacing a 200 with a hard
+failure the SPA cannot retry:
+
+- DB read fails → 500 `oidc registry unavailable`.
+- `partialOK=true` **silently drops** a provider whose discovery blips
+  (`provider.go:217-219` — log-only, no error) → 404
+  `UNKNOWN_OIDC_PROVIDER`.
+- Provider disabled/deleted in the window → `rebuildLocked` caches the
+  nil sentinel → 404 `OIDC_NOT_CONFIGURED`.
+- An admin CRUD write calling `Reload`/`invalidateCache` lands in the
+  window → any of the above.
+
+**Reachability is not marginal.** Default `ProviderCacheTTL` is 30s, so
+roughly 1 in 100 exchanges straddles a TTL boundary and triggers a full
+rebuild inside the hook. Worse, `auth.oidc.providerCacheTTL=0` is an
+explicitly supported config (`main.go:1567` warns but permits it) and
+`cacheFresh` returns false unconditionally when `ttl == 0`
+(`manager.go:390-392`) — so the hook would rebuild on **every** exchange,
+doubling the discovery I/O on the hot path.
+
+There is also a subtler correctness leg: `provider.Config.GroupsClaim`
+read from a re-resolved provider means an operator edit inside the window
+reconciles groups against a **different claim key** than the one live when
+the flow started.
+
+**Ratified:** the shell resolves the provider exactly once, before
+`VerifyOIDCCallback`, and passes that pointer to the hook. The registry is
+never touched after the code is burned — the pre-lift structural property,
+restored.
+
+This costs tamper nothing. `*oidc.Provider` is **tamper's own type**
+(Barista's `internal/auth/oidc` aliases it — `oidc.go:40`), and Mount
+already holds the pointer because it needed it for `VerifyOIDCCallback`.
+Passing it back to the hook widens no struct and drags no app concern into
+the spine. **A5 and A9 are the same lesson from opposite directions:** the
+plan's instinct to have the framework "helpfully" re-derive or re-process
+app-facing values is the recurring hazard in this phase.
+
+**4d-4 (SAML) inherits this.** `OnFederatedAssertion` must likewise
+receive the resolved provider rather than re-derive it from
+`SAMLVerified.ProviderID` — the ACS leg has the identical
+burned-artifact property (the assertion is single-use).
 
 ## Carried debt opened by 4d-3a
 

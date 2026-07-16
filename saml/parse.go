@@ -47,9 +47,39 @@ func (p *Provider) ParseAssertion(samlResponse, relayState string, possibleReque
 	req := buildPostFormRequest(p.SP.AcsURL.String(), samlResponse, relayState)
 	assertion, err := p.SP.ParseResponse(req, possibleRequestIDs)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrAssertionInvalid, err)
+		return nil, fmt.Errorf("%w: %v", ErrAssertionInvalid, describeParseError(err))
 	}
 	return &ParsedAssertion{raw: assertion}, nil
+}
+
+// describeParseError digs the real cause out of crewjam's error.
+//
+// crewjam wraps EVERY parse failure — bad signature, expired assertion,
+// wrong audience, request-ID mismatch — in *InvalidResponseError, whose
+// Error() is the fixed string "Authentication failed". The actual cause
+// lives only in the unexported-by-convention PrivateErr field. Rendering
+// the wrapper with %v therefore collapses every distinct failure into
+// one useless line.
+//
+// That is not hypothetical: it is precisely why TD-FUNC-26 survived in
+// the field. An operator who set allowIdPInitiated=false got a total
+// SAML outage whose only log evidence was "Authentication failed" —
+// nothing pointing at InResponseTo, the empty allow-list, or the config
+// flag that caused it. The first draft of the repro test made the same
+// mistake and PASSED against the live bug, because from outside every
+// failure looks identical.
+//
+// The blanket "Authentication failed" exists to avoid leaking detail to
+// the BROWSER. That reasoning does not extend to the server's own log:
+// this value is only ever wrapped into ErrAssertionInvalid, which
+// handlers map to a generic SAML_ASSERTION_INVALID before responding.
+// The caller still gets nothing; the operator gets a cause.
+func describeParseError(err error) error {
+	var ire *crewjamsaml.InvalidResponseError
+	if errors.As(err, &ire) && ire.PrivateErr != nil {
+		return ire.PrivateErr
+	}
+	return err
 }
 
 // buildPostFormRequest stitches the form-extracted SAMLResponse +

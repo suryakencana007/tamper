@@ -143,10 +143,58 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 		EntityID:          cfg.EntityID,
 		Key:               cfg.SPKey,
 		Certificate:       cfg.SPCert,
-		MetadataURL:       *metadataURL,
-		AcsURL:            *acs,
-		IDPMetadata:       idpMetadata,
-		AllowIDPInitiated: cfg.AllowIDPInitiated,
+		MetadataURL: *metadataURL,
+		AcsURL:      *acs,
+		IDPMetadata: idpMetadata,
+		// ALWAYS true — this is NOT the policy toggle. TD-FUNC-26.
+		//
+		// crewjam uses this flag to decide whether to enforce
+		// InResponseTo against a caller-supplied AuthnRequest allow-list
+		// (service_provider.go validateRequestID). When it is false it
+		// searches that list for a match — and callers without an
+		// AuthnRequest tracker have no list to supply, so the search runs
+		// over an empty slice and can NEVER match. The result is that
+		// EVERY assertion is rejected, SP-initiated ones included, and
+		// SAML sign-in stops working entirely. Threading
+		// cfg.AllowIDPInitiated in here made the stricter, more
+		// security-conscious setting the broken one.
+		//
+		// The honest reading: this flag means "I have a request-ID
+		// tracker and want crewjam to police it". We do not, so we must
+		// not ask. Setting it true tells crewjam to skip a check it
+		// cannot perform for us — it does NOT open the IdP-initiated
+		// surface.
+		//
+		// The policy itself is enforced ABOVE this layer, off
+		// ParsedAssertion.IdPInitiated() (an empty InResponseTo IS the
+		// definition of IdP-initiated), which is where cfg.
+		// AllowIDPInitiated is read. That gate already existed; until now
+		// it was unreachable dead code, because control never survived
+		// this line to reach it.
+		//
+		// No security regression, and it is worth being exact about why:
+		//
+		//   - On the default (cfg.AllowIDPInitiated=true) crewjam already
+		//     skipped this check. Identical behaviour.
+		//   - On cfg.AllowIDPInitiated=false, InResponseTo was never
+		//     actually VALIDATED either — with an empty allow-list the
+		//     check could only ever REJECT, never match. So this removes
+		//     a check that has never once passed, on a config where
+		//     nothing worked at all.
+		//
+		// Nothing that presently succeeds is weakened. What changes is
+		// that the false config stops being a total outage.
+		//
+		// LIMITATION, stated plainly: with this true, crewjam does not
+		// validate InResponseTo anywhere (it is checked in TWO places —
+		// validateRequestID and the SubjectConfirmation loop in
+		// validateAssertion — and the ValidateRequestID hook only
+		// overrides the first, so a hook cannot rescue the false path).
+		// A consumer that genuinely tracks outstanding AuthnRequest ids
+		// and wants them enforced needs a real replay defence: a request
+		// tracker plus a knob distinct from this policy flag. Nobody has
+		// asked, so no contract is frozen for it here.
+		AllowIDPInitiated: true,
 		// Request EmailAddress NameID instead of crewjam's
 		// TransientNameIDFormat default. The transient default mints a
 		// per-session opaque subject, so every SAML round-trip stores a

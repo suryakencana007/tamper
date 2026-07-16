@@ -144,3 +144,216 @@ OnFederatedAssertion func(context.Context, SAMLVerified) (FederationOutcome, err
 8. **State-cookie redirect beats RelayState** (`saml.go:558-569`); both funnel through `SanitizeRedirect` (nil ⇒ deny-all-to-`/`).
 9. **CanonicalVersion3 on step-up events only, absent on `auth.oidc.login`** — reproduced byte-identically by the app `EventSink`; tamper never emits a federation audit row itself (NON-goals #9/#10). Audit-row byte-diff is the gate.
 10. **Provider/state cross-check** (`oidc.go:662-666`) — provider mismatch and state mismatch both → `INVALID_STATE`.
+
+---
+
+# Amendments (ratified during 4d-3a)
+
+The decision above was written against the **pre-4d-2** tree. Building
+the 4d-3a byte-golden instrument surfaced six places where it
+contradicts the code, tamper's landed 4c surface, or Espresso itself.
+The code is the authority. Each amendment below supersedes the
+corresponding text above; 4d-4 (SAML) inherits all of them.
+
+**Line refs above are stale.** 4d-2 shifted them. Live anchors:
+`ExchangeOIDC` tail `oidc.go:591-718`; `CallbackOIDC` `:518-547`;
+`StartOIDC` `:190-243`; `StartOIDCLink` `:282-314`; `urlValue`
+`:939-953`; state-cookie config `:899-921`; link redirect `:630`.
+
+## A1 — `Mount` cannot span the public/authed split. Use `Mount` + `MountLink`.
+
+The plan's `func (f *FederationRoutes) Mount(r *espresso.Router) //
+start/callback/exchange (+link-start)` is **structurally impossible**,
+not merely inelegant.
+
+`*espresso.Router` (v2.4.0) has no `Group`, no `Route`, no sub-router —
+verified by enumerating its methods. `Use` is **positional**: `Get`/
+`Post` call `applyMiddleware(r.Handle(f))` at *registration* time
+(`router.go:181-183,236`), snapshotting the middleware stack as it
+stands. `server.go` depends on exactly this: start/callback/exchange
+register at `:210-214` under `[RequestID]`, link-start at `:358` under
+`[RequestID, RequireAuth]` because `r.Use(RequireAuth)` runs at `:338`.
+
+A single `Mount(r)` registers everything at one stack position, so
+either link-start loses `RequireAuth` or the login routes gain it.
+Neither is shippable.
+
+**Ratified:** two methods — `Mount(r)` for the public trio, `MountLink(r)`
+for the authed link-start. Barista calls them at their existing
+registration sites, so the auth boundary stays legible in `server.go`
+rather than hiding inside an injected-middleware config field.
+
+## A2 — Drop `ProjectUser` from `FederationHooks`; `FederationOutcome.User` is `json.RawMessage`.
+
+Two defects, one fatal.
+
+1. **Signature.** The plan writes `ProjectUser func(context.Context,
+   *identity.User) (json.RawMessage, error)` and annotates it "REUSE 4c
+   hook". The landed 4c hook has **no error return**
+   (`authroutes.go:84`). Reuse means reusing what shipped.
+
+2. **It cannot work here.** The plan has `OnFederatedExchange` do
+   "…→project" *and* lists `ProjectUser` separately; both cannot own the
+   projection. Worse, the hook holds a wide `*domain.User` (carrying
+   `SystemRole`); handing it to `ProjectUser` means narrowing to
+   `*identity.User` (which has no `SystemRole`) and re-widening after.
+   4c absorbs that with the request-scoped `withWideUserSlot`
+   (`auth_tamper.go:49-73`), installed by per-request wrappers — but
+   **`Mount` has no wrapper**, so `projectUserDTO` would hit its
+   fallback and issue a **second `AuthSvc.Me` read**, re-introducing the
+   exact store-hiccup-to-zero-user-payload regression 4c designed out.
+
+   **Do not "fix" that with a captured pointer cell.** 4c gets away with
+   per-request mutable capture because `authRoutesFor` builds per
+   request. `Mount` builds **once at boot** — a captured `*domain.User`
+   is shared across concurrent requests: a data race and a **cross-user
+   data leak** (user A's DTO rendered into user B's response).
+
+**Ratified:** no `ProjectUser` in `FederationHooks`. The app projects
+once, inside the hook, where it already holds the wide row. No
+narrowing, no re-read, no slot, no race. `FederationOutcome` flattens to
+`{Tokens, User json.RawMessage, Redirect, Linked}` — it does not embed
+`AuthResult`, since only `Tokens` was ever used. This is *more* faithful
+to the MIDDLE verdict than the original text: projection is app
+orchestration, as the plan's own hook-contents list already says.
+
+## A3 — No `EventSink`. One concrete callback: `OnStepUpInitiated`.
+
+On the **exchange** leg the sink is dead weight: `OnFederatedExchange`
+already holds everything a step-up emit needs (`claims.Requested*` +
+`CallingUserID` from `OIDCVerified.State`; `authTime`/`acr` from
+`Claims.AuthTime`/`.ACR`) and calls `StepUpSatisfied` +
+`emitStepUpSucceededAudit` itself. A second seam letting *tamper* decide
+when to fire is precisely the orchestration ownership MIDDLE rejected.
+
+Only the **start** leg needs a seam at all (`emitStepUpInitiatedAudit`,
+`oidc.go:239`, now inside Mount's handler) — and that is **one instant**.
+NON-goal #9 bars freezing `auth.*` taxonomy before a second consumer.
+
+**Ratified:** `OnStepUpInitiated func(ctx, callingUserID string, maxAge
+int64, acrValues []string)`. One nil-guarded call; no interface, no
+taxonomy, no `CanonicalVersion` in tamper's vocabulary. Invariant #9
+("tamper never emits a federation audit row itself") then holds
+trivially.
+
+## A4 — Invariant #7 is wrong as written. Restated: clear on every **successful** exit.
+
+Invariant #7 claims the clear-cookie is "queued on every exchange/ACS
+exit". The code disagrees: **every** `/exchange` error return is the
+zero `espresso.JSON[T]` value, whose `Cookies` is nil. A failed
+`LinkIdentity` / `UpsertOIDCUser` / mint leaves the state cookie in the
+browser.
+
+**Ratified:** reproduce current behaviour in 4d-3 — parity is the lift's
+thesis, and the residual risk is small (the cookie is single-use against
+an IdP code already spent or rejected, and expires on `StateTTL`
+regardless). Invariant #7 now reads "on every **successful** exit".
+Pinned by `TestOIDCGolden_ExchangeErrorPathEmitsNoCookies`.
+
+Clearing on error is defensible but is a wire change across six error
+paths and ships separately as **TD-OIDC-CLEAR-ON-ERROR** — never
+smuggled into a "no-op delegation". Note tamper's error return is
+`espresso.JSON[ExchangeRes]{}`, which structurally cannot carry cookies,
+so reproduce-as-is is free and the fix is real work.
+
+## A5 — `SanitizeRedirect` has exactly ONE call site. It must NEVER touch `FederationOutcome.Redirect`.
+
+**The most dangerous line in the original plan** is invariant #8's
+"both funnel through `SanitizeRedirect`". Applied to the hook's output
+it silently breaks the link leg:
+
+```
+SanitizeRedirectPath("/account?linked=google")
+  -> IndexAny(raw, "?#") == 8 -> raw = "/account"   (redirect.go:45-47)
+  -> allowlist hit -> returns "/account"
+```
+
+`?linked=google` is stripped and the SPA's post-link confirmation banner
+dies — with no error anywhere. **This is not theoretical:** mutating
+`oidc.go:630` to sanitize its redirect makes
+`TestOIDCGolden_ExchangeLinkLegWire` fail with
+`"redirect":"/account"`, exactly as predicted.
+
+**Ratified:** `SanitizeRedirect` gates the `?redirect=` **query param on
+the start leg only**, before `StartOIDCFlow` (whose doc already declares
+its input "ALREADY-SANITIZED"). `FederationOutcome.Redirect` is
+app-constructed and trusted **verbatim**. The link redirect at
+`oidc.go:630` is server-built, never user input, and deliberately
+un-sanitized.
+
+## A6 — `splitACRValuesCSV` moves into tamper (reverses 4d-1's "keeps").
+
+4d-1 kept it app-side on the reasoning that it "encodes Barista's SPA
+comma-OR-space leniency". That judgment assumed Barista still owned the
+start handler. Once `Mount` owns `GET /start/{id}`, it owns the
+`?acr_values=` extraction, and the alternatives are worse: an app-supplied
+parse hook (a whole seam for one string split) or app-side extraction
+that makes Mount's start handler thinner than the design implies.
+
+**Ratified:** absorb it into tamper as an unexported helper with its
+truth table. It is six lines of pure function carrying no Barista
+policy. `isStepUp` (`maxAge > 0 || len(acr) > 0`) is already duplicated
+inside `StartOIDCFlow` (`oidcflow.go:101`); its only app-visible use is
+gating `OnStepUpInitiated`, which tamper can do itself.
+
+## A7 — Wire types the plan omitted
+
+`Mount` registers the routes, so tamper needs the **request** shapes
+too. The plan's D3 block lists only `ExchangeRes`.
+
+- `ExchangeReq{ProviderID, Code, State}` — snake_case tags.
+- `LinkStartRes{AuthURL string}` with tag `json:"authUrl"` —
+  **camelCase**, diverging from every other WireV1 tag
+  (`session_token`, `otpauth_uri`, `provider_id`). Copy the bytes, not
+  the convention: an author writing `auth_url` from muscle memory
+  breaks the SPA's link flow. Pinned in
+  `TestOIDCGolden_ExchangeLinkLegWire`.
+- `mapFederationWireError` owns the code strings. Preserve the status
+  **asymmetry**: `INVALID_STATE` is **401** on the three verify-path
+  branches but **400** on the two mode-dispatch branches; the verify
+  switch's `default` collapses to `INVALID_IDTOKEN`, not `INTERNAL`.
+
+## A8 — 4d-3 splits into three PRs
+
+The original 4d-3 bundles three unrelated risk classes, so a parity
+failure would have three candidate causes.
+
+- **4d-3a — golden instrument + these amendments. No production code.**
+  *(this PR)* The pre-existing fragment golden asserted only
+  `HasPrefix` + three `Contains` — blind to reordering and escaping
+  changes. The exchange **link leg had no test at all**, despite
+  `"token":""` being the security-load-bearing byte. Built first on
+  purpose: an instrument built after the change measures the change's
+  own assumptions.
+- **4d-3b — `OnFederatedExchange` extraction, app-side only. Zero tamper
+  changes.** `ExchangeOIDC` keeps its signature, registration and DTO;
+  its tail becomes a Barista-local closure with the exact
+  `FederationOutcome` shape. Proves the hook boundary is sufficient —
+  including the provider re-resolve for `GroupsClaim` (`OIDCVerified`
+  carries `ProviderID` but not `GroupsClaim`) and A2's
+  projection-inside-the-hook — at **zero framework risk**. If the shape
+  is wrong, that surfaces in a one-commit revert.
+- **4d-3c — the tamper lift + `Mount`/`MountLink`.** Bytes, cookies and
+  routes, with the idea already proven. The 4d-3a goldens must pass
+  **byte-unchanged** — that is the gate.
+
+Rationale: 4d-3b is the risky *idea* at no framework cost; 4d-3c is the
+risky *mechanics* with the idea settled. The original ordering proves
+both at once, making any failure unattributable.
+
+## Carried debt opened by 4d-3a
+
+- **TD-OIDC-CLEAR-ON-ERROR** — `/exchange` error paths leave the state
+  cookie set (A4). Fix = clear on error; own PR, six paths.
+- **TD-OIDC-FRAGMENT-ESCAPE** — `CallbackOIDC`'s IdP-error path
+  concatenates the raw `error` query value (`oidc.go:534`), bypassing
+  `urlValue`, so it does not honour that helper's own stated purpose
+  ("so a malicious IdP can't inject extra fragment parameters"). The
+  success path drops `#`, `&` and `%` from all three values; the error
+  path drops nothing. **Not a session-forgery vector** — an injected
+  `code`/`state` still has to survive `/exchange`'s signed-state-cookie
+  check, which an attacker cannot forge; the exposure is
+  fragment-parameter injection into the landing page. Pinned as current
+  behaviour by `TestOIDCGolden_CallbackIdPErrorIsRawBytes` so the lift
+  reproduces it rather than drifting it. Fix = run `q.Error` through the
+  dropper; own PR, fragment-byte change.

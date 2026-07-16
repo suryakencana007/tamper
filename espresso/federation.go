@@ -171,6 +171,12 @@ func NewFederationRoutes(cfg FederationConfig, hooks FederationHooks) (*Federati
 	if cfg.StateCookie.Secure && cfg.StateCookie.Path != "/" {
 		return nil, errors.New(`tamper/espresso: a Secure state cookie uses the __Host- prefix, which requires Path="/"`)
 	}
+	// SameSite=None without Secure is rejected outright by browsers, so
+	// the cookie would simply never be set — a silent, runtime-only
+	// failure. Fail at wiring instead (TD-FUNC-28).
+	if cfg.StateCookie.SameSite == http.SameSiteNoneMode && !cfg.StateCookie.Secure {
+		return nil, errors.New("tamper/espresso: SameSite=None requires Secure — browsers reject the pair, and the cookie would silently never be set")
+	}
 	if len(cfg.StateSecret) == 0 {
 		return nil, errors.New("tamper/espresso: state cookie signing secret is required")
 	}

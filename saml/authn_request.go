@@ -74,32 +74,37 @@ type AuthnRequestOptions struct {
 //
 // v1.12 Sprint 2 Task 04. v1.14 Sprint 1 Task 01 adds the opts
 // parameter for the step-up flow.
-func BuildAuthnRequestURL(p *Provider, relayState string, opts AuthnRequestOptions) (*url.URL, error) {
+func BuildAuthnRequestURL(p *Provider, relayState string, opts AuthnRequestOptions) (*url.URL, string, error) {
 	if p == nil || p.SP == nil {
-		return nil, fmt.Errorf("saml: provider service provider is nil")
+		return nil, "", fmt.Errorf("saml: provider service provider is nil")
 	}
-	// Fast path: no step-up options requested. Use the crewjam helper
-	// directly so non-step-up SSO behaves identically to the v1.12
-	// shape.
-	if !opts.ForceAuthn && opts.RequestedACRClass == "" {
-		u, err := p.SP.MakeRedirectAuthenticationRequest(relayState)
-		if err != nil {
-			return nil, fmt.Errorf("saml: build authn request: %w", err)
-		}
-		return u, nil
-	}
-
-	// Step-up path: construct the AuthnRequest manually so we can
-	// stamp ForceAuthn + RequestedAuthnContext per-request. Mutating
-	// the underlying ServiceProvider's fields would race other
-	// requests (the SP is shared across handlers).
+	// One path for every request shape. There used to be a "fast path"
+	// calling MakeRedirectAuthenticationRequest for the non-step-up
+	// case, but that helper is literally
+	//
+	//	req, _ := sp.MakeAuthenticationRequest(
+	//	    sp.GetSSOBindingLocation(HTTPRedirectBinding),
+	//	    HTTPRedirectBinding, HTTPPostBinding)
+	//	return req.Redirect(relayState, sp)
+	//
+	// — the same three arguments the step-up path already passed. So
+	// collapsing them is byte-identical, and it lets the AuthnRequest's
+	// ID escape, which the fast path buried inside the helper.
+	//
+	// The ID is the whole point: it is SAML's only correlator between
+	// the request we issued and the assertion that comes back (there is
+	// no nonce, no PKCE). Returning it lets the caller stash it in the
+	// signed state cookie and hand it back at the ACS as the
+	// InResponseTo allow-list — SAML's analogue of OIDC's `state`
+	// cross-check. Without it the ACS cannot tell an assertion answering
+	// OUR request from one replayed by an attacker.
 	req, err := p.SP.MakeAuthenticationRequest(
 		p.SP.GetSSOBindingLocation(crewjamsaml.HTTPRedirectBinding),
 		crewjamsaml.HTTPRedirectBinding,
 		crewjamsaml.HTTPPostBinding,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("saml: build authn request: %w", err)
+		return nil, "", fmt.Errorf("saml: build authn request: %w", err)
 	}
 	if opts.ForceAuthn {
 		forceAuthn := true
@@ -121,7 +126,7 @@ func BuildAuthnRequestURL(p *Provider, relayState string, opts AuthnRequestOptio
 	}
 	u, err := req.Redirect(relayState, p.SP)
 	if err != nil {
-		return nil, fmt.Errorf("saml: build authn request redirect: %w", err)
+		return nil, "", fmt.Errorf("saml: build authn request redirect: %w", err)
 	}
-	return u, nil
+	return u, req.ID, nil
 }

@@ -91,6 +91,21 @@ type StateCookieClaims struct {
 	// user. Empty when anonymous (e.g. fresh login — tolerated but
 	// typically not a step-up case).
 	CallingUserID string `json:"cuid,omitempty"`
+	// RequestID is the ID of the AuthnRequest this flow issued. The ACS
+	// hands it back as the InResponseTo allow-list, so an assertion is
+	// only accepted if it answers the request WE made.
+	//
+	// This is SAML's analogue of OIDC's `state` cross-check, and the
+	// only correlator the protocol offers here — there is no nonce and
+	// no PKCE. It matters most on the LINK leg: without it, an attacker
+	// who times a victim's link window could have the victim's browser
+	// POST an assertion for the ATTACKER's identity, and the ACS would
+	// bind the attacker's IdP identity to the victim's account.
+	//
+	// Empty means IdP-initiated (no request preceded the assertion) —
+	// the ACS must fall through to LOGIN there, not reject, and the
+	// AllowIdPInitiated policy gate decides whether that is permitted.
+	RequestID string `json:"rid,omitempty"`
 	// Mode is ModeLogin (default) for the public sign-in flow or
 	// ModeLink for an authenticated link round-trip. Empty mode reads
 	// as ModeLogin so cookies signed by older /login flows still

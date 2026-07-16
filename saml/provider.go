@@ -182,19 +182,49 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 		//     a check that has never once passed, on a config where
 		//     nothing worked at all.
 		//
-		// Nothing that presently succeeds is weakened. What changes is
-		// that the false config stops being a total outage.
-		//
-		// LIMITATION, stated plainly: with this true, crewjam does not
-		// validate InResponseTo anywhere (it is checked in TWO places —
-		// validateRequestID and the SubjectConfirmation loop in
-		// validateAssertion — and the ValidateRequestID hook only
-		// overrides the first, so a hook cannot rescue the false path).
-		// A consumer that genuinely tracks outstanding AuthnRequest ids
-		// and wants them enforced needs a real replay defence: a request
-		// tracker plus a knob distinct from this policy flag. Nobody has
-		// asked, so no contract is frozen for it here.
+		// Setting it true ALSO disables crewjam's second, unhookable
+		// InResponseTo check (the SubjectConfirmation loop in
+		// validateAssertion), which has the same empty-list defect. That
+		// is what clears the way for ValidateRequestID below to enforce
+		// the correlation properly — the two crewjam checks are
+		// all-or-nothing and broken; ours is neither.
 		AllowIDPInitiated: true,
+
+		// ValidateRequestID replaces crewjam's request-ID gate with one
+		// that can actually be satisfied. It fully overrides
+		// validateRequestID, and with AllowIDPInitiated=true above the
+		// only other InResponseTo check is skipped — so this hook is the
+		// single decision point.
+		//
+		//   - No ids supplied  => nothing to correlate against. Allow,
+		//     and let the app's post-parse gate decide whether an
+		//     IdP-initiated assertion is permitted at all
+		//     (ParsedAssertion.IdPInitiated()). This is the
+		//     missing-cookie -> LOGIN fallthrough that makes
+		//     IdP-initiated SSO legitimate; rejecting here would break
+		//     Okta tiles / Azure "My Apps".
+		//   - Ids supplied     => the caller issued an AuthnRequest and
+		//     stashed its ID. The assertion MUST answer that request.
+		//
+		// The second case is the replay defence SAML otherwise lacks
+		// entirely: no nonce, no PKCE, and — before this — no
+		// InResponseTo binding either, so any IdP-signed assertion was
+		// accepted by any flow. That is benign-ish on the login leg
+		// (the assertion still proves who the subject is) and dangerous
+		// on the LINK leg, where the flow's own cookie decides WHOSE
+		// account the identity attaches to.
+		ValidateRequestID: func(response crewjamsaml.Response, possibleRequestIDs []string) error {
+			if len(possibleRequestIDs) == 0 {
+				return nil
+			}
+			for _, id := range possibleRequestIDs {
+				if id != "" && response.InResponseTo == id {
+					return nil
+				}
+			}
+			return fmt.Errorf("saml: InResponseTo %q does not answer this flow's AuthnRequest",
+				response.InResponseTo)
+		},
 		// Request EmailAddress NameID instead of crewjam's
 		// TransientNameIDFormat default. The transient default mints a
 		// per-session opaque subject, so every SAML round-trip stores a

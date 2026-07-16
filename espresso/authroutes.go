@@ -96,9 +96,19 @@ type AuthRoutesConfig struct {
 	OnTOTPEnrolledViaSession func(ctx context.Context, userID string)
 }
 
-// AuthRoutes is the mountable core-auth surface: register / login /
-// me / refresh / logout / the TOTP ceremony routes. Construct with
-// NewAuthRoutes, then Mount.
+// AuthRoutes is the core-auth surface: register / login / me / refresh
+// / logout / the TOTP ceremony routes. Construct with NewAuthRoutes,
+// then let the APP register the methods on its own router.
+//
+// There is deliberately no Mount. This surface spans both the public
+// block (register/login/refresh/logout) and the authed block
+// (me/totp/*), and Espresso's Router has no sub-router while Use is
+// positional — Get/Post snapshot the middleware stack at registration
+// — so a single Mount would have to register both blocks at one
+// middleware position. Handing registration back to the app also keeps
+// the auth boundary legible at the call site and leaves route paths,
+// which are app wire surface, app owned. FederationRoutes follows the
+// same shape; see PHASE4D-BOUNDARY-DECISION.md §A10.
 type AuthRoutes struct {
 	svc IdentityService
 	cfg AuthRoutesConfig

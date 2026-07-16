@@ -141,7 +141,7 @@ OnFederatedAssertion func(context.Context, SAMLVerified) (FederationOutcome, err
 5. **SAML missing-cookie falls through to LOGIN** (IdP-initiated legitimacy, `saml.go:453-459`) — must NOT reject.
 6. **Link leg: no fresh mint, reconcile skipped, email-conflict veto skipped** (`oidc.go:716`, `saml.go:482-503`). Guarded by the explicit `FederationOutcome.Linked` bool — a hook that mistakenly populates `Result.Tokens` on the link leg would leak an access token; a dedicated adapter test must assert the link response ships `"token":""` and no refresh cookie.
 7. **Single-use state cookie** — clear-cookie queued on every exchange/ACS exit (`oidc.go:790`, `saml.go:537`).
-8. **State-cookie redirect beats RelayState** (`saml.go:558-569`); both funnel through `SanitizeRedirect` (nil ⇒ deny-all-to-`/`).
+8. **State-cookie redirect beats RelayState** (`saml.go:558-569`). ~~both funnel through `SanitizeRedirect`~~ — **FACTUALLY WRONG, see A5.** The code sanitizes ONLY the IdP-echoed RelayState; the signed state-cookie redirect is used verbatim, and must stay that way (sanitizing it truncates `/account?linked=<id>` at the `?`). Obeying this clause literally reproduces the A5 bug in SAML; deleting SAML's RelayState sanitization to satisfy A5's old "one call site" wording ships an open redirect. Both errors are avoided by A5's actual rule: sanitize by PROVENANCE, not by count.
 9. **CanonicalVersion3 on step-up events only, absent on `auth.oidc.login`** — reproduced byte-identically by the app `EventSink`; tamper never emits a federation audit row itself (NON-goals #9/#10). Audit-row byte-diff is the gate.
 10. **Provider/state cross-check** (`oidc.go:662-666`) — provider mismatch and state mismatch both → `INVALID_STATE`.
 
@@ -150,11 +150,11 @@ OnFederatedAssertion func(context.Context, SAMLVerified) (FederationOutcome, err
 # Amendments (ratified during 4d-3)
 
 The decision above was written against the **pre-4d-2** tree. A1–A8 were
-ratified in 4d-3a, from building the byte-golden instrument; **A9 was
-ratified in 4d-3b**, caught by adversarial review of the hook
-extraction. Between them they mark nine places where the plan
-contradicts the code, tamper's landed 4c surface, or Espresso itself.
-The code is the authority. Each amendment below supersedes the
+ratified in 4d-3a, from building the byte-golden instrument; **A9** in
+4d-3b, caught by adversarial review of the hook extraction; **A10** in
+4d-3c, which supersedes A1. Between them they mark ten places where the
+plan contradicts the code, tamper's landed 4c surface, or Espresso
+itself. The code is the authority. Each amendment below supersedes the
 corresponding text above; 4d-4 (SAML) inherits all of them.
 
 **Line refs above are stale.** 4d-2 shifted them. Live anchors:
@@ -162,7 +162,7 @@ corresponding text above; 4d-4 (SAML) inherits all of them.
 `StartOIDC` `:190-243`; `StartOIDCLink` `:282-314`; `urlValue`
 `:939-953`; state-cookie config `:899-921`; link redirect `:630`.
 
-## A1 — `Mount` cannot span the public/authed split. Use `Mount` + `MountLink`.
+## A1 — `Mount` cannot span the public/authed split — **SUPERSEDED BY A10 (there is no Mount at all)**
 
 The plan's `func (f *FederationRoutes) Mount(r *espresso.Router) //
 start/callback/exchange (+link-start)` is **structurally impossible**,
@@ -258,7 +258,7 @@ smuggled into a "no-op delegation". Note tamper's error return is
 `espresso.JSON[ExchangeRes]{}`, which structurally cannot carry cookies,
 so reproduce-as-is is free and the fix is real work.
 
-## A5 — `SanitizeRedirect` has exactly ONE call site. It must NEVER touch `FederationOutcome.Redirect`.
+## A5 — Sanitize every attacker-controlled redirect input; NEVER re-process the app's own output.
 
 **The most dangerous line in the original plan** is invariant #8's
 "both funnel through `SanitizeRedirect`". Applied to the hook's output
@@ -276,12 +276,32 @@ dies — with no error anywhere. **This is not theoretical:** mutating
 `TestOIDCGolden_ExchangeLinkLegWire` fail with
 `"redirect":"/account"`, exactly as predicted.
 
-**Ratified:** `SanitizeRedirect` gates the `?redirect=` **query param on
-the start leg only**, before `StartOIDCFlow` (whose doc already declares
-its input "ALREADY-SANITIZED"). `FederationOutcome.Redirect` is
-app-constructed and trusted **verbatim**. The link redirect at
-`oidc.go:630` is server-built, never user input, and deliberately
-un-sanitized.
+**Ratified — and worded carefully, because the obvious shorthand is
+dangerous.** The rule is NOT "sanitize exactly once globally". It is:
+
+> Sanitize every **attacker-controlled** redirect input.
+> Never re-process a value the **app itself produced**.
+
+Concretely:
+
+- **tamper** calls `SanitizeRedirect` exactly once, on the start leg's
+  `?redirect=` query param, before `StartOIDCFlow` (whose doc already
+  declares its input "ALREADY-SANITIZED").
+- **tamper never** applies it to `FederationOutcome.Redirect` — app-built,
+  trusted verbatim. The link redirect is server-constructed, never user
+  input, and deliberately un-sanitized.
+- **The app may have its own call sites, and sometimes MUST.** Barista's
+  `loginLeg` re-sanitizes the state cookie's stored redirect (idempotent
+  for allowlisted paths, defence-in-depth). **4d-4's SAML ACS has TWO
+  legitimate call sites**: the state-cookie redirect is used verbatim,
+  but the IdP-echoed **RelayState is attacker-controlled and MUST be
+  sanitized** — `saml.go:511-515` does exactly this today.
+
+An earlier draft of this amendment read "`SanitizeRedirect` has exactly
+ONE call site". That is true of tamper and false of the request path, and
+an implementer taking it literally into 4d-4 would delete SAML's
+RelayState sanitization and ship an **open redirect**. The invariant is
+about *provenance*, not *arity*.
 
 ## A6 — `splitACRValuesCSV` moves into tamper (reverses 4d-1's "keeps").
 
@@ -406,6 +426,61 @@ app-facing values is the recurring hazard in this phase.
 receive the resolved provider rather than re-derive it from
 `SAMLVerified.ProviderID` — the ACS leg has the identical
 burned-artifact property (the assertion is single-use).
+
+## A10 — There is no `Mount`. Federation follows AuthRoutes' shape: the APP registers.
+
+**Supersedes A1**, which was still solving the wrong problem.
+
+A1 correctly proved the plan's single `Mount(r)` is structurally impossible
+(Espresso's Router has no sub-router; `Use` is positional, so one Mount
+call registers every route at one middleware position, while this surface
+spans the public block *and* the authed link-start). A1's fix was
+`Mount` + `MountLink`.
+
+But A1 never asked the prior question: **does the landed 4c surface have a
+`Mount` at all?** It does not. `AuthRoutes` exposes handler methods;
+`authRoutesFor(state)` builds the adapter **per request** (cheap — validation
+plus a struct), Barista's thin wrappers delegate, and `server.go` keeps its
+registration. The `AuthRoutes` doc comment saying *"Construct with
+NewAuthRoutes, then Mount"* is stale aspiration, not shipped design.
+
+That matters because `AuthRoutes` spans the **identical** public/authed
+split (register/login/refresh public; me/totp/enroll authed) and would hit
+A1's problem in exactly the same way. It didn't, because it never took
+ownership of registration.
+
+**Ratified:** `FederationRoutes` mirrors `AuthRoutes` — construct with
+`NewFederationRoutes`, and the app registers the methods on its own router.
+No `Mount`, no `MountLink`.
+
+Why this is better than A1's fix, not merely easier:
+
+- **Coherence.** "Auth routes: you register; federation routes: we register"
+  is not a framework story anyone can hold in their head. One shape for both.
+- **The auth boundary stays legible at the call site.** `server.go` shows
+  which routes sit under `RequireAuth` by *where they are written*. Option
+  (B) from A1 — injecting `RequireAuth` into `FederationConfig` — would have
+  hidden the security boundary inside a config field.
+- **Route paths are app wire surface.** `/api/auth/oidc/start/{id}` is
+  Barista's URL, not tamper's. A framework that registers paths owns them.
+- **Byte parity for free.** Registration shapes never change, so the whole
+  class of "did the middleware chain shift?" failures cannot occur — which
+  is precisely what 4d-3c is trying to prove.
+
+**Consequence for 4d-5.** Its stated goal — *"FederationRoutes.Mount
+collapses the server.go registration blocks"* — is void. There is no
+collapse to perform; the registration blocks are correct as they are and
+now delegate one level deeper. 4d-5 reduces to confirming the residue
+(provider-union DTO + sort, `lookupOIDCRegistry`, Unlink/List CRUD) is
+deliberate and app-side, which the plan already predicted.
+
+**Consequence for 4d-4.** SAML gets the same shape: methods on
+`SAMLRoutes`, app registers. Do not introduce a Mount there either.
+
+**If a Mount is ever wanted**, it belongs to BOTH surfaces at once, as its
+own PR, and it needs an Espresso sub-router (or a route-group primitive)
+to exist first — that is an Espresso feature request, not a tamper
+workaround. Filed as the natural home for the F-09-style upstream asks.
 
 ## Carried debt opened by 4d-3a
 

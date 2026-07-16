@@ -3,10 +3,12 @@ package espresso
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
 	"github.com/suryakencana007/barista/packages/tamper/identity"
+	"github.com/suryakencana007/barista/packages/tamper/oidc"
 )
 
 // WireV1 — the versioned default wire contract for the mounted auth
@@ -70,6 +72,66 @@ type TOTPEnrollSessionRes struct {
 	RecoveryCodes []string        `json:"recovery_codes,omitempty"`
 	Token         string          `json:"token,omitempty"`
 	User          json.RawMessage `json:"user,omitempty"`
+}
+
+// ExchangeReq is the body of POST {prefix}/oidc/exchange — the code +
+// state the SPA read back off the landing fragment.
+type ExchangeReq struct {
+	ProviderID string `json:"provider_id"`
+	Code       string `json:"code"`
+	State      string `json:"state"`
+}
+
+// ExchangeRes is the body of a successful /oidc/exchange.
+//
+// Token has NO omitempty, deliberately, and unlike AuthRes.Token which
+// does: the link leg ships the LITERAL `"token":""`. Adding omitempty
+// here "for consistency" drops the key and the SPA reads undefined.
+// Field ORDER is wire surface too — encoding/json emits declaration
+// order, so this is token,user,redirect on the wire.
+type ExchangeRes struct {
+	Token    string          `json:"token"`
+	User     json.RawMessage `json:"user"`
+	Redirect string          `json:"redirect,omitempty"`
+}
+
+// LinkStartRes is the body of POST {prefix}/oidc/link-start/{id}.
+//
+// The tag is camelCase `authUrl`, diverging from every other WireV1 tag
+// (session_token / otpauth_uri / provider_id). That is the proving
+// app's existing wire; copy the bytes, not the convention. Writing
+// auth_url from muscle memory breaks the SPA's link flow.
+type LinkStartRes struct {
+	AuthURL string `json:"authUrl"`
+}
+
+// mapFederationVerifyError translates the OIDC verification sentinels
+// to WireV1 codes.
+//
+// Two shapes here are load-bearing and must not be "cleaned up":
+//
+//   - The default is INVALID_IDTOKEN, not INTERNAL. There is no
+//     validation oracle for an IdP-supplied token; an unrecognised
+//     failure is still the token's fault, not ours.
+//   - Everything here is 401 EXCEPT the exchange failure, which is 502:
+//     the IdP is a separate upstream, and its outage is not the
+//     caller's error. The mode-dispatch errors (elsewhere) are 400s.
+//     That 401/400 asymmetry on one code string is intentional —
+//     INVALID_STATE means "your cookie is wrong" on the verify path and
+//     "your cookie says something impossible" on dispatch.
+func mapFederationVerifyError(err error) error {
+	switch {
+	case errors.Is(err, ErrOIDCState):
+		return espressofw.ErrUnauthorized("oidc state invalid").WithCode("INVALID_STATE")
+	case errors.Is(err, ErrOIDCExchange):
+		return espressofw.NewError(http.StatusBadGateway, "idp token exchange failed").WithCode("IDP_ERROR")
+	case errors.Is(err, ErrOIDCNoIDToken):
+		return espressofw.ErrUnauthorized("idp returned no id token").WithCode("INVALID_IDTOKEN")
+	case errors.Is(err, oidc.ErrNonceMismatch):
+		return espressofw.ErrUnauthorized("nonce mismatch").WithCode("INVALID_NONCE")
+	default:
+		return espressofw.ErrUnauthorized("id token invalid").WithCode("INVALID_IDTOKEN")
+	}
 }
 
 // mapAuthWireError translates identity sentinels to the WireV1 error

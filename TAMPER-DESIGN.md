@@ -106,6 +106,45 @@ Every lift follows the same four steps, and Barista stays green throughout:
    compile-time guard (`var _ *tamper.SQLiteLogger = (*SQLiteLogger)(nil)`).
 4. **Delete** the duplicated implementation. The façade keeps ~all call
    sites untouched.
+5. **Move the tests with the mechanic — and prove they still bite.**
+   This step is not bookkeeping; skipping it silently disarms coverage.
+
+**Why step 5 exists (4d-5, the hard way).** `golangci-lint unused` does
+NOT protect you here: **a test calling a function counts as usage.** So
+when a lift moves production onto tamper, any app-side helper still
+referenced by a test stays alive, stays green, and stops tracking
+production — the tests keep the corpse warm and the linter quiet. The
+coverage doesn't disappear, which would be noticed. It reports itself as
+present while guarding nothing.
+
+Two live examples, both found by mutation AFTER 4d-4c shipped green:
+
+- Barista wiring `SameSite=Lax` for the SAML state cookie — **TD-FUNC-28
+  verbatim**, the HIGH bug that silently killed link mode + step-up on
+  every real IdP — compiled and passed **every test in the repo**, all 32
+  SAML tests and 7 E2E legs included. Its regression guard was calling a
+  vacated app-side builder.
+- **Deleting tamper's cross-provider replay defense** — a security
+  control — passed every test in BOTH modules. The check was implemented
+  in tamper and guarded only in Barista, against the app-side copy.
+
+The mechanical rule:
+
+- After a lift, grep each vacated helper for **non-test** callers. Zero
+  production callers + live tests = a corpse the tests are propping up.
+  Delete it and repoint the test at the real path.
+- Tests for a mechanic live in the module that OWNS the mechanic. A test
+  left behind in the app tests the app's copy, definitionally.
+- Prove it with a mutation, don't infer it: break the property in the
+  PRODUCTION path and watch the test go red. **A mutant that fails to
+  compile proves nothing** — verify it builds first, or a green suite is
+  just measuring your typo.
+
+The deeper form: an extraction moves the code but not automatically the
+thing that was watching it. Ask "what was guarding this, and is it still
+pointed at where the code went?" — the answer after 4d-4c was no, three
+times, in a lift whose whole premise was that its instrument would catch
+exactly this.
 
 **Seams stay app-side.** Two precedents from Phase 0:
 

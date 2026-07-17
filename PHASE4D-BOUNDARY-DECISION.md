@@ -208,7 +208,7 @@ for the real registration. No SAML byte-golden exists and none is needed:
 OIDC's golden pinned a JSON wire envelope; SAML's answer is a 302, whose
 bytes the E2E already asserts.
 
-### 4d-5 — Route-registration collapse + residue confirmation — **PREMISE VOID (A10): there is no Mount, so there is no collapse**
+### 4d-5 — Route-registration collapse + residue confirmation — **collapse PREMISE VOID (A10); the residue confirmation found live decay — see A11**
 - ~~`FederationRoutes.Mount` collapses the `server.go` registration blocks.~~ **Void.** A10: there is no Mount — `AuthRoutes` spans the same public/authed split and solved it by leaving registration to the app, and Espresso has no sub-router while `Use` is positional. The registration blocks are CORRECT as they are; post-lift they simply delegate one level deeper. What survives of 4d-5 is the residue confirmation below — and `server_saml_wiring_test.go` now pins the registration directly, which is the coverage this bullet was reaching for. **Explicitly leave app-side, co-mounted:** `ListOIDCProviders` union+sort (`oidc.go:94-149`), `lookupOIDCRegistry` (`oidc.go:160-172`), `UnlinkIdentity`/`ListIdentities` CRUD (`oidc.go:411-483`) — these carry cross-protocol merge policy and `IdentityRes` presentation, not federation spine. **This is the correction to the plan's overstated "~all of oidc.go + saml.go delete" (`PHASE4-TRANSPORT-PLAN.md:270`)** — expect a materially thinner but non-empty residue.
 - **Parity:** full route-matrix parity test + container-mode DoD walk boots.
 
@@ -588,3 +588,68 @@ workaround. Filed as the natural home for the F-09-style upstream asks.
   behaviour by `TestOIDCGolden_CallbackIdPErrorIsRawBytes` so the lift
   reproduces it rather than drifting it. Fix = run `q.Error` through the
   dropper; own PR, fragment-byte change.
+
+## A11 — 4d-5's residue confirmation found live decay, not residue. A lift must move its tests.
+
+4d-5 was scoped as a rubber-stamp: A10 voided the `Mount` collapse, so
+all that remained was confirming the app-side residue was the *intended*
+residue. It wasn't a rubber-stamp. It found that **4d-4c shipped fully
+green while silently disarming three guards.**
+
+**The mechanism.** `golangci-lint unused` cannot see this class of decay,
+because **a test calling a function counts as usage.** When 4d-4c moved
+production onto tamper, the vacated app-side helpers stayed referenced by
+their own tests. So they stayed alive, stayed green, and stopped tracking
+production. Coverage that *disappears* gets noticed; coverage that
+reports itself as present while guarding a corpse does not.
+
+**What was actually unguarded** (each proven by a compiling mutation, run
+against `main` post-#459):
+
+1. **TD-FUNC-28, reintroducible in one line.** Wiring `SameSite=Lax` in
+   `saml_tamper.go` — verbatim the HIGH bug that silently killed link
+   mode + step-up on every real IdP for multiple milestones — compiled
+   and passed **every test in the repo**: all 32 SAML tests, all 7 ACS
+   E2E legs. Its regression guard,
+   `TestTDFUNC28_SAMLStateCookie_AttributesTrackSecure`, was calling the
+   vacated `samlStateCookie()`. Its docstring still claimed to pin "the
+   real cookies."
+2. **Cross-provider replay defense, a security control.** Deleting
+   tamper's `claims.ProviderID != providerID` check passed every test in
+   **both** modules. Implemented in tamper; guarded only in Barista,
+   against the app-side copy.
+3. **Two independent state-cookie name builders.** tamper SET via
+   `StateCookieConfig.Name()` (`"__Host-"+BaseName`); server.go READ via
+   a local picker returning `saml.StateCookieNameSecure`. They agreed
+   only because that constant happened to be spelled
+   `"__Host-barista_saml_state"` in another file. Nothing enforced it.
+   Drift → cookie set under one name, read under another → `hasState`
+   false → **link mode silently degrades to login**. Identical failure
+   to the 4d-4c slot drift, one level down. OIDC was already immune
+   (one source); OIDC's own constants were meanwhile **already dead**,
+   orphaned unnoticed by 4d-3c because `oidcStateCookieConfig` spelled
+   the brand as a literal.
+
+**The fix is structural, not more tests.** `samlStateCookieConfig` is now
+the single source feeding both the setter and `SAMLStateCookieNameFor`,
+so reader/writer disagreement is unrepresentable rather than
+merely tested-for. Both `StateCookieNameSecure` constants are gone —
+tamper derives the prefix. The tests moved to the module that owns the
+mechanic (`packages/tamper/espresso/samlroutes_state_test.go`), and both
+mutations above now go red.
+
+**The rule, promoted into the playbook** (TAMPER-DESIGN.md step 5): after
+a lift, grep each vacated helper for **non-test** callers — zero
+production callers + live tests means a corpse the tests are propping up.
+Tests live with the mechanic. Prove with a mutation that *compiles*; a
+mutant that fails to build is indistinguishable from a test that misses.
+
+**The uncomfortable part, recorded deliberately.** 4d-4c's entire premise
+was that its instrument would catch exactly this class of silent,
+production-only, test-invisible failure — and it did catch the slot
+drift. But the instrument itself decayed in the same commit, and nothing
+in the review, the gates, the lint pass, or the 684-line diff surfaced
+it. It took deliberately breaking the code to find out. **Green is not
+evidence that a guard fired; it is only evidence that nothing was
+observed to fail.** A guard never seen to fire is decoration — including,
+and especially, one you wrote yourself two PRs ago.

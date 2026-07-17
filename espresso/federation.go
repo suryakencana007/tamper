@@ -171,6 +171,21 @@ func NewFederationRoutes(cfg FederationConfig, hooks FederationHooks) (*Federati
 	if cfg.StateCookie.Secure && cfg.StateCookie.Path != "/" {
 		return nil, errors.New(`tamper/espresso: a Secure state cookie uses the __Host- prefix, which requires Path="/"`)
 	}
+	// SameSite must be stated EXPLICITLY. The zero value resolves to Lax,
+	// which is correct for OIDC and catastrophically wrong for SAML — and
+	// a config written by copying the OIDC one omits the field, so the
+	// wrong answer is what a copy-paste silently produces. That is
+	// TD-FUNC-28's exact shape (SAML link + step-up dead on every
+	// cross-domain IdP, login still working so nobody notices).
+	//
+	// Requiring the field costs one line per call site and makes the
+	// silent-default trap unrepresentable — the same fence Secure/__Host-
+	// already gets. If it were merely defaulted, the failure would be
+	// production-only: dev runs HTTP where Lax works.
+	if cfg.StateCookie.SameSite == 0 {
+		return nil, errors.New("tamper/espresso: StateCookie.SameSite must be set explicitly — " +
+			"the zero value silently means Lax, which breaks any flow whose IdP hands control back via cross-site POST (see TD-FUNC-28)")
+	}
 	// SameSite=None without Secure is rejected outright by browsers, so
 	// the cookie would simply never be set — a silent, runtime-only
 	// failure. Fail at wiring instead (TD-FUNC-28).

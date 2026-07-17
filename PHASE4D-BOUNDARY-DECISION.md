@@ -102,24 +102,114 @@ func (f *FederationRoutes) Mount(r *espresso.Router) // start/callback/exchange 
 - **Barista deletes:** the `ExchangeOIDC` orchestration shell + `dto.OIDCExchangeRes`; `CallbackOIDC` fragment builder (`oidc.go:598-627`) + `urlValue` (`oidc.go:1093`) move behind the shell with `OIDCLandingPath` + `SanitizeRedirect` injected. **Barista's `OnFederatedExchange` impl** contains, verbatim and app-side: `UpsertOIDCUser` → `ReconcileGroupMembership` → `IssueTokensForUserWithACR` → `emitOIDCAudit`/step-up → `effectiveRoleForUser` projection → `SanitizeRedirectPath` (`oidc.go:704-808`). The email-conflict veto stays inside `AuthService.UpsertOIDCUser`; tamper only maps the sentinel.
 - **Parity:** HTTP golden-diff of `/exchange` — **both** mode branches, the link-branch literal `"token":""`, single-use `clearOIDCStateCookie`, Set-Cookie attribute parity.
 
-### 4d-4 — SAML spine + single hook *(highest risk)*
-```go
-type SAMLVerified struct {
-    ProviderID string
-    Assertion  *saml.ParsedAssertion // already-validated tamper view (pre-work landed)
-    State      saml.StateCookieClaims
-    HasState   bool
-    RelayState string
-}
-// hooks add:
-OnFederatedAssertion func(context.Context, SAMLVerified) (FederationOutcome, error)
-```
-- Lifts: `SAMLLogin` start + `AuthnRequestOptions` forwarding (`saml.go:171-224`), ACS `ParseAssertion` + `AllowIdPInitiated` gate (`saml.go:405-413`), `readSAMLStateCookie` verify (`saml.go:586-606`), mode dispatch + the **missing-cookie→LOGIN fallthrough** invariant (`saml.go:453-459`), `SAMLMetadataHandler` (`saml.go:620-641`). `AllowIdPInitiated` injected as `FederationConfig` bool — **confirm it is static boot config, not DB-reloadable**, else keep it as a `RegistrySource` accessor.
-- **Barista's `OnFederatedAssertion` impl** keeps: `AttributeMapping*` reads (`saml.go:416-431`), `LinkSAMLIdentity` vs `UpsertSAMLUser`, reconcile, mint, `emitSAMLLoginAudit`, redirect precedence (state-cookie beats RelayState, `saml.go:558-569`).
-- **Parity:** ACS fake-IdP harness covering IdP-initiated fallthrough, link leg (no mint), and step-up; dedicated adapter tests for the missing-cookie→LOGIN invariant and CanonicalVersion3.
+### 4d-4 — SAML spine + single hook *(highest risk)* — **REWRITTEN 2026-07-17; the original sketch was wrong in six ways**
 
-### 4d-5 — Route-registration collapse + residue confirmation
-- `FederationRoutes.Mount` collapses the `server.go` registration blocks. **Explicitly leave app-side, co-mounted:** `ListOIDCProviders` union+sort (`oidc.go:94-149`), `lookupOIDCRegistry` (`oidc.go:160-172`), `UnlinkIdentity`/`ListIdentities` CRUD (`oidc.go:411-483`) — these carry cross-protocol merge policy and `IdentityRes` presentation, not federation spine. **This is the correction to the plan's overstated "~all of oidc.go + saml.go delete" (`PHASE4-TRANSPORT-PLAN.md:270`)** — expect a materially thinner but non-empty residue.
+> **Read this block, not the git history of it.** The original sketch is
+> preserved nowhere on purpose: it was the text an implementer opens
+> first, and every one of its errors was the kind that ships a bug. The
+> plan was **0-for-5 on SAML** (invariants #7 and #8, the
+> `AllowIdPInitiated` lift, the Lax cookie, and this sketch). Verify
+> against code, not against this file.
+
+**Status:** 4d-4a (signing IdP harness + ACS end-to-end coverage) and
+4d-4b (post-verify tail behind one app-side hook) have LANDED. What
+remains is 4d-4c, the lift.
+
+```go
+// SAMLVerified — what tamper hands the hook.
+type SAMLVerified struct {
+    Assertion  *saml.ParsedAssertion // validated, library-free view
+    State      saml.StateCookieClaims
+    HasState   bool                  // EXPLICIT: cookie-less is legitimate IdP-initiated, not an error
+    RelayState string                // IdP-echoed; ATTACKER-CONTROLLED
+}
+
+// SAMLOutcome — NOT FederationOutcome. See correction 2.
+type SAMLOutcome struct {
+    Tokens   identity.Tokens // empty on the link leg
+    Redirect string          // trusted verbatim; the hook already chose it by provenance
+    Linked   bool            // EXPLICIT, never inferred from empty Tokens
+}
+
+// The hook RECEIVES the resolved provider. See correction 1.
+OnFederatedAssertion func(context.Context, *saml.Provider, SAMLVerified) (SAMLOutcome, error)
+```
+
+**Correction 1 — the hook takes the resolved `*saml.Provider` (A9).** The
+old sketch passed `ProviderID` only, which forces the hook to re-resolve
+from the registry. That lookup lands AFTER the single-use assertion is
+consumed, where a TTL rebuild can 404/500 a request that already
+succeeded — with no retry path. A9's closing paragraph already said this;
+the sketch above it did not, and the sketch is what gets read.
+
+**Correction 2 — SAML returns `SAMLOutcome`, not `FederationOutcome`.**
+The ACS answers with a **302, not JSON**: there is no user payload.
+Reusing OIDC's type drags a dead `User json.RawMessage` through the SAML
+path. The protocols genuinely differ at the wire; forcing a shared type
+is how a framework grows fields nobody sets. (Established in 4d-4b.)
+
+**Correction 3 — `AllowIdPInitiated` must NOT become a `FederationConfig`
+bool.** The old sketch said to inject it, and asked only whether it was
+"static boot config". Both the instruction and the question missed the
+point: **that gate was unreachable dead code** (TD-FUNC-26 — a total SAML
+outage on `allowIdPInitiated=false`, because crewjam rejected every
+assertion). It is now live and correct, and the value rides on
+`provider.Config.AllowIDPInitiated`. A third copy in `FederationConfig`
+is the A9 shape again. Read it off the provider the spine already holds;
+the POLICY decision stays app-side (the error code is Barista's
+vocabulary).
+
+**Correction 4 — the state cookie must be read BEFORE `ParseAssertion`.**
+It carries the AuthnRequest ID the parse needs as its `InResponseTo`
+allow-list (TD-FUNC-28's tracker). The old sketch listed
+"`readSAMLStateCookie` verify" after "`ParseAssertion`", which is the
+order the code had before 4d-4b and cannot work now.
+
+**Correction 5 — `StateCookie.SameSite` is REQUIRED and must be `None`
+under Secure.** The ACS is a cross-site POST; Lax never arrives
+(TD-FUNC-28). tamper now rejects a zero SameSite at wiring precisely so
+copying the OIDC config — which correctly omits it — fails loudly instead
+of silently shipping Lax to production.
+
+**Correction 6 — there is NO Mount (A10), and `LinkStart` cannot hardcode
+the redirect.** OIDC's `LinkStart` passes no redirect because its hook
+builds `"/account?linked="` later; SAML's link-start puts the target in
+the signed cookie at start time, so tamper's SAML `LinkStart` needs it as
+a parameter.
+
+**Lifts (verify the line refs; they move every PR):** `SAMLLogin` start +
+`AuthnRequestOptions` forwarding, ACS `ParseAssertion` + the request-ID
+allow-list, `readSAMLStateCookie` verify, mode dispatch + the
+**missing-cookie→LOGIN fallthrough** invariant, `SAMLMetadataHandler`
+(already returns tamper's `XML`).
+
+**Barista's `OnFederatedAssertion` keeps** (it is `saml_federation.go`
+today, unchanged by the lift): the `AllowIdPInitiated` gate,
+`AttributeMapping*` reads, `LinkSAMLIdentity` vs `UpsertSAMLUser`,
+reconcile, mint, the audits, and redirect precedence.
+
+**Redirect precedence — by PROVENANCE, three different answers (A5):**
+
+| value | provenance | correct handling |
+|---|---|---|
+| login-leg cookie redirect | already sanitized at `/login` before signing | re-sanitizing is a **no-op** |
+| link-leg cookie redirect | server-built `"/account?linked=<id>"`, never sanitized | **never** sanitize — it truncates at the `?` |
+| RelayState | IdP-echoed, attacker-controlled | **must** sanitize — dropping it is an open redirect |
+
+The old comment justified precedence with *"the IdP could tamper with
+RelayState though that would break the SAML signature"* — **false**: under
+HTTP-POST, RelayState is a plain form field, not covered by the
+signature. Fixed in 4d-4b.
+
+**Parity gate:** the 4d-4a instrument must pass **unchanged** — all four
+ACS legs (login / link / foreign-assertion rejection / IdP-initiated
+fallthrough) plus the three step-up cases, and `server_saml_wiring_test.go`
+for the real registration. No SAML byte-golden exists and none is needed:
+OIDC's golden pinned a JSON wire envelope; SAML's answer is a 302, whose
+bytes the E2E already asserts.
+
+### 4d-5 — Route-registration collapse + residue confirmation — **PREMISE VOID (A10): there is no Mount, so there is no collapse**
+- ~~`FederationRoutes.Mount` collapses the `server.go` registration blocks.~~ **Void.** A10: there is no Mount — `AuthRoutes` spans the same public/authed split and solved it by leaving registration to the app, and Espresso has no sub-router while `Use` is positional. The registration blocks are CORRECT as they are; post-lift they simply delegate one level deeper. What survives of 4d-5 is the residue confirmation below — and `server_saml_wiring_test.go` now pins the registration directly, which is the coverage this bullet was reaching for. **Explicitly leave app-side, co-mounted:** `ListOIDCProviders` union+sort (`oidc.go:94-149`), `lookupOIDCRegistry` (`oidc.go:160-172`), `UnlinkIdentity`/`ListIdentities` CRUD (`oidc.go:411-483`) — these carry cross-protocol merge policy and `IdentityRes` presentation, not federation spine. **This is the correction to the plan's overstated "~all of oidc.go + saml.go delete" (`PHASE4-TRANSPORT-PLAN.md:270`)** — expect a materially thinner but non-empty residue.
 - **Parity:** full route-matrix parity test + container-mode DoD walk boots.
 
 ---

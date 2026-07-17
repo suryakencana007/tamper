@@ -140,9 +140,9 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 	}
 
 	sp := &crewjamsaml.ServiceProvider{
-		EntityID:          cfg.EntityID,
-		Key:               cfg.SPKey,
-		Certificate:       cfg.SPCert,
+		EntityID:    cfg.EntityID,
+		Key:         cfg.SPKey,
+		Certificate: cfg.SPCert,
 		MetadataURL: *metadataURL,
 		AcsURL:      *acs,
 		IDPMetadata: idpMetadata,

@@ -16,9 +16,10 @@ import (
 // the port half; the app's adapter (Barista: internal/scimstore) is the
 // implementation half.
 //
-// This slice ships the UserStore port + its adapter. GroupStore, the
-// SavePatch method (the RFC 7644 §3.5.2 PATCH persist), and the handler
-// rewire follow in subsequent 4e slices — see PHASE4E-SCIM-SKETCH.md.
+// This file ships the UserStore + GroupStore ports and their adapters
+// (Barista: internal/scimstore). The SavePatch method (the RFC 7644
+// §3.5.2 PATCH persist) and the handler rewire onto these ports follow in
+// subsequent 4e slices — see PHASE4E-SCIM-SKETCH.md.
 
 // Store-port sentinels. The transport maps these onto the RFC 7644 §3.12
 // error envelope: ErrNotFound → 404, ErrConflict → 409 (scimType
@@ -96,4 +97,61 @@ type UserStore interface {
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context, startIndex, count int) (UserPage, error)
 	ListFiltered(ctx context.Context, startIndex, count int, where string, args []any) (UserPage, error)
+}
+
+// MemberRef is a SCIM group member (RFC 7643 §4.2.1). Type is "User" or
+// "Group"; an empty Type is treated as "User" (the SCIM v1.0 default).
+// On a read the app has already resolved the type; on a write the
+// transport passes the client's value verbatim and the adapter defaults
+// + validates. The transport builds members[].$ref from the base URL +
+// Value + Type; the record carries no $ref.
+type MemberRef struct {
+	Value string
+	Type  string
+}
+
+// GroupRecord is the neutral projection a GroupStore returns. Members is
+// the SCIM-sourced membership ONLY — the app filters out manual/OIDC rows
+// so the SCIM client sees only what it manages. Updated feeds the weak
+// ETag / meta.version.
+type GroupRecord struct {
+	ID          string
+	DisplayName string
+	ExternalID  string
+	Members     []MemberRef
+	Created     time.Time
+	Updated     time.Time
+}
+
+// GroupWrite is the RFC-parsed inbound shape a GroupStore persists.
+// ActorServiceAccountID is the calling service account the transport
+// resolves from the request Principal (the app attributes the write to
+// it). Members carry resolved-or-empty types; the adapter validates each
+// id exists, defaults a missing type to User, splits User/Group, and
+// refuses nesting a non-SCIM group through the SCIM channel.
+type GroupWrite struct {
+	DisplayName           string
+	ExternalID            string
+	Members               []MemberRef
+	ActorServiceAccountID string
+}
+
+// GroupPage is a resource page plus the (filtered) total.
+type GroupPage struct {
+	Groups []GroupRecord
+	Total  int
+}
+
+// GroupStore is the app-implemented SCIM Groups persistence port. Create
+// and Replace run the app's nested-group cycle check; a cyclic write
+// surfaces ErrCyclicGroup (defined in nesting.go), which the transport
+// maps to CIRCULAR_GROUP_REFERENCE. A member id the store can't resolve
+// folds to ErrInvalidInput.
+type GroupStore interface {
+	Create(ctx context.Context, w GroupWrite) (GroupRecord, error)
+	Get(ctx context.Context, id string) (GroupRecord, error)
+	Replace(ctx context.Context, id string, w GroupWrite) (GroupRecord, error)
+	Delete(ctx context.Context, id string) error
+	List(ctx context.Context, startIndex, count int) (GroupPage, error)
+	ListFiltered(ctx context.Context, startIndex, count int, where string, args []any) (GroupPage, error)
 }

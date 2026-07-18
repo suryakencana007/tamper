@@ -19,3 +19,15 @@ tasks:
   vet:
     command: 'go'
     args: ['vet', './...']
+  # golangci-lint over the whole module. No `deps` (unlike barista:lint,
+  # which needs web:build for the go:embed typecheck) — tamper embeds
+  # nothing. Walks up to the repo-root .golangci.yaml, so tamper is
+  # linted under the SAME curated rule set as Barista.
+  #
+  # This closes a real gap: tamper had test + vet in CI but never a lint
+  # pass, so `unused`/staticcheck findings in a tamper package Barista
+  # doesn't import were invisible — the exact blind spot that let 4d-4c's
+  # orphans through (they were caught in Barista, where lint DID run).
+  lint:
+    command: 'golangci-lint'
+    args: ['run', './...']

@@ -281,7 +281,13 @@ func (a *AuthRoutes) EnrollTOTP(ctx context.Context) (espressofw.JSON[TOTPEnroll
 	}
 	return espressofw.JSON[TOTPEnrollRes]{
 		StatusCode: http.StatusOK,
-		Data:       TOTPEnrollRes{OTPAuthURI: enr.OTPAuthURI, RecoveryCodes: enr.RecoveryCodes},
+		// Explicit field map, NOT TOTPEnrollRes(enr): enr is the port's
+		// return type and TOTPEnrollRes is the wire DTO (json tags).
+		// staticcheck S1016 flags the literal because the field sets
+		// coincide today, but a type conversion would COUPLE the two —
+		// a new field on the port type would auto-propagate onto the
+		// wire. The whole point of a separate DTO is that it can't.
+		Data: TOTPEnrollRes{OTPAuthURI: enr.OTPAuthURI, RecoveryCodes: enr.RecoveryCodes}, //nolint:staticcheck // S1016: boundary map, must stay explicit
 	}, nil
 }
 

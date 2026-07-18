@@ -266,7 +266,13 @@ func (m *MemStore) insertIdentityLocked(ni NewIdentity) error {
 			return fmt.Errorf("%w: %s/%s", ErrIdentityTaken, ni.Provider, ni.Subject)
 		}
 	}
-	m.identities[ni.ID] = Identity{
+	// Explicit map, NOT Identity(ni). NewIdentity is a COMMAND (the row
+	// the core asks the Store to insert); Identity is the persisted
+	// ENTITY. Their fields coincide today, which is why staticcheck
+	// S1016 suggests a conversion — but they have different lifecycles
+	// (an entity may later grow a version/updated-at the command lacks),
+	// and collapsing them via conversion asserts they are one type.
+	m.identities[ni.ID] = Identity{ //nolint:staticcheck // S1016: command->entity map, kept explicit on purpose
 		ID: ni.ID, UserID: ni.UserID, Provider: ni.Provider, Subject: ni.Subject,
 		LinkedAt: ni.LinkedAt, LastLoginAt: ni.LastLoginAt,
 	}
@@ -324,7 +330,10 @@ func (m *MemStore) ProvisionUserWithIdentity(_ context.Context, u NewUser, ni Ne
 		}
 	}
 	user := User{ID: u.ID, Email: u.Email, PasswordHash: u.PasswordHash, Active: true, CreatedAt: u.CreatedAt}
-	ident := Identity{ID: ni.ID, UserID: ni.UserID, Provider: ni.Provider, Subject: ni.Subject, LinkedAt: ni.LinkedAt, LastLoginAt: ni.LastLoginAt}
+	// Explicit map, NOT Identity(ni) — see the note in AddIdentity:
+	// NewIdentity is a command, Identity is the entity; the coinciding
+	// field sets (S1016) are incidental, not an invitation to couple them.
+	ident := Identity{ID: ni.ID, UserID: ni.UserID, Provider: ni.Provider, Subject: ni.Subject, LinkedAt: ni.LinkedAt, LastLoginAt: ni.LastLoginAt} //nolint:staticcheck // S1016: command->entity map, kept explicit
 	m.usersByID[u.ID] = user
 	m.emailToID[u.Email] = u.ID
 	m.identities[ni.ID] = ident

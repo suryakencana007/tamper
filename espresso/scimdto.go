@@ -106,3 +106,50 @@ type ListResponse struct {
 	ItemsPerPage int               `json:"itemsPerPage"`
 	Resources    []json.RawMessage `json:"Resources"`
 }
+
+// --- Discovery-endpoint shapes (RFC 7644 §5 / §6), lifted in 4e-5a. ---
+
+// ServiceProviderConfig is the GET /ServiceProviderConfig payload (RFC 7644 §5).
+type ServiceProviderConfig struct {
+	Schemas               []string        `json:"schemas"`
+	DocumentationURI      string          `json:"documentationUri"`
+	Patch                 SPCSupported    `json:"patch"`
+	Bulk                  SPCBulk         `json:"bulk"`
+	Filter                SPCFilter       `json:"filter"`
+	ChangePassword        SPCSupported    `json:"changePassword"`
+	Sort                  SPCSupported    `json:"sort"`
+	ETag                  SPCSupported    `json:"etag"`
+	AuthenticationSchemes []SPCAuthScheme `json:"authenticationSchemes"`
+	Meta                  ResourceMeta    `json:"meta"`
+}
+
+type SPCSupported struct {
+	Supported bool `json:"supported"`
+}
+
+type SPCBulk struct {
+	Supported      bool `json:"supported"`
+	MaxOperations  int  `json:"maxOperations"`
+	MaxPayloadSize int  `json:"maxPayloadSize"`
+}
+
+type SPCFilter struct {
+	Supported  bool `json:"supported"`
+	MaxResults int  `json:"maxResults"`
+}
+
+type SPCAuthScheme struct {
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Primary     bool   `json:"primary"`
+}
+
+// ResourceTypeEntry is one entry under GET /ResourceTypes.
+type ResourceTypeEntry struct {
+	Schemas  []string `json:"schemas"`
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Endpoint string   `json:"endpoint"`
+	Schema   string   `json:"schema"`
+}

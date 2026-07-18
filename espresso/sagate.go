@@ -2,10 +2,8 @@ package espresso
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/suryakencana007/barista/packages/tamper/audit"
@@ -105,25 +103,19 @@ func RequireServiceAccount(v ServiceAccountValidator) func(http.Handler) http.Ha
 // SCIMError is the JSON shape RFC 7644 §3.12 mandates for SCIM 2.0
 // errors.
 type SCIMError struct {
-	Schemas []string `json:"schemas"`
-	Status  string   `json:"status"`
-	ScimErr string   `json:"scimType,omitempty"`
-	Detail  string   `json:"detail"`
+	Schemas  []string `json:"schemas"`
+	Status   string   `json:"status"`
+	SCIMType string   `json:"scimType,omitempty"`
+	Detail   string   `json:"detail"`
 }
 
 // scimErrSchema is the canonical schema URN from RFC 7643 §3.12.
 const scimErrSchema = "urn:ietf:params:scim:api:messages:2.0:Error"
 
-// WriteSCIMError serialises a SCIMError envelope with the given HTTP
-// status. Always writes Content-Type: application/scim+json per the
-// RFC. Encode failures are best-effort — the status code has already
-// been written.
+// WriteSCIMError serialises a §3.12 error envelope with the given status
+// and no scimType (the SA-gate's 401 shape). Delegates to
+// WriteSCIMErrorTyped (scimerror.go) so every SCIM error — auth-gate or
+// resource-handler — renders through one writer.
 func WriteSCIMError(w http.ResponseWriter, status int, detail string) {
-	w.Header().Set("Content-Type", "application/scim+json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(SCIMError{
-		Schemas: []string{scimErrSchema},
-		Status:  strconv.Itoa(status),
-		Detail:  detail,
-	})
+	WriteSCIMErrorTyped(w, status, detail, "")
 }

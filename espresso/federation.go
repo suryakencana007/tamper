@@ -346,19 +346,32 @@ func (f *FederationRoutes) Callback(ctx context.Context, providerID string, p Ca
 		return Redirect{}, err
 	}
 	if p.Error != "" {
-		// NOTE: the IdP error is concatenated RAW, while the success
-		// path below drops fragment delimiters from every value. That
-		// asymmetry is the proving app's shipped behaviour, reproduced
-		// here verbatim rather than silently "fixed" during a lift.
-		// It is not a session-forgery vector — an injected code/state
-		// still has to survive the exchange's signed-state check, which
-		// an attacker cannot forge. Tracked as TD-OIDC-FRAGMENT-ESCAPE.
-		return Redirect{URL: f.cfg.LandingPath + "#error=" + p.Error + "&provider=" + providerID}, nil
+		// The IdP's ?error= is attacker-influenceable, so it runs through
+		// the SAME FragmentValue dropper as the success path — otherwise a
+		// value like "denied&code=…" injects a sibling fragment parameter
+		// into the landing page (TD-OIDC-FRAGMENT-ESCAPE, closed). Not a
+		// session-forgery vector — an injected code/state still has to
+		// survive the exchange's signed-state check, which an attacker
+		// cannot forge — but the landing route parses these params, so the
+		// error path must not bypass the defence the success path applies.
+		return Redirect{URL: f.cfg.LandingPath + idpErrorFragment(p.Error, providerID)}, nil
 	}
 	if p.Code == "" || p.State == "" {
-		return Redirect{URL: f.cfg.LandingPath + "#error=missing_params&provider=" + providerID}, nil
+		return Redirect{URL: f.cfg.LandingPath + idpErrorFragment("missing_params", providerID)}, nil
 	}
 	return Redirect{URL: f.cfg.LandingPath + BuildLandingFragment(p.Code, p.State, providerID)}, nil
+}
+
+// idpErrorFragment builds the IdP-rejection landing fragment. Like
+// BuildLandingFragment, every value runs through FragmentValue so a
+// malicious IdP's ?error= cannot inject sibling fragment parameters into
+// the landing page (TD-OIDC-FRAGMENT-ESCAPE). The '&'/'#'/'%' bytes that
+// would open a new parameter are dropped, collapsing an injection attempt
+// into the error value rather than a separate key. providerID is already
+// validated (f.provider rejects unknown ids) but runs through the dropper
+// too, for byte-parity with the success path.
+func idpErrorFragment(errVal, providerID string) string {
+	return "#error=" + FragmentValue(errVal) + "&provider=" + FragmentValue(providerID)
 }
 
 // BuildLandingFragment assembles the success fragment. Key names,

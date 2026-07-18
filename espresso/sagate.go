@@ -109,9 +109,6 @@ type SCIMError struct {
 	Detail   string   `json:"detail"`
 }
 
-// scimErrSchema is the canonical schema URN from RFC 7643 §3.12.
-const scimErrSchema = "urn:ietf:params:scim:api:messages:2.0:Error"
-
 // WriteSCIMError serialises a §3.12 error envelope with the given status
 // and no scimType (the SA-gate's 401 shape). Delegates to
 // WriteSCIMErrorTyped (scimerror.go) so every SCIM error — auth-gate or

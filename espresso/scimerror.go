@@ -31,7 +31,7 @@ func WriteSCIMErrorTyped(w http.ResponseWriter, status int, detail, scimType str
 	w.Header().Set("Content-Type", "application/scim+json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(SCIMError{
-		Schemas:  []string{scimErrSchema},
+		Schemas:  []string{SchemaError},
 		Status:   strconv.Itoa(status),
 		SCIMType: scimType,
 		Detail:   detail,

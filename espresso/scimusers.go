@@ -20,8 +20,10 @@ import (
 // if_match_present fact threads down via scim.WriteMeta so the audit row
 // stays byte-identical to the pre-lift handler.
 //
-// List + PATCH stay on the app handler until their own 4e slices; only the
-// four write-CRUD verbs (Create/Get/Replace/Delete) route here for now.
+// The full Users verb set now routes here — Create/Get/Replace/Delete
+// (4e-5b), PATCH (scimpatch.go, 4e-5d), List (scimlist.go, 4e-5e). Phase
+// 4e-6 deleted the app-side Users handler entirely; nothing stays app-side
+// but the /Me + Bulk surfaces (A2/A3) and the scim.UserStore port impl.
 
 // UsersCreate serves POST {prefix}/Users. Required: userName (or a primary
 // emails[] value when userName is omitted). Optional: externalId, active

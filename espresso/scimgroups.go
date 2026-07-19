@@ -18,7 +18,9 @@ import (
 // Principal into GroupWrite.ActorServiceAccountID, checks If-Match, maps the
 // §3.12 errors (incl. CIRCULAR_GROUP_REFERENCE), and renders the DTO.
 //
-// List + PATCH stay on the app handler until their own 4e slices.
+// The full Groups verb set now routes here — Create/Get/Replace/Delete
+// (4e-5c), PATCH (scimpatch.go, 4e-5d), List (scimlist.go, 4e-5e). Phase
+// 4e-6 deleted the app-side Groups handler entirely.
 
 // GroupsCreate serves POST {prefix}/Groups. Required: displayName. Optional:
 // externalId, members[] (User or Group type; unknown ids → 400). 201 with

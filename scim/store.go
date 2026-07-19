@@ -126,7 +126,11 @@ type UserStore interface {
 	// impl's redacted-ops audit row (the transport emits none — A3).
 	SavePatch(ctx context.Context, id string, w UserWrite, ops []Operation) (UserRecord, error)
 	List(ctx context.Context, startIndex, count int) (UserPage, error)
-	ListFiltered(ctx context.Context, startIndex, count int, where string, args []any) (UserPage, error)
+	// ListFiltered takes the RAW client filter string — the impl owns
+	// Parse+Translate (so it holds the ColumnMapping + the SQL dialect) and
+	// emits the read-audit with the raw filter (A3). A filter-syntax error
+	// folds to ErrInvalidFilter (transport → 400 invalidFilter).
+	ListFiltered(ctx context.Context, startIndex, count int, filter string) (UserPage, error)
 }
 
 // MemberRef is a SCIM group member (RFC 7643 §4.2.1). Type is "User" or
@@ -206,5 +210,6 @@ type GroupStore interface {
 	// the write, with no existence/If-Match ahead of it).
 	ValidateMembers(ctx context.Context, members []MemberRef) error
 	List(ctx context.Context, startIndex, count int) (GroupPage, error)
-	ListFiltered(ctx context.Context, startIndex, count int, where string, args []any) (GroupPage, error)
+	// ListFiltered takes the RAW client filter string (see UserStore).
+	ListFiltered(ctx context.Context, startIndex, count int, filter string) (GroupPage, error)
 }

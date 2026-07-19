@@ -32,7 +32,7 @@ func (stubUserStore) SavePatch(context.Context, string, scim.UserWrite, []scim.O
 func (stubUserStore) List(context.Context, int, int) (scim.UserPage, error) {
 	return scim.UserPage{}, nil
 }
-func (stubUserStore) ListFiltered(context.Context, int, int, string, []any) (scim.UserPage, error) {
+func (stubUserStore) ListFiltered(context.Context, int, int, string) (scim.UserPage, error) {
 	return scim.UserPage{}, nil
 }
 
@@ -56,7 +56,7 @@ func (stubGroupStore) SavePatch(context.Context, string, scim.GroupWrite, []scim
 func (stubGroupStore) List(context.Context, int, int) (scim.GroupPage, error) {
 	return scim.GroupPage{}, nil
 }
-func (stubGroupStore) ListFiltered(context.Context, int, int, string, []any) (scim.GroupPage, error) {
+func (stubGroupStore) ListFiltered(context.Context, int, int, string) (scim.GroupPage, error) {
 	return scim.GroupPage{}, nil
 }
 

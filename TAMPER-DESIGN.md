@@ -90,9 +90,9 @@ Shipped subpackages:
   (wedged between Resolve and Provision). Barista delegates all of it
   (Phases 2b/2c/2d).
 
-## The extraction playbook (proven twice — reuse it verbatim)
+## The extraction playbook (proven across Phase 0 → 4e — reuse it verbatim)
 
-Every lift follows the same four steps, and Barista stays green throughout:
+Every lift follows the same steps, and Barista stays green throughout:
 
 1. **Copy** the subsystem into `packages/tamper/<pkg>` with its tests;
    prove standalone via `moon run tamper:build tamper:test`.
@@ -108,6 +108,13 @@ Every lift follows the same four steps, and Barista stays green throughout:
    sites untouched.
 5. **Move the tests with the mechanic — and prove they still bite.**
    This step is not bookkeeping; skipping it silently disarms coverage.
+6. **Adversarially diff OLD vs NEW** — for a behavior-preserving lift, run
+   the parity review (`.claude/workflows/parity-review.js`) before shipping.
+   It has caught a real break the passing golden suite missed on EVERY 4e
+   SCIM lift (4e-5b: a concurrent-write audit race; 4e-5c: a 400-vs-500
+   member error + a validation-precedence inversion). The golden suite tests
+   happy paths; the review hunts the doubly-malformed / infra-fault /
+   concurrency edges it never exercises.
 
 **Why step 5 exists (4d-5, the hard way).** `golangci-lint unused` does
 NOT protect you here: **a test calling a function counts as usage.** So
@@ -145,6 +152,30 @@ thing that was watching it. Ask "what was guarding this, and is it still
 pointed at where the code went?" — the answer after 4d-4c was no, three
 times, in a lift whose whole premise was that its instrument would catch
 exactly this.
+
+**Byte-parity is the contract, and improvements are a separate change (4e).**
+A lift reproduces behavior byte-for-byte — same bytes, headers, status, error
+envelope, audit-row payload. If you spot a genuine improvement, it is its own
+tested, documented change, not smuggled in (the ONLY sanctioned lift-time
+behavioral fix in 4e was the maxResults advertised-vs-enforced drift, and it
+was called out + tested). The trap: **an adapter built one slice early can
+carry an *intentional* deviation that stays invisible until a later slice
+wires it into the request path.** 4e-2's SCIM group adapter returned 500 (not
+the pre-lift 400) for a non-`ErrNotFound` member fault, flagged in a comment as
+"stricter — and more correct"; it was dead code until 4e-5c put the adapter in
+the request path, then a live parity break. Revert such deviations at
+wire-time; re-propose the improvement separately.
+
+**The audit crossing — tamper never emits (A3).** When a route that emits
+audit lifts into tamper, the audit stays app-side, emitted BY THE PORT IMPL
+(Barista: `internal/scimstore`): actor from ctx (`ActorFromContext`), After
+from the impl's own post-write re-read, and transport-only facts threaded down
+via a small `WriteMeta` on the write methods. Thread the pre-write `Before`
+SNAPSHOT the transport already read for If-Match — do not let the impl take a
+second read (it races a concurrent same-row write and persists a later-state
+Before into the chain-hashed row; 4e-5b caught exactly this). A single
+federation-style audit hook was considered + rejected for SCIM's ~10 actions;
+per-method emission in the impl is cleaner. See `PHASE4E-SCIM-SKETCH.md` §4.
 
 **Seams stay app-side.** Two precedents from Phase 0:
 

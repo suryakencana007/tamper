@@ -119,6 +119,12 @@ type UserStore interface {
 	Get(ctx context.Context, id string) (UserRecord, error)
 	Replace(ctx context.Context, id string, w UserWrite, meta WriteMeta) (UserRecord, error)
 	Delete(ctx context.Context, id string, meta WriteMeta) error
+	// SavePatch persists a PATCH-mutated user (the transport applies the RFC
+	// 7644 §3.5.2 ops to the resource, then hands the resolved write here).
+	// It is distinct from Replace: PATCH is a partial update that does NOT
+	// reset the name columns Replace resets. ops is passed through for the
+	// impl's redacted-ops audit row (the transport emits none — A3).
+	SavePatch(ctx context.Context, id string, w UserWrite, ops []Operation) (UserRecord, error)
 	List(ctx context.Context, startIndex, count int) (UserPage, error)
 	ListFiltered(ctx context.Context, startIndex, count int, where string, args []any) (UserPage, error)
 }
@@ -187,6 +193,11 @@ type GroupStore interface {
 	Get(ctx context.Context, id string) (GroupRecord, error)
 	Replace(ctx context.Context, id string, w GroupWrite, meta GroupWriteMeta) (GroupRecord, error)
 	Delete(ctx context.Context, id string, meta GroupWriteMeta) error
+	// SavePatch persists a PATCH-mutated group (the transport applies the
+	// RFC 7644 §3.5.2 ops, then hands the resolved write here). Distinct from
+	// Replace — it calls the app's SaveGroupFromSCIMPatch. The impl resolves
+	// members + emits the redacted-ops audit; ops threads through for it.
+	SavePatch(ctx context.Context, id string, w GroupWrite, ops []Operation) (GroupRecord, error)
 	// ValidateMembers validates the members[] (each id exists + is
 	// SCIM-managed) WITHOUT mutating — the transport calls it up-front on
 	// Replace so a bad member is reported (ErrInvalidInput → 400) BEFORE the

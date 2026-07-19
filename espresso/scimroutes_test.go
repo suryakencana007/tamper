@@ -26,6 +26,9 @@ func (stubUserStore) Replace(context.Context, string, scim.UserWrite, scim.Write
 	return scim.UserRecord{}, nil
 }
 func (stubUserStore) Delete(context.Context, string, scim.WriteMeta) error { return nil }
+func (stubUserStore) SavePatch(context.Context, string, scim.UserWrite, []scim.Operation) (scim.UserRecord, error) {
+	return scim.UserRecord{}, nil
+}
 func (stubUserStore) List(context.Context, int, int) (scim.UserPage, error) {
 	return scim.UserPage{}, nil
 }
@@ -47,6 +50,9 @@ func (stubGroupStore) Replace(context.Context, string, scim.GroupWrite, scim.Gro
 }
 func (stubGroupStore) Delete(context.Context, string, scim.GroupWriteMeta) error { return nil }
 func (stubGroupStore) ValidateMembers(context.Context, []scim.MemberRef) error  { return nil }
+func (stubGroupStore) SavePatch(context.Context, string, scim.GroupWrite, []scim.Operation) (scim.GroupRecord, error) {
+	return scim.GroupRecord{}, nil
+}
 func (stubGroupStore) List(context.Context, int, int) (scim.GroupPage, error) {
 	return scim.GroupPage{}, nil
 }

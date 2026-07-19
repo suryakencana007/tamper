@@ -83,6 +83,28 @@ type UserPage struct {
 	Total int
 }
 
+// WriteMeta carries the request-scoped facts a write's audit payload needs
+// but that the port impl can't see once the transport has lifted into
+// tamper — the audit stays app-side (emitted by the port impl, amendment
+// A3), so the transport threads these facts down.
+//
+// IfMatchPresent records whether the mutation carried an If-Match
+// precondition header; the impl folds it into the audit row so the pre-lift
+// `if_match_present` marker stays byte-identical. Create ignores it (POST
+// has no If-Match); Replace and Delete honor it.
+//
+// Before is the pre-write record the transport already read (for the
+// If-Match precondition) — the SAME snapshot, so the impl's audit Before
+// payload is the exact state If-Match validated against, preserving the
+// pre-lift handler's single-read invariant (audit Before == If-Match
+// snapshot) that a second impl-side read would break under a concurrent
+// same-row write. nil on Create (no before-state); non-nil on Replace and
+// Delete, where the transport has always read it before reaching the port.
+type WriteMeta struct {
+	IfMatchPresent bool
+	Before         *UserRecord
+}
+
 // UserStore is the app-implemented persistence port the SCIM Users
 // transport calls, fine-grained like tamperidentity.Store. startIndex is
 // 1-based (RFC 7644 §3.4.2); count is the already-capped page size.
@@ -90,11 +112,13 @@ type UserPage struct {
 // Translate over the app's ColumnMapping — injection is fenced by that
 // whitelist (the accepted Phase-3e precedent), and the adapter binds args
 // positionally.
+// The write methods (Create/Replace/Delete) take a WriteMeta so the impl
+// can emit byte-identical audit rows app-side (A3); the read methods do not.
 type UserStore interface {
-	Create(ctx context.Context, w UserWrite) (UserRecord, error)
+	Create(ctx context.Context, w UserWrite, meta WriteMeta) (UserRecord, error)
 	Get(ctx context.Context, id string) (UserRecord, error)
-	Replace(ctx context.Context, id string, w UserWrite) (UserRecord, error)
-	Delete(ctx context.Context, id string) error
+	Replace(ctx context.Context, id string, w UserWrite, meta WriteMeta) (UserRecord, error)
+	Delete(ctx context.Context, id string, meta WriteMeta) error
 	List(ctx context.Context, startIndex, count int) (UserPage, error)
 	ListFiltered(ctx context.Context, startIndex, count int, where string, args []any) (UserPage, error)
 }

@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	scim "github.com/suryakencana007/barista/packages/tamper/scim"
 )
 
 // SCIM transport surface (Phase 4e-5). SCIMRoutes carries the app's
-// branding/policy (SCIMConfig) and exposes the route handler methods; the
-// app registers them on its own router under the RequireServiceAccount
-// wrap — no Mount, per amendment A10. This slice (4e-5a) implements the
-// three discovery endpoints; the Users/Groups CRUD methods + the store
-// ports (scim.UserStore / GroupStore) join in 4e-5b.
+// branding/policy (SCIMConfig) and the persistence ports, and exposes the
+// route handler methods; the app registers them on its own router under the
+// RequireServiceAccount wrap — no Mount, per amendment A10. 4e-5a shipped
+// the three discovery endpoints; 4e-5b adds the Users write-CRUD methods
+// (Create/Get/Replace/Delete) over scim.UserStore. Groups + List + PATCH
+// follow in later 4e slices.
 
 // SCIMConfig is the app-injected branding + policy. The literal VALUES
 // (documentation URI, auth-scheme text, base URL, caps) stay app-owned;
@@ -35,19 +38,26 @@ type SCIMConfig struct {
 
 // SCIMRoutes is the SCIM transport. Construct with NewSCIMRoutes.
 type SCIMRoutes struct {
-	cfg SCIMConfig
+	cfg   SCIMConfig
+	users scim.UserStore
 }
 
-// NewSCIMRoutes validates the config at wiring time (never at request
-// time), matching the NewFederationRoutes/NewAuthRoutes shape.
-func NewSCIMRoutes(cfg SCIMConfig) (*SCIMRoutes, error) {
+// NewSCIMRoutes validates the wiring at construction time (never at request
+// time), matching the NewFederationRoutes/NewAuthRoutes shape. users is the
+// app's Users persistence port (Barista: internal/scimstore) — required
+// because the Users CRUD methods route through it; the app that registers
+// the routes always has one to supply.
+func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore) (*SCIMRoutes, error) {
 	if cfg.Prefix == "" {
 		return nil, errors.New("tamper/espresso: SCIMConfig.Prefix is required")
 	}
 	if cfg.MaxResults <= 0 {
 		return nil, errors.New("tamper/espresso: SCIMConfig.MaxResults must be positive")
 	}
-	return &SCIMRoutes{cfg: cfg}, nil
+	if users == nil {
+		return nil, errors.New("tamper/espresso: SCIMConfig requires a UserStore")
+	}
+	return &SCIMRoutes{cfg: cfg, users: users}, nil
 }
 
 // ResolveBaseURL returns the absolute URL prefix used to build SCIM

@@ -1,11 +1,37 @@
 package espresso
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	scim "github.com/suryakencana007/barista/packages/tamper/scim"
 )
+
+// stubUserStore is a no-op scim.UserStore for the discovery + validation
+// tests, which never route through the Users CRUD methods. The Users CRUD
+// behaviour is covered app-side by the SCIM handler golden suite (through
+// the real Barista adapter).
+type stubUserStore struct{}
+
+func (stubUserStore) Create(context.Context, scim.UserWrite, scim.WriteMeta) (scim.UserRecord, error) {
+	return scim.UserRecord{}, nil
+}
+func (stubUserStore) Get(context.Context, string) (scim.UserRecord, error) {
+	return scim.UserRecord{}, nil
+}
+func (stubUserStore) Replace(context.Context, string, scim.UserWrite, scim.WriteMeta) (scim.UserRecord, error) {
+	return scim.UserRecord{}, nil
+}
+func (stubUserStore) Delete(context.Context, string, scim.WriteMeta) error { return nil }
+func (stubUserStore) List(context.Context, int, int) (scim.UserPage, error) {
+	return scim.UserPage{}, nil
+}
+func (stubUserStore) ListFiltered(context.Context, int, int, string, []any) (scim.UserPage, error) {
+	return scim.UserPage{}, nil
+}
 
 func testSCIMRoutes(t *testing.T) *SCIMRoutes {
 	t.Helper()
@@ -16,7 +42,7 @@ func testSCIMRoutes(t *testing.T) *SCIMRoutes {
 		MaxResults:            100,
 		DocumentationURI:      "https://docs.test",
 		AuthSchemeDescription: "bearer via CLI",
-	})
+	}, stubUserStore{})
 	if err != nil {
 		t.Fatalf("NewSCIMRoutes: %v", err)
 	}
@@ -24,13 +50,16 @@ func testSCIMRoutes(t *testing.T) *SCIMRoutes {
 }
 
 func TestNewSCIMRoutes_Validation(t *testing.T) {
-	if _, err := NewSCIMRoutes(SCIMConfig{MaxResults: 100}); err == nil {
+	if _, err := NewSCIMRoutes(SCIMConfig{MaxResults: 100}, stubUserStore{}); err == nil {
 		t.Error("empty Prefix must be rejected at wiring")
 	}
-	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2"}); err == nil {
+	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2"}, stubUserStore{}); err == nil {
 		t.Error("non-positive MaxResults must be rejected at wiring")
 	}
-	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}); err != nil {
+	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}, nil); err == nil {
+		t.Error("a nil UserStore must be rejected at wiring")
+	}
+	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}, stubUserStore{}); err != nil {
 		t.Errorf("valid config rejected: %v", err)
 	}
 }

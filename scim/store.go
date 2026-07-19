@@ -166,16 +166,34 @@ type GroupPage struct {
 	Total  int
 }
 
+// GroupWriteMeta is WriteMeta's Group twin — the transport-only facts a
+// Group write's audit payload needs, threaded down so the impl emits a
+// byte-identical row (A3; tamper emits nothing). Before is the transport's
+// pre-write GroupRecord snapshot (the If-Match-validated state), so the
+// audit Before is race-free with a concurrent same-row write; nil on Create.
+type GroupWriteMeta struct {
+	IfMatchPresent bool
+	Before         *GroupRecord
+}
+
 // GroupStore is the app-implemented SCIM Groups persistence port. Create
 // and Replace run the app's nested-group cycle check; a cyclic write
 // surfaces ErrCyclicGroup (defined in nesting.go), which the transport
 // maps to CIRCULAR_GROUP_REFERENCE. A member id the store can't resolve
-// folds to ErrInvalidInput.
+// folds to ErrInvalidInput. The write methods take a GroupWriteMeta so the
+// impl emits the app-side scim.group.* audit byte-identically.
 type GroupStore interface {
-	Create(ctx context.Context, w GroupWrite) (GroupRecord, error)
+	Create(ctx context.Context, w GroupWrite, meta GroupWriteMeta) (GroupRecord, error)
 	Get(ctx context.Context, id string) (GroupRecord, error)
-	Replace(ctx context.Context, id string, w GroupWrite) (GroupRecord, error)
-	Delete(ctx context.Context, id string) error
+	Replace(ctx context.Context, id string, w GroupWrite, meta GroupWriteMeta) (GroupRecord, error)
+	Delete(ctx context.Context, id string, meta GroupWriteMeta) error
+	// ValidateMembers validates the members[] (each id exists + is
+	// SCIM-managed) WITHOUT mutating — the transport calls it up-front on
+	// Replace so a bad member is reported (ErrInvalidInput → 400) BEFORE the
+	// existence + If-Match checks, matching the pre-lift handler's ordering.
+	// Create needs no separate call (its member validation already precedes
+	// the write, with no existence/If-Match ahead of it).
+	ValidateMembers(ctx context.Context, members []MemberRef) error
 	List(ctx context.Context, startIndex, count int) (GroupPage, error)
 	ListFiltered(ctx context.Context, startIndex, count int, where string, args []any) (GroupPage, error)
 }

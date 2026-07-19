@@ -38,16 +38,17 @@ type SCIMConfig struct {
 
 // SCIMRoutes is the SCIM transport. Construct with NewSCIMRoutes.
 type SCIMRoutes struct {
-	cfg   SCIMConfig
-	users scim.UserStore
+	cfg    SCIMConfig
+	users  scim.UserStore
+	groups scim.GroupStore
 }
 
 // NewSCIMRoutes validates the wiring at construction time (never at request
-// time), matching the NewFederationRoutes/NewAuthRoutes shape. users is the
-// app's Users persistence port (Barista: internal/scimstore) — required
-// because the Users CRUD methods route through it; the app that registers
-// the routes always has one to supply.
-func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore) (*SCIMRoutes, error) {
+// time), matching the NewFederationRoutes/NewAuthRoutes shape. users +
+// groups are the app's persistence ports (Barista: internal/scimstore) —
+// required because the CRUD methods route through them; the app that
+// registers the routes always has both to supply.
+func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore) (*SCIMRoutes, error) {
 	if cfg.Prefix == "" {
 		return nil, errors.New("tamper/espresso: SCIMConfig.Prefix is required")
 	}
@@ -57,7 +58,10 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore) (*SCIMRoutes, error) {
 	if users == nil {
 		return nil, errors.New("tamper/espresso: SCIMConfig requires a UserStore")
 	}
-	return &SCIMRoutes{cfg: cfg, users: users}, nil
+	if groups == nil {
+		return nil, errors.New("tamper/espresso: SCIMConfig requires a GroupStore")
+	}
+	return &SCIMRoutes{cfg: cfg, users: users, groups: groups}, nil
 }
 
 // ResolveBaseURL returns the absolute URL prefix used to build SCIM

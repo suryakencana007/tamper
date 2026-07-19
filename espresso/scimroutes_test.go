@@ -33,6 +33,27 @@ func (stubUserStore) ListFiltered(context.Context, int, int, string, []any) (sci
 	return scim.UserPage{}, nil
 }
 
+// stubGroupStore is the GroupStore twin of stubUserStore.
+type stubGroupStore struct{}
+
+func (stubGroupStore) Create(context.Context, scim.GroupWrite, scim.GroupWriteMeta) (scim.GroupRecord, error) {
+	return scim.GroupRecord{}, nil
+}
+func (stubGroupStore) Get(context.Context, string) (scim.GroupRecord, error) {
+	return scim.GroupRecord{}, nil
+}
+func (stubGroupStore) Replace(context.Context, string, scim.GroupWrite, scim.GroupWriteMeta) (scim.GroupRecord, error) {
+	return scim.GroupRecord{}, nil
+}
+func (stubGroupStore) Delete(context.Context, string, scim.GroupWriteMeta) error { return nil }
+func (stubGroupStore) ValidateMembers(context.Context, []scim.MemberRef) error  { return nil }
+func (stubGroupStore) List(context.Context, int, int) (scim.GroupPage, error) {
+	return scim.GroupPage{}, nil
+}
+func (stubGroupStore) ListFiltered(context.Context, int, int, string, []any) (scim.GroupPage, error) {
+	return scim.GroupPage{}, nil
+}
+
 func testSCIMRoutes(t *testing.T) *SCIMRoutes {
 	t.Helper()
 	rt, err := NewSCIMRoutes(SCIMConfig{
@@ -42,7 +63,7 @@ func testSCIMRoutes(t *testing.T) *SCIMRoutes {
 		MaxResults:            100,
 		DocumentationURI:      "https://docs.test",
 		AuthSchemeDescription: "bearer via CLI",
-	}, stubUserStore{})
+	}, stubUserStore{}, stubGroupStore{})
 	if err != nil {
 		t.Fatalf("NewSCIMRoutes: %v", err)
 	}
@@ -50,16 +71,19 @@ func testSCIMRoutes(t *testing.T) *SCIMRoutes {
 }
 
 func TestNewSCIMRoutes_Validation(t *testing.T) {
-	if _, err := NewSCIMRoutes(SCIMConfig{MaxResults: 100}, stubUserStore{}); err == nil {
+	if _, err := NewSCIMRoutes(SCIMConfig{MaxResults: 100}, stubUserStore{}, stubGroupStore{}); err == nil {
 		t.Error("empty Prefix must be rejected at wiring")
 	}
-	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2"}, stubUserStore{}); err == nil {
+	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2"}, stubUserStore{}, stubGroupStore{}); err == nil {
 		t.Error("non-positive MaxResults must be rejected at wiring")
 	}
-	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}, nil); err == nil {
+	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}, nil, stubGroupStore{}); err == nil {
 		t.Error("a nil UserStore must be rejected at wiring")
 	}
-	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}, stubUserStore{}); err != nil {
+	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}, stubUserStore{}, nil); err == nil {
+		t.Error("a nil GroupStore must be rejected at wiring")
+	}
+	if _, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}, stubUserStore{}, stubGroupStore{}); err != nil {
 		t.Errorf("valid config rejected: %v", err)
 	}
 }

@@ -159,8 +159,17 @@ type RouteConfig struct {
     MountPrefix     string // "/api/auth"; cookie Path derives from this
     Cookies         CookieConfig
     ProjectUser     func(context.Context, *identity.User) json.RawMessage // required, app DTO
-    IdentityService IdentityService // defaults to tp.Identity when nil (Fork a)
+    IdentityService IdentityService // REQUIRED, app-supplied (see correction below)
     // optional: ValidationMessage, OnAuthenticated, OnTOTPEnrolledViaSession
+    //
+    // CORRECTION (Slice 3, as-built): this was sketched as "defaults to
+    // tp.Identity when nil", but that is INFEASIBLE — identity.Core cannot
+    // satisfy IdentityService: it has no Me (user-by-id; Core hides its Store),
+    // no session-token TOTP trio (IssueTOTPPending/VerifyTOTPPending/
+    // EnrollTOTPViaSession — that ceremony token is app policy), and its
+    // Register/Login/Refresh return (User, Tokens, error) not (AuthResult,
+    // error). So Identity is REQUIRED and the app wraps identity.Core (the
+    // quickstart's coreIdentity adapter shows the ~90-line shape).
 
     // --- Federation policy (used only when tp.OIDC!=nil). Registry hook is
     //     AUTO-WIRED from tp.OIDC.GetRegistry; app supplies the tail. ---

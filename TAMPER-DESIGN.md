@@ -259,25 +259,56 @@ the backend swaps and no call site changes.
 
 ## End-state integration (what a new project writes)
 
-```go
-tp, err := tamper.New(tamper.Config{
-	Store:  tampersqlite.Open("auth.db"),
-	JWT:    tamper.JWTConfig{Secret: cfg.Secret, TTL: 15 * time.Minute},
-	ACR:    tamper.ACRConfig{Password: "urn:myapp:auth:local-password"},
-})
+Shipped in Phase 6 (the standalone-packaging milestone). See
+[`README.md`](./README.md) for the getting-started and
+[`examples/quickstart`](./examples/quickstart) for a runnable version.
 
-router.Mount("/api/auth", tamperespresso.Routes(tp)) // login/refresh/OIDC/SAML/SCIM
-router.Use(tamperespresso.RequireAuth(tp))
+```go
+// 1. Build the engines. JWT is required; everything else is optional and
+//    nil-encodes "not configured". Fails at wiring, never per-request.
+tp, err := tamper.New(tamper.Config{
+	JWT:      crypto.JWTConfig{Secret: cfg.Secret, TTL: 15 * time.Minute, Issuer: "myapp"},
+	KEKs:     []crypto.KEKEntry{{ID: 1, Key: cfg.KEKHex}},
+	Audit:    tamper.AuditConfig{DBPath: "audit.db"},
+	Identity: &tamper.IdentityConfig{Store: myStore, Options: []identity.Option{
+		identity.WithDefaultACR("urn:myapp:auth:local-password"), // ACR is an identity Option, app-supplied + persisted
+	}},
+	Authz: pdp, // tamper.RBAC(...) / tamper.PermissionSet(...) build one
+})
+defer tp.Close()
+
+// 2. Aggregate the HTTP surface. Routes returns the surfaces for the app to
+//    register — there is NO Mount (each surface spans public + authed blocks;
+//    Espresso's Use is positional). Identity is REQUIRED + app-supplied: a thin
+//    adapter over identity.Core (Core has no Me lookup + no session-token TOTP).
+surfaces, err := tamperespresso.Routes(tp, tamperespresso.RouteConfig{
+	Auth:     tamperespresso.AuthRoutesConfig{MountPrefix: "/api/auth", Cookies: ..., ProjectUser: projectUser},
+	Identity: myIdentityService,
+})
+r.Post("/api/auth/login", espresso.Doppio(surfaces.Auth.Login))
+r.Get("/api/auth/me", surfaces.RequireAuth(espresso.HandlerCtx(surfaces.Auth.Me)))
+// ... register the rest of surfaces.Auth (+ Federation/SAML/SCIM when configured)
 
 dec, err := tp.Authz.Check(ctx, subj, "doc.delete", res) // SQL-RBAC today, swappable later
 ```
 
 ## Open items
 
-- `tamper/audit/sqlitestore` has no sqlc generator wired (schema is
-  byte-identical to Barista's original today; no drift yet). Add a
-  tamper-side sqlc config + moon target — or document manual regen — before
-  the audit schema next changes. Flagged in Barista's `sqlc.yaml`.
+- ~~`tamper/audit/sqlitestore` has no sqlc generator wired.~~ **Shipped
+  (Phase 6 slice 1)**: `packages/tamper/sqlc.yaml` + a `moon run tamper:sqlc`
+  target regenerate it (single-driver SQLite, so no build-tag re-injection),
+  and `TestSchemaMigrationParity` now guards `schema.sql` against migration
+  drift (the guard `schema.sql`'s header had long advertised but never had).
+- **Phase 6 — standalone packaging: shipped.** The composition facade
+  (`tamper.New(Config)` + `tamper/espresso.Routes(tp, RouteConfig)`), a
+  `README.md`, and a runnable `examples/quickstart` all landed; `doc.go` was
+  corrected to cover every shipped subpackage. One design correction vs the
+  original sketch: `RouteConfig.Identity` is **required + app-supplied**, not
+  defaulted to `tp.Identity` — `identity.Core` cannot satisfy the
+  `IdentityService` port (no `Me`, no session-token TOTP ceremony, divergent
+  return shapes), so the app wraps it (see the quickstart's `coreIdentity`).
+  `v0.1.0` is tagged in place on the monorepo (`packages/tamper/v0.1.0`); the
+  physical repo-split to a clean import path is a later milestone.
 - ~~Phase 1 `Authorizer`: decide `Subject`/`Resource` representation~~
   **Settled (Phase 1a)**: small comparable structs `{Type, ID string}`;
   reverse queries return `(set, unbounded, err)` so global grants don't
@@ -307,3 +338,9 @@ dec, err := tp.Authz.Check(ctx, subj, "doc.delete", res) // SQL-RBAC today, swap
   edge-gate migration.
 - Repo split criteria: tag the first standalone `tamper` version once
   Phase 2 (identity core) has survived a full Barista release cycle.
+  **Gate met**: Phase 2 shipped and Phases 3/4/5 built on top across
+  multiple Barista releases, so `packages/tamper/v0.1.0` is cut in place.
+  The remaining step — renaming the module to
+  `github.com/suryakencana007/tamper` and splitting the repo — is deferred
+  to its own milestone (it is breaking: every import + Barista's
+  `require`/`replace` rewrites for only a cleaner import string).

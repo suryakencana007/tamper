@@ -128,6 +128,50 @@ return r.BrewContext(ctx, espresso.WithAddr(":8080"))
 (non-nil only when you configure them and the matching engine is present on the
 `Provider`), plus the `RequireServiceAccount` middleware for the SCIM surface.
 
+## OIDC single sign-on — integrating with Keycloak
+
+[`examples/federation`](./examples/federation) is a runnable, end-to-end OIDC
+SSO example. It stands up an **embedded fake IdP** so it runs with zero external
+dependencies, and its test drives the full authorization-code flow
+(`start → IdP → callback → exchange`), JIT-provisioning the federated user via
+the identity core and minting a session:
+
+```sh
+go run  ./packages/tamper/examples/federation      # boots the SSO server on :8080
+go test ./packages/tamper/examples/federation/...  # drives + verifies the whole flow
+```
+
+**The tamper wiring is identical for a real IdP — only the issuer URL and
+client credentials change.** To point it at a real Keycloak instead of the fake
+IdP:
+
+1. In Keycloak, create a realm + a **confidential** OpenID Connect client, and
+   add a valid redirect URI of `<app-base>/api/auth/oidc/callback/<provider-id>`.
+2. Seed the provider with your realm's values (the example hardcodes the fake
+   IdP's; swap them):
+
+   ```go
+   provider.OIDC.Create(ctx, oidc.ProviderDefinition{
+       ID:           "keycloak",
+       IssuerURL:    "https://keycloak.example.com/realms/myrealm", // the realm's issuer
+       ClientID:     "myapp",
+       ClientSecret: os.Getenv("KEYCLOAK_CLIENT_SECRET"),           // sealed by the KeySet at rest
+       DisplayName:  "Keycloak",
+       Enabled:      true,
+       Scopes:       []string{"openid", "profile", "email"},
+       GroupsClaim:  "groups", // optional — map Keycloak group membership
+   })
+   ```
+
+That's the whole change — the routes, the `OnFederatedExchange` hook, and the
+state-cookie handling are unchanged. The engine runs OIDC discovery against
+`IssuerURL`, so the realm's `/.well-known/openid-configuration` must be
+reachable from the server. Barista (tamper's flagship) drives exactly this
+setup in production — see its `scripts/provision-keycloak.ps1` and
+`deploy/helm/barista/INSTALL.md` for a concrete Keycloak-on-Kubernetes wiring.
+
+SAML SSO follows the same shape via the `SAML` engine + `SAML` route bundle.
+
 ## What your app supplies
 
 Tamper composes; your app provides the leaves:

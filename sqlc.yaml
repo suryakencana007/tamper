@@ -1,0 +1,38 @@
+# sqlc config for the Tamper framework's generated stores.
+#
+# Today the only generated code in tamper is audit/sqlitestore (the
+# SQLite-backed audit-log persistence layer). This block regenerates it
+# from audit/sqlitestore/schema.sql + audit/sqlitestore/queries.
+#
+# History: this block used to live in Barista's apps/barista/sqlc.yaml (as
+# the "sqliteaudit" block) but was removed when the audit store moved into
+# the framework at packages/tamper/audit/sqlitestore. For a while there was
+# NO generator wired here, so an audit-schema edit had no regen path — the
+# gap flagged in apps/barista/sqlc.yaml and in TAMPER-DESIGN.md's Open items.
+# This file closes it (Phase 6 slice 1).
+#
+# Single-driver (SQLite only): unlike Barista's dual sqlite+postgres blocks,
+# the audit store is SQLite-only, so there is no //go:build tag re-injection
+# to do after `sqlc generate` — the plain command below is the whole story.
+#
+# Reproduce byte-identically with sqlc v1.30.0 (the pinned toolchain
+# version; the generated files carry `sqlc v1.30.0` in their headers).
+# Regenerate + diff:
+#     cd packages/tamper && sqlc generate && git diff --stat
+# The diff must be empty; if it isn't, sqlc's parser tripped on a schema or
+# query edit (see the sqlc-expert skill) — revert + investigate.
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "audit/sqlitestore/schema.sql"
+    queries: "audit/sqlitestore/queries"
+    gen:
+      go:
+        package: "sqlitestore"
+        out: "audit/sqlitestore"
+        sql_package: "database/sql"
+        emit_interface: true
+        emit_json_tags: false
+        emit_prepared_queries: false
+        emit_exact_table_names: false
+        emit_empty_slices: true

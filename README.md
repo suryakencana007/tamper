@@ -1,23 +1,23 @@
 # Tamper
 
 An embeddable, Go-native enterprise **auth / authz / tamper-evident-audit**
-framework. Tamper is extracted from [Barista](../../README.md) — Barista is its
-flagship and proving ground, mirroring the Espresso ← Barista relationship.
+framework. Tamper was extracted from Barista — a self-hosted PaaS that is its
+flagship and proving ground — mirroring the Espresso ← Barista relationship.
 
 Tamper is a **library, not a server**: you compose its engines into your own
 single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.1.0 — API not frozen.** Tamper currently ships from the Barista
-> monorepo at the nested import path below. A move to a clean standalone path
-> (`github.com/suryakencana007/tamper`) is planned; until then the nested path
-> is the real one and this README says so.
+> **Status: v0.2.0 — API not frozen.** Tamper was extracted from the Barista
+> monorepo into this standalone repository; the import path below is the real,
+> current one. (An earlier `v0.1.0` shipped from the monorepo at the nested path
+> `…/barista/packages/tamper`; `v0.2.0` marks the move to this clean path.)
 
 ## Install
 
 ```sh
-go get github.com/suryakencana007/barista/packages/tamper@v0.1.0
+go get github.com/suryakencana007/tamper@v0.2.0
 ```
 
 ## What's shipped
@@ -137,8 +137,8 @@ dependencies, and its test drives the full authorization-code flow
 the identity core and minting a session:
 
 ```sh
-go run  ./packages/tamper/examples/federation      # boots the SSO server on :8080
-go test ./packages/tamper/examples/federation/...  # drives + verifies the whole flow
+go run  ./examples/federation      # boots the SSO server on :8080
+go test ./examples/federation/...  # drives + verifies the whole flow
 ```
 
 **The tamper wiring is identical for a real IdP — only the issuer URL and
@@ -184,4 +184,7 @@ Tamper composes; your app provides the leaves:
 
 ## License
 
-See the repository root.
+**Not yet licensed.** No license file is present, so — by default — all rights
+are reserved by the author and the code is source-available but not yet
+grant-licensed for reuse. A license will be added before general availability;
+until then, open an issue if you want to adopt Tamper.

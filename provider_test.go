@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	tamper "github.com/suryakencana007/barista/packages/tamper"
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	"github.com/suryakencana007/barista/packages/tamper/authz"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
-	"github.com/suryakencana007/barista/packages/tamper/identity"
-	"github.com/suryakencana007/barista/packages/tamper/oidc"
-	"github.com/suryakencana007/barista/packages/tamper/saml"
+	tamper "github.com/suryakencana007/tamper"
+	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/authz"
+	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/oidc"
+	"github.com/suryakencana007/tamper/saml"
 )
 
 // validJWT returns a JWT config that passes New's secret check.

@@ -13,8 +13,8 @@ import (
 
 	espresso "github.com/suryakencana007/espresso/v2"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	tamperespresso "github.com/suryakencana007/barista/packages/tamper/espresso"
+	"github.com/suryakencana007/tamper/audit"
+	tamperespresso "github.com/suryakencana007/tamper/espresso"
 )
 
 // This test IS the IdP: it drives the SCIM server exactly as Okta / Entra

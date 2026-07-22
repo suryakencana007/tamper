@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
+	"github.com/suryakencana007/tamper/audit"
 )
 
 // ErrInvalidCredential is the sentinel a ServiceAccountValidator

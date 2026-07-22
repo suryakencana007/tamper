@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net/http"
 
-	tamper "github.com/suryakencana007/barista/packages/tamper"
-	"github.com/suryakencana007/barista/packages/tamper/scim"
+	tamper "github.com/suryakencana007/tamper"
+	"github.com/suryakencana007/tamper/scim"
 )
 
 // RouteConfig carries the transport-layer policy the engines cannot own —

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	tamperespresso "github.com/suryakencana007/barista/packages/tamper/espresso"
-	"github.com/suryakencana007/barista/packages/tamper/identity"
+	tamperespresso "github.com/suryakencana007/tamper/espresso"
+	"github.com/suryakencana007/tamper/identity"
 )
 
 // stubIdentity satisfies the transport's IdentityService port with a

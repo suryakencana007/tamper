@@ -23,8 +23,8 @@ import (
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 type userIDKey struct{}

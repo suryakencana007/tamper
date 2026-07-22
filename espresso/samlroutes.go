@@ -35,8 +35,8 @@ import (
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
-	"github.com/suryakencana007/barista/packages/tamper/identity"
-	"github.com/suryakencana007/barista/packages/tamper/saml"
+	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/saml"
 )
 
 // samlStateCookieSlotName is the context slot the ACS reads the state

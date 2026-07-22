@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	scim "github.com/suryakencana007/barista/packages/tamper/scim"
+	scim "github.com/suryakencana007/tamper/scim"
 )
 
 // SCIM Groups write-CRUD transport (Phase 4e-5c). Mirrors scimusers.go for

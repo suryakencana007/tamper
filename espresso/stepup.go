@@ -34,8 +34,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 // StepUpErrorCode is the wire-stable error code the SPA's fetcher.ts

@@ -33,8 +33,8 @@ import (
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
-	"github.com/suryakencana007/barista/packages/tamper/identity"
-	"github.com/suryakencana007/barista/packages/tamper/oidc"
+	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/oidc"
 )
 
 // oidcStateCookieSlotName is the context slot the exchange route reads

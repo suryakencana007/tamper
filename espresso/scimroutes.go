@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	scim "github.com/suryakencana007/barista/packages/tamper/scim"
+	scim "github.com/suryakencana007/tamper/scim"
 )
 
 // SCIM transport surface (Phase 4e-5). SCIMRoutes carries the app's

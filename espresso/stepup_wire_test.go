@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 // The STEP_UP_REQUIRED envelope is a security boundary between the

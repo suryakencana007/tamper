@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	tamper "github.com/suryakencana007/barista/packages/tamper"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
-	espresso "github.com/suryakencana007/barista/packages/tamper/espresso"
-	"github.com/suryakencana007/barista/packages/tamper/identity"
-	"github.com/suryakencana007/barista/packages/tamper/oidc"
-	"github.com/suryakencana007/barista/packages/tamper/saml"
-	"github.com/suryakencana007/barista/packages/tamper/scim"
+	tamper "github.com/suryakencana007/tamper"
+	"github.com/suryakencana007/tamper/crypto"
+	espresso "github.com/suryakencana007/tamper/espresso"
+	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/oidc"
+	"github.com/suryakencana007/tamper/saml"
+	"github.com/suryakencana007/tamper/scim"
 )
 
 // The route surfaces only HOLD these ports — Routes never calls a method — so

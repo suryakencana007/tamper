@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/saml"
+	"github.com/suryakencana007/tamper/saml"
 )
 
 // stateRoutesFixture builds SAMLRoutes with a known signing secret and

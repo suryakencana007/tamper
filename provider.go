@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	"github.com/suryakencana007/barista/packages/tamper/authz"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
-	"github.com/suryakencana007/barista/packages/tamper/identity"
-	"github.com/suryakencana007/barista/packages/tamper/oidc"
-	"github.com/suryakencana007/barista/packages/tamper/saml"
+	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/authz"
+	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/oidc"
+	"github.com/suryakencana007/tamper/saml"
 )
 
 // Config is the single boot input for New. It bundles the engine

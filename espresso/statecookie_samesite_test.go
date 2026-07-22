@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/oidc"
+	"github.com/suryakencana007/tamper/oidc"
 )
 
 // minimalFederationConfig is a valid config except for whatever the

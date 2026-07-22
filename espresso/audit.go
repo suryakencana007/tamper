@@ -10,7 +10,7 @@ import (
 	"github.com/suryakencana007/espresso/v2/extractor"
 	httpmiddleware "github.com/suryakencana007/espresso/v2/middleware/http"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
+	"github.com/suryakencana007/tamper/audit"
 )
 
 // MutationContext describes what an audit middleware should capture

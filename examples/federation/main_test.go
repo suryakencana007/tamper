@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/suryakencana007/barista/packages/tamper/identity"
+	"github.com/suryakencana007/tamper/identity"
 )
 
 type exchangeResp struct {

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/sqlitestore"
 )
 
 // v10ChainFixtureRow mirrors the JSON shape committed at

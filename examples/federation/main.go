@@ -27,11 +27,11 @@ import (
 	espresso "github.com/suryakencana007/espresso/v2"
 	"github.com/suryakencana007/espresso/v2/extractor"
 
-	tamper "github.com/suryakencana007/barista/packages/tamper"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
-	tamperespresso "github.com/suryakencana007/barista/packages/tamper/espresso"
-	"github.com/suryakencana007/barista/packages/tamper/identity"
-	"github.com/suryakencana007/barista/packages/tamper/oidc"
+	tamper "github.com/suryakencana007/tamper"
+	"github.com/suryakencana007/tamper/crypto"
+	tamperespresso "github.com/suryakencana007/tamper/espresso"
+	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/oidc"
 )
 
 // demoKEKHex is an insecure, all-zeros-but-one 32-byte KEK (64 hex chars) used

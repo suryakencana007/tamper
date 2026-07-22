@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/sqlitestore"
 )
 
 // TestVerifyChainPostMigration_CleanV3Only confirms a chain composed

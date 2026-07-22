@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 // RequireAuthWS returns middleware that authenticates a WebSocket

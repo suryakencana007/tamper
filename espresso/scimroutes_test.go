@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	scim "github.com/suryakencana007/barista/packages/tamper/scim"
+	scim "github.com/suryakencana007/tamper/scim"
 )
 
 // stubUserStore is a no-op scim.UserStore for the discovery + validation

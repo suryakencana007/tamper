@@ -10,7 +10,7 @@ import (
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
-	"github.com/suryakencana007/barista/packages/tamper/identity"
+	"github.com/suryakencana007/tamper/identity"
 )
 
 // fakeIdentity scripts the port surface per test.

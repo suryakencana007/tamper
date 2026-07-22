@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/suryakencana007/barista/packages/tamper/oidc"
+	"github.com/suryakencana007/tamper/oidc"
 )
 
 // The OIDC verification spine: the RFC/PKCE/state-cookie mechanics of

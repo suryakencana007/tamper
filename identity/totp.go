@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 // WithKeySet attaches the KEK keyset that seals/opens the TOTP secret

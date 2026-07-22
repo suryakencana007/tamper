@@ -6,7 +6,7 @@ import (
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
-	"github.com/suryakencana007/barista/packages/tamper/authz"
+	"github.com/suryakencana007/tamper/authz"
 )
 
 // DenyWriter writes the app's deny response — status, code, and copy

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 // hex-encoded 32-byte test keys (NOT real secrets).

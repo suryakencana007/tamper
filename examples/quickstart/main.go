@@ -22,10 +22,10 @@ import (
 
 	espresso "github.com/suryakencana007/espresso/v2"
 
-	tamper "github.com/suryakencana007/barista/packages/tamper"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
-	tamperespresso "github.com/suryakencana007/barista/packages/tamper/espresso"
-	"github.com/suryakencana007/barista/packages/tamper/identity"
+	tamper "github.com/suryakencana007/tamper"
+	"github.com/suryakencana007/tamper/crypto"
+	tamperespresso "github.com/suryakencana007/tamper/espresso"
+	"github.com/suryakencana007/tamper/identity"
 )
 
 func main() {

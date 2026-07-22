@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	scim "github.com/suryakencana007/barista/packages/tamper/scim"
+	scim "github.com/suryakencana007/tamper/scim"
 )
 
 // SCIM PATCH transport (Phase 4e-5d). RFC 7644 §3.5.2 PATCH on Users +

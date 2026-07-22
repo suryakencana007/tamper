@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/sqlitestore"
 )
 
 // SQLiteLogger is the production audit.Logger backed by a dedicated

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 func TestMain(m *testing.M) {

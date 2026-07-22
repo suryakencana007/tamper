@@ -14,8 +14,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	"github.com/suryakencana007/barista/packages/tamper/scim"
+	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/scim"
 )
 
 // This file implements the two persistence ports the SCIM transport calls —

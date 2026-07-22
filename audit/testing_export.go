@@ -3,7 +3,7 @@ package audit
 import (
 	"database/sql"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/sqlitestore"
 )
 
 // SQLiteAuditQueriesForTest exposes the underlying sqlitestore.Queries

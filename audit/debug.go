@@ -1,7 +1,7 @@
 package audit
 
 import (
-	"github.com/suryakencana007/barista/packages/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/sqlitestore"
 )
 
 // StoreForDebug exposes the underlying audit store for the

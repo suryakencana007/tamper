@@ -1,6 +1,6 @@
 package tamper
 
-import "github.com/suryakencana007/barista/packages/tamper/authz"
+import "github.com/suryakencana007/tamper/authz"
 
 // RBAC builds a rank-based Authorizer over a BindingStore, ready to drop into
 // Config.Authz. It is a thin one-liner over authz.NewRBAC so a greenfield

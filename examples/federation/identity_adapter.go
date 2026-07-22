@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	tamperespresso "github.com/suryakencana007/barista/packages/tamper/espresso"
-	"github.com/suryakencana007/barista/packages/tamper/identity"
+	tamperespresso "github.com/suryakencana007/tamper/espresso"
+	"github.com/suryakencana007/tamper/identity"
 )
 
 // coreIdentity adapts *identity.Core to the transport's IdentityService port.

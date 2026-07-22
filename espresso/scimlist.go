@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
-	scim "github.com/suryakencana007/barista/packages/tamper/scim"
+	scim "github.com/suryakencana007/tamper/scim"
 )
 
 // SCIM List transport (Phase 4e-5e). GET {prefix}/Users + /Groups with

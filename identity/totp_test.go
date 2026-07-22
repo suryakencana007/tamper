@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/pquerna/otp/totp"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 func testKeySet(t *testing.T) *crypto.KeySet {

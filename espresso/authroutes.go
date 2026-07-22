@@ -9,7 +9,7 @@ import (
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
-	"github.com/suryakencana007/barista/packages/tamper/identity"
+	"github.com/suryakencana007/tamper/identity"
 )
 
 // AuthResult bundles the authenticated user with the minted tokens.

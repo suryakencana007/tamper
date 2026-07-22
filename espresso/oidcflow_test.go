@@ -16,7 +16,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/suryakencana007/barista/packages/tamper/oidc"
+	"github.com/suryakencana007/tamper/oidc"
 )
 
 // --- compact fake OIDC IdP (discovery + JWKS + token) --------------

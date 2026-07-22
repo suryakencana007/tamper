@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/suryakencana007/barista/packages/tamper/identity"
+	"github.com/suryakencana007/tamper/identity"
 )
 
 // authResp mirrors the AuthRes envelope the auth routes return.

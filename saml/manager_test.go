@@ -15,7 +15,7 @@ import (
 
 	crewjamsaml "github.com/crewjam/saml"
 
-	tampercrypto "github.com/suryakencana007/barista/packages/tamper/crypto"
+	tampercrypto "github.com/suryakencana007/tamper/crypto"
 )
 
 const (

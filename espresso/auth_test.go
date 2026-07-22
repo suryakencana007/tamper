@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 func testJWT(t *testing.T) (*crypto.JWTService, string) {

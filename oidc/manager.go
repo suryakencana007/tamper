@@ -10,7 +10,7 @@ import (
 
 	coreoidc "github.com/coreos/go-oidc/v3/oidc"
 
-	"github.com/suryakencana007/barista/packages/tamper/crypto"
+	"github.com/suryakencana007/tamper/crypto"
 )
 
 // ErrNoKeySet surfaces from Manager mutations that need to seal or

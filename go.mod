@@ -1,4 +1,4 @@
-module github.com/suryakencana007/barista/packages/tamper
+module github.com/suryakencana007/tamper
 
 go 1.26
 

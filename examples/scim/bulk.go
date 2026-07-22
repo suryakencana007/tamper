@@ -14,8 +14,8 @@ import (
 
 	espresso "github.com/suryakencana007/espresso/v2"
 
-	"github.com/suryakencana007/barista/packages/tamper/audit"
-	tamperespresso "github.com/suryakencana007/barista/packages/tamper/espresso"
+	"github.com/suryakencana007/tamper/audit"
+	tamperespresso "github.com/suryakencana007/tamper/espresso"
 )
 
 // Bulk (RFC 7644 §3.7) is APP-SIDE — tamper ships no Bulk route method, because

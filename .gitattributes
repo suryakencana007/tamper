@@ -1,0 +1,25 @@
+# Normalize line endings on check-in so tooling (gofmt, golangci-lint,
+# sqlc) sees consistent bytes across Windows, macOS, and Linux.
+
+# Default: detect text, commit with LF.
+* text=auto eol=lf
+
+# Go + config files are always LF — gofmt and golangci-lint are EOL-sensitive.
+*.go      text eol=lf
+*.sql     text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.sh      text eol=lf
+
+# Lockfiles — LF, machine-generated.
+go.sum    text eol=lf
+go.mod    text eol=lf
+
+# Binary assets — never try to diff or normalize.
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.webp    binary
+*.db      binary

@@ -1,0 +1,13 @@
+# Compiled binaries / test artifacts
+*.exe
+*.exe~
+*.test
+*.out
+
+# SQLite scratch databases (examples/tests use t.TempDir(), but guard anyway)
+*.db
+*.db-shm
+*.db-wal
+
+# Editor / OS cruft
+.DS_Store

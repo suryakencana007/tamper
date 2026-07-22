@@ -1,0 +1,57 @@
+version: "2"
+
+# Linter config for Barista. Pinned explicitly so contributor drift
+# and golangci-lint version bumps don't silently change the rule set.
+# See TD-TOOL-01 in roadmaps/v0.1.0/TECH_DEBT.md for the rationale.
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+
+  settings:
+    gosec:
+      excludes:
+        # G104 overlaps with errcheck and produces noisy duplicates.
+        - G104
+
+  exclusions:
+    generated: lax
+    # sqlc-generated files live under internal/store/sqlite and are not
+    # authored by us. Test files exercise scenarios that linters flag as
+    # unsafe (e.g. httptest response bodies that we deliberately don't close
+    # when only asserting status); whitelist per-rule where it makes sense.
+    rules:
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - gosec
+      # staticcheck SA5011 (nil-pointer deref) misfires on the standard
+      # `x := lookup(); if x == nil { t.Fatalf(...) }; use(x)` test pattern:
+      # golangci-lint 2.11.3's staticcheck build doesn't treat
+      # (*testing.T).Fatalf as terminating, so it thinks x can still be nil at
+      # the deref. t.Fatalf calls runtime.Goexit, so that path is unreachable.
+      # Scope the suppression to test files + this one check — SA5011 stays
+      # active on production code.
+      - path: _test\.go
+        text: SA5011
+        linters:
+          - staticcheck
+      - path: internal/store/sqlite/queries\.sql\.go
+        linters:
+          - unused
+          - gocritic
+
+# Formatters (gofmt / goimports) intentionally omitted here. They are
+# EOL-sensitive and would cascade into a repo-wide renormalization PR
+# the moment a Windows contributor's working tree sees CRLF. The
+# `.gitattributes` policy forces LF on check-in; once every file is
+# renormalized in a dedicated commit, re-enable `- gofmt` here.

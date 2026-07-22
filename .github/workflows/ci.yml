@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race)
+        run: go test -race -timeout=15m ./...
+
+      # golangci-lint pinned to the same version the rule set was curated
+      # against (see .golangci.yaml). Installed at a fixed tag so the rule
+      # set can't drift under a tool bump.
+      - name: Lint
+        run: |
+          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/v2.11.3/install.sh" \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.11.3
+          "$(go env GOPATH)/bin/golangci-lint" run ./...
+
+      # Drift guard: the checked-in sqlc output (audit/sqlitestore) must be
+      # byte-reproducible from sqlc.yaml with the pinned generator. Single
+      # SQLite driver, so `sqlc generate` is the whole pipeline (no build-tag
+      # re-injection like a multi-driver setup).
+      - name: sqlc regen check
+        run: |
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
+          sqlc generate
+          git diff --exit-code

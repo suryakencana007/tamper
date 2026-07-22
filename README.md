@@ -184,7 +184,4 @@ Tamper composes; your app provides the leaves:
 
 ## License
 
-**Not yet licensed.** No license file is present, so — by default — all rights
-are reserved by the author and the code is source-available but not yet
-grant-licensed for reuse. A license will be added before general availability;
-until then, open an issue if you want to adopt Tamper.
+[MIT](./LICENSE) © 2026 Nanang Suryadi.

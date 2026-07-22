@@ -188,3 +188,96 @@ via the existing `replace`), then a **single Barista PR** for Phase B,
 adversarially reviewed like the other slices. The gap between the two phases is
 safe — Barista keeps compiling against the in-tree `packages/tamper` until
 Phase B flips it.
+
+---
+
+## Hand-off execution checklist
+
+A copy-pasteable checklist for whoever executes the split. Read the sections
+above first (especially "The one genuinely fiddly part"). Commands assume the
+final path `github.com/suryakencana007/tamper`; adjust if the name changes.
+
+### 0. Pre-flight — decide + provision
+
+- [ ] **Decide: public or private** new repo. Public → no auth needed anywhere
+      (and `go get` + pkg.go.dev work for free). Private → a token is required
+      (see step 0d). This choice drives the whole Docker section.
+- [ ] **Decide: version** to cut in the new repo — `v0.1.0` (fresh) or `v0.2.0`
+      (signal "post-split"). New module path = new version line either way.
+- [ ] **Decide: Docker dependency approach** — (a) versioned fetch with a token,
+      or (b) keep a `replace` + sibling checkout in the build context.
+- [ ] **Decide: co-dev mode** — keep a local `replace` in Barista's `go.mod`, or
+      go fully-versioned immediately.
+- [ ] **Install `git filter-repo`** (`pip install git-filter-repo`, or Homebrew).
+      Not bundled with git.
+- [ ] **Confirm rights** to create a repo under `suryakencana007` (or the org).
+- [ ] **(private only) Provision a GitHub token / deploy key** with read on the
+      new repo, and note where it goes: CI secrets + the release Docker build.
+- [ ] **Start from a clean `main`**, no in-flight `packages/tamper` changes.
+
+### Phase A — stand up the new repo (Barista untouched)
+
+- [ ] Fresh clone of Barista into a scratch dir.
+- [ ] Extract with history:
+      `git filter-repo --path packages/tamper/ --path-rename packages/tamper/:`
+- [ ] Rename the module: `go.mod` → `module github.com/suryakencana007/tamper`.
+- [ ] Sweep the **143** internal imports:
+      `grep -rl 'suryakencana007/barista/packages/tamper' --include='*.go' . | xargs sed -i 's#suryakencana007/barista/packages/tamper#suryakencana007/tamper#g'`
+- [ ] `go build ./...` **green**.
+- [ ] `go test -race ./...` **green** (the parity proof — no behavior change).
+- [ ] Confirm the moved scaffolding is coherent: `README.md`, `TAMPER-DESIGN.md`,
+      the `PHASE*`/`REPO-SPLIT` sketches, `sqlc.yaml`, `examples/`.
+- [ ] Add the new repo's own CI (`go vet` / `go test -race` / `golangci-lint`,
+      + the sqlc regen check); copy the repo-root `.golangci.yaml` rules.
+- [ ] Drop or slim `moon.yml` (a standalone repo may not need moon).
+- [ ] Create the GitHub repo (public/private per step 0a), push.
+- [ ] Tag `vX.Y.Z` and push the tag.
+- [ ] Verify resolution from a throwaway module:
+      `GOPRIVATE=github.com/suryakencana007/* go get github.com/suryakencana007/tamper@vX.Y.Z`
+      (public: no GOPRIVATE/token needed).
+
+### Phase B — flip Barista (one PR)
+
+- [ ] Branch off `main`.
+- [ ] `git rm -r packages/tamper/`.
+- [ ] `apps/barista/go.mod`: delete the pseudo-version `require` + the
+      `replace … => ../../packages/tamper`; add
+      `require github.com/suryakencana007/tamper vX.Y.Z` (+ optional
+      `replace … => ../tamper` if co-dev mode = local replace).
+- [ ] Sweep the **56** Barista importers (same `sed` as Phase A, scoped to
+      `apps/barista`).
+- [ ] `go.work`: remove `./packages/tamper` (optionally add `./tamper`).
+- [ ] Remove the `tamper:*` steps from `.github/workflows/ci.yml`
+      (`tamper:lint`, `tamper:vet`, `tamper:test`).
+- [ ] Remove the `tamper:` project from `.moon/workspace.yml`.
+- [ ] `deploy/Dockerfile`: remove the `COPY packages/tamper/…` lines and wire the
+      chosen dep approach:
+      - (a) versioned fetch: `ENV GOPRIVATE=github.com/suryakencana007/*` +
+        inject the token via a build secret +
+        `git config --global url."https://<token>@github.com/".insteadOf "https://github.com/"` in the builder stage.
+      - (b) replace + sibling: check out both repos in CI, add `tamper/` to the
+        build context, keep the `replace` in `go.mod`.
+- [ ] Update docs: `CLAUDE.md`, `AGENTS.md`, `packages/tamper/TAMPER-DESIGN.md`
+      references to the new home.
+- [ ] `go -C apps/barista build ./...` **green**.
+- [ ] `GOWORK=off go build ./...` **green** (the no-workspace path the image uses).
+- [ ] Full `-race` suite **green** (`moon run barista:ci` + `barista:test-postgres`).
+- [ ] **Build the release image locally** (`moon run barista:docker-build` or the
+      Dockerfile directly) — the real proof the fetch/replace resolves in-container.
+- [ ] Adversarial review of the PR (as with every slice).
+- [ ] Merge; confirm `ci.yml` **green** on `main`.
+
+### Post-split
+
+- [ ] Dry-run or cut a Barista patch release to prove the release pipeline works
+      with the fetched/replaced tamper (mind the release-gauntlet history —
+      `AGENTS.md` §Release process).
+- [ ] Confirm the new tamper repo's CI is green and its tag resolves externally.
+- [ ] `AGENTS.md`: move the repo-split from "deferred" to "recently done".
+
+### Rollback
+
+Phase A is non-destructive (Barista untouched). If Phase B's Docker/release step
+fails, **revert the single Phase-B PR** — the in-tree `packages/tamper` is
+preserved in git history until that PR merges, so Barista returns to the working
+monorepo state immediately. Fix the Docker plumbing, re-open.

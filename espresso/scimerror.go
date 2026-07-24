@@ -2,6 +2,8 @@ package espresso
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 )
@@ -27,6 +29,24 @@ const (
 // scimType (RFC 7644 §3.12 enumerates uniqueness/invalidValue/…; pass ""
 // for status-only errors like 404/500). Always application/scim+json;
 // encode failures are best-effort (the status is already written).
+// writeSCIMDecodeError maps a request-body decode failure onto the right
+// SCIM error envelope. An over-limit body is 413 (RFC 7644 §3.12 tabulates
+// "Payload too large" for a request exceeding maxPayloadSize); every other
+// decode failure stays a 400 invalidSyntax, unchanged from before the cap
+// existed.
+//
+// The limit is reported so a client can tell "your JSON is malformed" from
+// "your JSON is too big" without guessing.
+func writeSCIMDecodeError(w http.ResponseWriter, err error) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		WriteSCIMErrorTyped(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("request body exceeds the %d-byte limit", tooLarge.Limit), "")
+		return
+	}
+	WriteSCIMErrorTyped(w, http.StatusBadRequest, err.Error(), SCIMTypeInvalidSyntax)
+}
+
 func WriteSCIMErrorTyped(w http.ResponseWriter, status int, detail, scimType string) {
 	w.Header().Set("Content-Type", "application/scim+json")
 	w.WriteHeader(status)

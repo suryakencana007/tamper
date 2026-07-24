@@ -26,9 +26,9 @@ import (
 // externalId, members[] (User or Group type; unknown ids → 400). 201 with
 // the Group shape + Location + ETag.
 func (s *SCIMRoutes) GroupsCreate(w http.ResponseWriter, r *http.Request) {
-	body, err := readSCIMGroupBody(r)
+	body, err := readSCIMGroupBody(w, r, s.cfg.MaxPayloadBytes)
 	if err != nil {
-		WriteSCIMErrorTyped(w, http.StatusBadRequest, err.Error(), SCIMTypeInvalidSyntax)
+		writeSCIMDecodeError(w, err)
 		return
 	}
 	displayName := strings.TrimSpace(body.DisplayName)
@@ -79,9 +79,9 @@ func (s *SCIMRoutes) GroupsReplace(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "group not found", "")
 		return
 	}
-	body, err := readSCIMGroupBody(r)
+	body, err := readSCIMGroupBody(w, r, s.cfg.MaxPayloadBytes)
 	if err != nil {
-		WriteSCIMErrorTyped(w, http.StatusBadRequest, err.Error(), SCIMTypeInvalidSyntax)
+		writeSCIMDecodeError(w, err)
 		return
 	}
 	displayName := strings.TrimSpace(body.DisplayName)
@@ -169,10 +169,10 @@ func (s *SCIMRoutes) writeGroupStoreErr(w http.ResponseWriter, err error) {
 
 // readSCIMGroupBody decodes the JSON body into a GroupCreateOrReplace and
 // closes the body.
-func readSCIMGroupBody(r *http.Request) (*GroupCreateOrReplace, error) {
+func readSCIMGroupBody(w http.ResponseWriter, r *http.Request, maxBytes int64) (*GroupCreateOrReplace, error) {
 	defer func() { _ = r.Body.Close() }()
 	body := &GroupCreateOrReplace{}
-	if err := json.NewDecoder(r.Body).Decode(body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes)).Decode(body); err != nil {
 		return nil, err
 	}
 	return body, nil

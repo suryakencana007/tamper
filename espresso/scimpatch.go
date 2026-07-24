@@ -38,9 +38,9 @@ func (s *SCIMRoutes) UsersPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := decodeSCIMPatch(r)
+	req, err := decodeSCIMPatch(w, r, s.cfg.MaxPayloadBytes)
 	if err != nil {
-		WriteSCIMErrorTyped(w, http.StatusBadRequest, err.Error(), SCIMTypeInvalidSyntax)
+		writeSCIMDecodeError(w, err)
 		return
 	}
 	if len(req.Operations) == 0 {
@@ -88,9 +88,9 @@ func (s *SCIMRoutes) GroupsPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := decodeSCIMPatch(r)
+	req, err := decodeSCIMPatch(w, r, s.cfg.MaxPayloadBytes)
 	if err != nil {
-		WriteSCIMErrorTyped(w, http.StatusBadRequest, err.Error(), SCIMTypeInvalidSyntax)
+		writeSCIMDecodeError(w, err)
 		return
 	}
 	if len(req.Operations) == 0 {
@@ -120,10 +120,10 @@ func (s *SCIMRoutes) GroupsPatch(w http.ResponseWriter, r *http.Request) {
 // decodeSCIMPatch reads the PATCH envelope (RFC 7644 §3.5.2). The op field is
 // lowercased by scim.Operation's UnmarshalJSON hook, so the applier's
 // dispatcher sees only add/remove/replace.
-func decodeSCIMPatch(r *http.Request) (*scim.Request, error) {
+func decodeSCIMPatch(w http.ResponseWriter, r *http.Request, maxBytes int64) (*scim.Request, error) {
 	defer func() { _ = r.Body.Close() }()
 	req := &scim.Request{}
-	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes)).Decode(req); err != nil {
 		return nil, err
 	}
 	return req, nil

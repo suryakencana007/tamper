@@ -30,6 +30,17 @@ type SCIMConfig struct {
 	// MaxResults is the enforced List page cap, advertised verbatim as
 	// filter.maxResults (the 4e-4 no-drift invariant).
 	MaxResults int
+	// MaxPayloadBytes caps the request body every SCIM write handler will
+	// read, and is advertised verbatim as bulk.maxPayloadSize — same
+	// no-drift invariant as MaxResults above, because an advertised limit
+	// nothing enforces is worse than no limit at all.
+	//
+	// Zero or negative selects defaultSCIMMaxPayloadBytes. It is NOT a
+	// required field: the espresso framework's own 1 MiB cap lives inside
+	// its extractor decode path, which these handlers do not use (they
+	// decode straight off r.Body), so without this every SCIM write was
+	// unbounded — one large POST could exhaust the process.
+	MaxPayloadBytes int64
 	// DocumentationURI + AuthSchemeDescription are app strings rendered
 	// into ServiceProviderConfig.
 	DocumentationURI      string
@@ -61,8 +72,21 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 	if groups == nil {
 		return nil, errors.New("tamper/espresso: SCIMConfig requires a GroupStore")
 	}
+	// Default rather than reject: MaxPayloadBytes was added after the
+	// config shipped, so a caller built against the earlier shape leaves it
+	// zero and must still get a bounded — not unbounded — surface.
+	if cfg.MaxPayloadBytes <= 0 {
+		cfg.MaxPayloadBytes = defaultSCIMMaxPayloadBytes
+	}
 	return &SCIMRoutes{cfg: cfg, users: users, groups: groups}, nil
 }
+
+// defaultSCIMMaxPayloadBytes is the request-body cap applied when
+// SCIMConfig.MaxPayloadBytes is unset. 1 MiB matches both the value
+// ServiceProviderConfig used to advertise unconditionally and the espresso
+// framework's own extractor limit, so the default changes no advertised
+// number — it only makes the advertised number true.
+const defaultSCIMMaxPayloadBytes int64 = 1 << 20
 
 // ResolveBaseURL returns the absolute URL prefix used to build SCIM
 // meta.location values. A non-empty override (operator chart-config)
@@ -103,7 +127,7 @@ func (s *SCIMRoutes) ServiceProviderConfig(w http.ResponseWriter, r *http.Reques
 		Schemas:          []string{SchemaServiceProviderConfig},
 		DocumentationURI: s.cfg.DocumentationURI,
 		Patch:            SPCSupported{Supported: true},
-		Bulk:             SPCBulk{Supported: true, MaxOperations: s.cfg.BulkMaxOperations, MaxPayloadSize: 1048576},
+		Bulk:             SPCBulk{Supported: true, MaxOperations: s.cfg.BulkMaxOperations, MaxPayloadSize: int(s.cfg.MaxPayloadBytes)},
 		Filter:           SPCFilter{Supported: true, MaxResults: s.cfg.MaxResults},
 		ChangePassword:   SPCSupported{Supported: false},
 		Sort:             SPCSupported{Supported: false},

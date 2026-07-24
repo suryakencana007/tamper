@@ -30,9 +30,9 @@ import (
 // (default true), name. password is ignored (SCIM users authenticate via
 // OIDC + linking). 201 with the User shape + Location + ETag.
 func (s *SCIMRoutes) UsersCreate(w http.ResponseWriter, r *http.Request) {
-	body, err := readSCIMUserBody(r)
+	body, err := readSCIMUserBody(w, r, s.cfg.MaxPayloadBytes)
 	if err != nil {
-		WriteSCIMErrorTyped(w, http.StatusBadRequest, err.Error(), SCIMTypeInvalidSyntax)
+		writeSCIMDecodeError(w, err)
 		return
 	}
 	userName := pickSCIMUserName(body)
@@ -91,9 +91,9 @@ func (s *SCIMRoutes) UsersReplace(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "user not found", "")
 		return
 	}
-	body, err := readSCIMUserBody(r)
+	body, err := readSCIMUserBody(w, r, s.cfg.MaxPayloadBytes)
 	if err != nil {
-		WriteSCIMErrorTyped(w, http.StatusBadRequest, err.Error(), SCIMTypeInvalidSyntax)
+		writeSCIMDecodeError(w, err)
 		return
 	}
 	userName := pickSCIMUserName(body)
@@ -195,10 +195,10 @@ func scimStoreDetail(err error) string {
 
 // readSCIMUserBody decodes the JSON body into a UserCreateOrReplace and
 // closes the body. Used by UsersCreate + UsersReplace.
-func readSCIMUserBody(r *http.Request) (*UserCreateOrReplace, error) {
+func readSCIMUserBody(w http.ResponseWriter, r *http.Request, maxBytes int64) (*UserCreateOrReplace, error) {
 	defer func() { _ = r.Body.Close() }()
 	body := &UserCreateOrReplace{}
-	if err := json.NewDecoder(r.Body).Decode(body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes)).Decode(body); err != nil {
 		return nil, err
 	}
 	return body, nil

@@ -61,8 +61,35 @@ func NewJWTService(cfg JWTConfig) *JWTService {
 type AccessClaims struct {
 	AuthTime int64  `json:"auth_time"`
 	ACR      string `json:"acr"`
+	// Purpose discriminates an access JWT from the other token shapes
+	// this service mints under the SAME secret — currently the
+	// totp-pending session token (IssueTOTPPending). VerifyAccess
+	// rejects a token carrying a foreign purpose, which is what stops a
+	// pre-2FA session token from authenticating as a full session.
+	//
+	// Legacy-tolerant on the same terms as auth_time + acr above:
+	// pre-v1.15 access JWTs carry no purpose claim and read as "",
+	// which VerifyAccess accepts. Only a NON-EMPTY, non-access purpose
+	// rejects. That tolerance is safe because the claim can only be
+	// removed by re-signing, which needs the secret — so it buys a
+	// graceful rollout (no mass logout on deploy) without reopening the
+	// bypass.
+	Purpose string `json:"purpose,omitempty"`
 	jwt.RegisteredClaims
 }
+
+// Token purpose values. These ride in the `purpose` claim and are the
+// discriminator between the token shapes this service signs with one
+// secret. Unexported: callers select a shape by calling the matching
+// Issue*/Verify* pair, never by naming the wire value.
+const (
+	// purposeAccess marks a full access JWT (IssueAccess).
+	purposeAccess = "access"
+	// purposeTOTPPending marks the short-lived pre-2FA session token
+	// (IssueTOTPPending) minted between password-success and
+	// TOTP-verify.
+	purposeTOTPPending = "totp_pending"
+)
 
 // ACR URN constants — well-known Authentication Context Class Reference
 // values stamped on access JWTs. Centralised here so call sites don't
@@ -121,6 +148,7 @@ func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (str
 	claims := AccessClaims{
 		AuthTime: authTime,
 		ACR:      acr,
+		Purpose:  purposeAccess,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
@@ -162,6 +190,14 @@ func (j *JWTService) Verify(tokenStr string) (string, error) {
 // acrValues" — both trip the step-up gate, which is the intended
 // migration path (operators get a forced re-auth on sensitive
 // endpoints once, then their refreshed JWTs carry the new claims).
+//
+// Rejects any token whose `purpose` claim names a different token
+// shape. This is the other half of the discrimination VerifyTOTPPending
+// already performed: both Verify* entry points now refuse the other's
+// token, so a totp-pending session token handed out after a
+// password-only login cannot be replayed as a bearer credential to
+// skip the second factor. An absent purpose is accepted as a legacy
+// access JWT — see AccessClaims.Purpose for why that is safe.
 func (j *JWTService) VerifyAccess(tokenStr string) (*AccessClaims, error) {
 	claims := &AccessClaims{}
 	tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc,
@@ -174,6 +210,9 @@ func (j *JWTService) VerifyAccess(tokenStr string) (*AccessClaims, error) {
 	}
 	if !tok.Valid {
 		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if claims.Purpose != "" && claims.Purpose != purposeAccess {
+		return nil, fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
 	}
 	if claims.Subject == "" {
 		return nil, fmt.Errorf("%w: sub is missing", ErrInvalidToken)
@@ -190,10 +229,13 @@ func (j *JWTService) keyFunc(t *jwt.Token) (any, error) {
 
 // totpPendingClaims is the v0.8 task 02 short-lived session token
 // minted between password-success and TOTP-verify on logins where 2FA
-// is required. Custom `Purpose` field discriminates from the standard
-// access JWT — Verify rejects an access JWT submitted to the totp-
-// verify endpoint and vice versa, so an attacker can't reuse a leaked
-// access token to skip the 2FA step.
+// is required. The `purpose` claim discriminates it from the standard
+// access JWT, and the discrimination is enforced in BOTH directions:
+// VerifyTOTPPending rejects an access JWT submitted to the totp-verify
+// endpoint, and VerifyAccess rejects this token submitted as a bearer
+// credential. So a leaked access token can't skip the 2FA step, and
+// the pending token handed out after a password-only login can't
+// authenticate anything on its own.
 type totpPendingClaims struct {
 	Purpose string `json:"purpose"`
 	jwt.RegisteredClaims
@@ -209,7 +251,7 @@ func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
 	}
 	now := j.now()
 	claims := totpPendingClaims{
-		Purpose: "totp_pending",
+		Purpose: purposeTOTPPending,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
@@ -242,7 +284,7 @@ func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
 	if !tok.Valid {
 		return "", fmt.Errorf("%w: token not valid", ErrInvalidToken)
 	}
-	if claims.Purpose != "totp_pending" {
+	if claims.Purpose != purposeTOTPPending {
 		return "", fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
 	}
 	if claims.Subject == "" {

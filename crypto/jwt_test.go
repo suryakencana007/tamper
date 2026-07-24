@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -326,4 +327,148 @@ func flipByte(b byte) string {
 		return "B"
 	}
 	return "A"
+}
+
+// Token-purpose discrimination. The totp-pending session token and the
+// access JWT are signed with the SAME secret and differ only by the
+// `purpose` claim, so each Verify* entry point must refuse the other's
+// token.
+//
+// The regression these pin: VerifyTOTPPending had always checked
+// purpose, but VerifyAccess never did — so the pending token handed to
+// the client after a password-only login (espresso/authroutes.go
+// returns it in the 200 body as SessionToken) verified cleanly as a
+// full access token and authenticated every RequireAuth route for its
+// 5-minute lifetime. A complete 2FA bypass for an attacker holding
+// only the password. The doc on totpPendingClaims had claimed the
+// bidirectional guard existed since v0.8; only one direction did.
+
+func TestVerifyAccess_RejectsTOTPPendingToken(t *testing.T) {
+	svc := newTestJWT(t, "s3cr3t")
+	pending, err := svc.IssueTOTPPending("u-42")
+	if err != nil {
+		t.Fatalf("IssueTOTPPending: %v", err)
+	}
+
+	if _, err := svc.VerifyAccess(pending); err == nil {
+		t.Fatal("VerifyAccess accepted a totp-pending token — 2FA bypass")
+	} else if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("VerifyAccess err %v: not wrapping ErrInvalidToken", err)
+	}
+
+	// Verify() shares the VerifyAccess path, so it must reject too —
+	// it is the other exported entry point onto the same token.
+	if _, err := svc.Verify(pending); err == nil {
+		t.Fatal("Verify accepted a totp-pending token — 2FA bypass")
+	}
+}
+
+func TestVerifyTOTPPending_RejectsAccessToken(t *testing.T) {
+	svc := newTestJWT(t, "s3cr3t")
+	access, err := svc.IssueAccess("u-42", 1733574000, ACRIncommonSilver)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+
+	if _, err := svc.VerifyTOTPPending(access); err == nil {
+		t.Fatal("VerifyTOTPPending accepted an access token")
+	} else if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("VerifyTOTPPending err %v: not wrapping ErrInvalidToken", err)
+	}
+}
+
+func TestIssueAccess_StampsPurpose(t *testing.T) {
+	svc := newTestJWT(t, "s3cr3t")
+	tok, err := svc.IssueAccess("u-42", 1733574000, ACRIncommonSilver)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	claims, err := svc.VerifyAccess(tok)
+	if err != nil {
+		t.Fatalf("VerifyAccess: %v", err)
+	}
+	if claims.Purpose != purposeAccess {
+		t.Errorf("Purpose = %q, want %q", claims.Purpose, purposeAccess)
+	}
+}
+
+func TestVerifyAccess_RejectsUnknownPurpose(t *testing.T) {
+	// A future token shape minted under the same secret must not be
+	// accepted as an access token just because its purpose is unknown.
+	secret := []byte("s3cr3t")
+	now := time.Now()
+	claims := struct {
+		Purpose string `json:"purpose"`
+		jwt.RegisteredClaims
+	}{
+		Purpose: "password_reset",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   "u-1",
+			Issuer:    "barista-test",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+		},
+	}
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	svc := newTestJWT(t, "s3cr3t")
+	if _, err := svc.VerifyAccess(tok); err == nil {
+		t.Fatal("VerifyAccess accepted a token with an unknown purpose")
+	} else if !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("VerifyAccess err %v: not wrapping ErrInvalidToken", err)
+	}
+}
+
+func TestVerifyAccess_AcceptsLegacyTokenWithoutPurpose(t *testing.T) {
+	// Rollout guard. Access JWTs already in the wild when this fix
+	// deploys carry no purpose claim. If they were rejected, every live
+	// session would 401 at once. An absent purpose must still verify;
+	// only a non-empty foreign purpose rejects. The claim cannot be
+	// stripped from a pending token without the signing secret, so the
+	// tolerance does not reopen the bypass.
+	secret := []byte("s3cr3t")
+	now := time.Now()
+	claims := AccessClaims{
+		AuthTime: now.Unix(),
+		ACR:      ACRIncommonSilver,
+		// Purpose deliberately unset — the pre-fix wire shape.
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   "u-legacy",
+			Issuer:    "barista-test",
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+		},
+	}
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	// Assert the WIRE shape, not the encoded string: decode the payload
+	// segment so this actually proves omitempty dropped the claim.
+	segs := strings.Split(tok, ".")
+	if len(segs) != 3 {
+		t.Fatalf("test setup: malformed JWT with %d segments", len(segs))
+	}
+	raw, derr := base64.RawURLEncoding.DecodeString(segs[1])
+	if derr != nil {
+		t.Fatalf("test setup: decode payload: %v", derr)
+	}
+	if strings.Contains(string(raw), "purpose") {
+		t.Fatalf("test setup: legacy token should carry no purpose claim, got %s", raw)
+	}
+
+	svc := newTestJWT(t, "s3cr3t")
+	got, err := svc.VerifyAccess(tok)
+	if err != nil {
+		t.Fatalf("VerifyAccess rejected a legacy no-purpose token: %v", err)
+	}
+	if got.Subject != "u-legacy" {
+		t.Errorf("Subject = %q, want %q", got.Subject, "u-legacy")
+	}
+	if got.Purpose != "" {
+		t.Errorf("Purpose = %q, want empty", got.Purpose)
+	}
 }

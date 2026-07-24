@@ -31,6 +31,34 @@ type MigrationResult struct {
 	RowsScanned int
 	RowsUpdated int
 	Skipped     bool
+
+	// PreVerify is the chain's verification state as observed BEFORE
+	// the first row was rewritten, and PreHeadHash is the hash of the
+	// last row at that same moment. Populated by RehashChainInPlace
+	// only; MigrateLegacyV2Hashes leaves both zero.
+	//
+	// Why these exist: rehashing makes ANY chain verify clean, because
+	// it recomputes each hash from the row's current content. The
+	// function cannot distinguish "content is authentic, the hash
+	// columns are stale after an encoder change" (the recovery it is
+	// FOR) from "content was edited" (the thing the chain exists to
+	// detect) — nothing internal to the DB can. So the rewrite is
+	// unavoidably evidence-destroying, and the least a recovery tool
+	// can do is hand the operator a record of what it destroyed:
+	// whether the chain was already broken, where it first broke, and
+	// the head hash they can compare against an archived copy or an
+	// externally-recorded anchor.
+	//
+	// Callers driving an operator-facing command should surface both
+	// and require explicit confirmation before proceeding — see
+	// Barista's `barista audit migrate-force`.
+	//
+	// PreVerify walks every row under per-row canonical-version
+	// dispatch, matching the rewriter's own view of the table. That is
+	// deliberately broader than Verify(), which walks only the segment
+	// rooted at the most recent chain-restart row.
+	PreVerify   VerifyResult
+	PreHeadHash []byte
 }
 
 // MigrateLegacyV2Hashes walks every canonical_version=2 row in the
@@ -169,6 +197,15 @@ func (l *SQLiteLogger) MigrateLegacyV2Hashes(ctx context.Context) (MigrationResu
 // stored values already matched the recomputed values aren't
 // double-counted.
 //
+// DESTRUCTIVE TO TAMPER EVIDENCE. Recomputing each hash from the row's
+// current content makes any chain verify clean afterwards — including
+// one whose content an attacker edited. This function cannot tell that
+// case from the stale-encoder case it exists to repair. The returned
+// MigrationResult therefore carries PreVerify + PreHeadHash, the
+// chain's state as captured before the first write; an operator-facing
+// caller should surface them and demand explicit confirmation rather
+// than rewriting silently.
+//
 // v1.8 walk-fix — TD-AUDIT-12 closure.
 func (l *SQLiteLogger) RehashChainInPlace(ctx context.Context) (MigrationResult, error) {
 	l.mu.Lock()
@@ -183,6 +220,13 @@ func (l *SQLiteLogger) RehashChainInPlace(ctx context.Context) (MigrationResult,
 	if len(rows) == 0 {
 		return result, nil
 	}
+
+	// Forensic pre-state, captured BEFORE the first UPDATE. Once the
+	// rewrite runs every row verifies clean by construction, so this is
+	// the only surviving record of what the chain looked like going in.
+	// Free: it reuses the rows already read above.
+	result.PreVerify = walkChain(rows, 0)
+	result.PreHeadHash = append([]byte(nil), rows[len(rows)-1].Hash...)
 
 	// Genesis: the first row's prev_hash is HashSize zero bytes. Same
 	// invariant as MigrateLegacyV2Hashes' genesis row.

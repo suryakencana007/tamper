@@ -781,6 +781,130 @@ func TestRehashChainInPlace_RecoversStalePrevHash(t *testing.T) {
 	}
 }
 
+// seedCleanChainForTest writes a 4-row v=3 chain (row 0 is the
+// chain-restart genesis) and returns the row ids in chain order.
+func seedCleanChainForTest(t *testing.T, ctx context.Context, l *SQLiteLogger) []string {
+	t.Helper()
+	base := time.Date(2026, 5, 24, 11, 49, 29, 0, time.UTC)
+	ids := []string{"row-0-restart", "row-1-data", "row-2-data", "row-3-data"}
+	for i, id := range ids {
+		e := Event{
+			ID:           id,
+			At:           base.Add(time.Duration(i) * time.Millisecond),
+			Actor:        Actor{Type: ActorTypeUser, UserID: "u-1"},
+			Action:       "project.create",
+			ResourceType: ResourceProject,
+			ResourceID:   "p-" + id,
+		}
+		if i == 0 {
+			e.Actor = ActorSystem("barista")
+			e.Action = ActionAuditChainRestart
+			e.ResourceType = "system"
+		}
+		if _, err := l.Log(ctx, e); err != nil {
+			t.Fatalf("Log %s: %v", id, err)
+		}
+	}
+	return ids
+}
+
+// storedHashHexForTest reads a row's stored hash straight from the DB.
+func storedHashHexForTest(t *testing.T, ctx context.Context, l *SQLiteLogger, id string) string {
+	t.Helper()
+	db := SQLiteAuditDBForTest(l)
+	if db == nil {
+		t.Fatal("SQLiteAuditDBForTest returned nil")
+	}
+	var h []byte
+	if err := db.QueryRowContext(ctx, `SELECT hash FROM events WHERE id = ?`, id).Scan(&h); err != nil {
+		t.Fatalf("select hash for %s: %v", id, err)
+	}
+	return hex.EncodeToString(h)
+}
+
+// TestRehashChainInPlace_CapturesPreRewriteEvidence pins the forensic
+// record the rewriter must hand back.
+//
+// The regression: RehashChainInPlace recomputes every hash from each
+// row's CURRENT content, so after it runs a tampered chain verifies
+// clean and is indistinguishable from an authentic one. It is the
+// documented recovery for the boot guard's exit-3, which means the
+// sanctioned response to detected tampering used to destroy the
+// evidence of that tampering and report nothing about it. The
+// PreVerify + PreHeadHash fields are the record that survives, and an
+// operator-facing caller is expected to surface them and demand
+// confirmation before rewriting.
+func TestRehashChainInPlace_CapturesPreRewriteEvidence(t *testing.T) {
+	ctx := context.Background()
+	l := newSQLiteLoggerForTest(t).(*SQLiteLogger)
+	seedCleanChainForTest(t, ctx, l)
+
+	headBefore := storedHashHexForTest(t, ctx, l, "row-3-data")
+
+	// Tamper with a MIDDLE row's content — the cover-up shape. The head
+	// row is untouched, so its stored hash is still the authentic one
+	// until the rewrite moves it.
+	db := SQLiteAuditDBForTest(l)
+	if _, err := db.ExecContext(ctx,
+		`UPDATE events SET action = ? WHERE id = ?`, "project.delete-cover-up", "row-2-data"); err != nil {
+		t.Fatalf("UPDATE action: %v", err)
+	}
+
+	res, err := l.RehashChainInPlace(ctx)
+	if err != nil {
+		t.Fatalf("RehashChainInPlace: %v", err)
+	}
+
+	if !res.PreVerify.Tamper {
+		t.Error("PreVerify.Tamper = false; the chain was tampered before the rewrite and the record must say so")
+	}
+	if res.PreVerify.FirstBadIndex != 2 {
+		t.Errorf("PreVerify.FirstBadIndex = %d, want 2 (the edited row)", res.PreVerify.FirstBadIndex)
+	}
+	if res.PreVerify.Total != 4 {
+		t.Errorf("PreVerify.Total = %d, want 4", res.PreVerify.Total)
+	}
+	if got := hex.EncodeToString(res.PreHeadHash); got != headBefore {
+		t.Errorf("PreHeadHash = %s, want the pre-rewrite head %s", got, headBefore)
+	}
+
+	// The anchor is only useful if the rewrite actually moved the head —
+	// that difference is what an operator compares against an archived
+	// copy or an externally recorded value.
+	if headAfter := storedHashHexForTest(t, ctx, l, "row-3-data"); headAfter == headBefore {
+		t.Error("head hash unchanged after rewrite; expected the rewrite to re-thread the chain")
+	}
+
+	// And this is the laundering the record exists to document: the
+	// tampered chain now verifies clean.
+	if _, err := verifyChainPostMigrationStore(ctx, l); err != nil {
+		t.Fatalf("post-rewrite walk should be clean (that is the whole problem); got: %v", err)
+	}
+}
+
+// TestRehashChainInPlace_PreVerifyCleanOnHealthyChain gives the CLI the
+// signal it needs to refuse by default: on an intact chain there is
+// nothing to recover, so rewriting is pure downside.
+func TestRehashChainInPlace_PreVerifyCleanOnHealthyChain(t *testing.T) {
+	ctx := context.Background()
+	l := newSQLiteLoggerForTest(t).(*SQLiteLogger)
+	seedCleanChainForTest(t, ctx, l)
+
+	res, err := l.RehashChainInPlace(ctx)
+	if err != nil {
+		t.Fatalf("RehashChainInPlace: %v", err)
+	}
+	if res.PreVerify.Tamper {
+		t.Errorf("PreVerify.Tamper = true on an intact chain (FirstBadIndex=%d)", res.PreVerify.FirstBadIndex)
+	}
+	if res.RowsUpdated != 0 {
+		t.Errorf("RowsUpdated = %d, want 0 on an intact chain", res.RowsUpdated)
+	}
+	if len(res.PreHeadHash) != HashSize {
+		t.Errorf("PreHeadHash length = %d, want %d", len(res.PreHeadHash), HashSize)
+	}
+}
+
 // TestRehashChainInPlace_CrossCanonicalVersion confirms the recovery
 // tool walks rows of mixed canonical_versions correctly — recomputing
 // each under its own version. Mirrors the dev DB shape: v=2 row 0

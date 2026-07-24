@@ -165,6 +165,45 @@ func (p *Path) applySimple(target map[string]any, value json.RawMessage, op Op) 
 	return applyLeaf(parent, p.Segments[len(p.Segments)-1], value, op)
 }
 
+// resolveKey returns the key already present in m that case-insensitively
+// equals name, or name unchanged when m holds no such key.
+//
+// RFC 7643 section 2.1 and RFC 7644 section 3.10 make SCIM attribute
+// names case-INSENSITIVE, so an IdP may legitimately send "Active",
+// "userName" or "ACTIVE" for the attribute stored as "active". Matching
+// map keys byte-exactly meant such a PATCH wrote a *phantom* key that the
+// caller's typed round-trip then discarded: the mutation was silently
+// lost while the handler still answered 200 with the unchanged resource.
+// For a deprovision ("replace active=false") that turns an offboarding
+// request into a no-op the IdP records as success.
+//
+// Exact match wins first, so every PATCH that works today follows the
+// identical path and the scan only runs for input that is currently a
+// silent no-op. This mirrors what the package already does for the `op`
+// field, which Operation.UnmarshalJSON lowercases for the same reason.
+//
+// When a map somehow holds two case-variants of one name the smallest by
+// byte order is chosen, so behaviour does not depend on Go's randomised
+// map iteration.
+func resolveKey(m map[string]any, name string) string {
+	if m == nil {
+		return name
+	}
+	if _, ok := m[name]; ok {
+		return name
+	}
+	best := ""
+	for k := range m {
+		if strings.EqualFold(k, name) && (best == "" || k < best) {
+			best = k
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return name
+}
+
 // applyLeaf sets / appends / deletes leaf on parent under the given op.
 // The behaviour is type-driven on the existing value of parent[leaf]:
 //
@@ -176,6 +215,9 @@ func (p *Path) applySimple(target map[string]any, value json.RawMessage, op Op) 
 //   - OpAdd on a multi-valued: append the incoming array (or one
 //     scalar) to the existing slice.
 func applyLeaf(parent map[string]any, leaf string, value json.RawMessage, op Op) error {
+	// Case-insensitive per RFC 7643 section 2.1 — resolve once here and
+	// every read/write/delete below lands on the stored key.
+	leaf = resolveKey(parent, leaf)
 	if op == OpRemove {
 		delete(parent, leaf)
 		return nil
@@ -209,6 +251,7 @@ func applyLeaf(parent map[string]any, leaf string, value json.RawMessage, op Op)
 func navigateOrCreate(target map[string]any, segments []string, op Op) (map[string]any, error) {
 	current := target
 	for _, seg := range segments {
+		seg = resolveKey(current, seg)
 		next, ok := current[seg]
 		if !ok {
 			if op == OpRemove {
@@ -265,6 +308,7 @@ func (p *Path) applyFiltered(target map[string]any, value json.RawMessage, op Op
 		}
 		parent = nav
 	}
+	arrayKey = resolveKey(parent, arrayKey)
 	raw, present := parent[arrayKey]
 	var arr []any
 	if present {
@@ -332,6 +376,7 @@ func (p *Path) applyFiltered(target map[string]any, value json.RawMessage, op Op
 func deletePath(m map[string]any, segs []string) {
 	cur := m
 	for i, seg := range segs {
+		seg = resolveKey(cur, seg)
 		if i == len(segs)-1 {
 			delete(cur, seg)
 			return
@@ -359,7 +404,7 @@ func assignFiltered(elem map[string]any, postFilter []string, value json.RawMess
 			return newValueError("value for filtered element must be a JSON object", nil)
 		}
 		for k, v := range decodedMap {
-			elem[k] = v
+			elem[resolveKey(elem, k)] = v
 		}
 		return nil
 	}
@@ -497,7 +542,7 @@ func evalAttribute(e *fp.AttributeExpression, elem map[string]any) (bool, error)
 			raw = nil
 			break
 		}
-		raw, ok = curMap[p]
+		raw, ok = curMap[resolveKey(curMap, p)]
 		if !ok {
 			raw = nil
 			break

@@ -117,6 +117,141 @@ func TestOpCaseInsensitive(t *testing.T) {
 // TestOpAddOnSingularBehavesAsReplace closes the foot-gun from the task
 // file: Azure AD emits op=add for every non-array PATCH, expecting
 // replace semantics. The applier must overwrite, not error.
+// Attribute-name case-insensitivity — the sibling of TestOpCaseInsensitive
+// above. RFC 7643 section 2.1 and RFC 7644 section 3.10 make attribute
+// NAMES case-insensitive exactly as section 3.5.2 does for the `op` field,
+// but only `op` was normalised.
+//
+// The regression these pin: a byte-exact map lookup meant "Active" wrote a
+// phantom key alongside the real "active". The caller's typed round-trip
+// then dropped the phantom, so the mutation vanished while the handler
+// still returned 200 with the unchanged resource. For the deprovision
+// shape ("replace active=false") that turns an offboarding request into a
+// silent no-op that the IdP records as a success — and, for a caller that
+// audits PATCHes, one attested by an audit row saying it applied.
+
+func TestPathCaseInsensitive(t *testing.T) {
+	// Every spelling an IdP may legitimately send for `active`.
+	for _, path := range []string{"active", "Active", "ACTIVE", "aCtIvE"} {
+		t.Run(path, func(t *testing.T) {
+			target := map[string]any{"id": "u1", "active": true}
+			ops := unmarshalOps(t, `[{"op":"replace","path":"`+path+`","value":false}]`)
+			if err := Apply(target, ops); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if target["active"] != false {
+				t.Errorf("active = %v, want false — deprovision was silently dropped", target["active"])
+			}
+			// The phantom key is the actual defect: without resolution the
+			// write lands on a sibling and the real attribute is untouched.
+			if len(target) != 2 {
+				t.Errorf("resource grew to %d keys (%v) — a phantom key was created", len(target), target)
+			}
+		})
+	}
+}
+
+func TestPathCaseInsensitive_PathLessMerge(t *testing.T) {
+	// The shape Azure AD sends most often: no path, whole-object overlay.
+	target := map[string]any{"id": "u1", "active": true, "userName": "alice"}
+	ops := unmarshalOps(t, `[{"op":"replace","value":{"Active":false,"USERNAME":"bob"}}]`)
+	if err := Apply(target, ops); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if target["active"] != false {
+		t.Errorf("active = %v, want false", target["active"])
+	}
+	if target["userName"] != "bob" {
+		t.Errorf("userName = %v, want bob", target["userName"])
+	}
+	if len(target) != 3 {
+		t.Errorf("resource grew to %d keys (%v) — phantom keys were created", len(target), target)
+	}
+}
+
+func TestPathCaseInsensitive_Nested(t *testing.T) {
+	target := map[string]any{"id": "u1", "name": map[string]any{"familyName": "Liddell"}}
+	ops := unmarshalOps(t, `[{"op":"replace","path":"Name.FamilyName","value":"Carroll"}]`)
+	if err := Apply(target, ops); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	name, ok := target["name"].(map[string]any)
+	if !ok {
+		t.Fatalf("name is not an object: %#v — a phantom Name was created", target)
+	}
+	if name["familyName"] != "Carroll" {
+		t.Errorf("name.familyName = %v, want Carroll (name=%v)", name["familyName"], name)
+	}
+	if len(name) != 1 {
+		t.Errorf("name grew to %d keys (%v)", len(name), name)
+	}
+}
+
+func TestPathCaseInsensitive_FilteredRemove(t *testing.T) {
+	// Group membership revocation — the authorization-bearing case.
+	target := map[string]any{
+		"id": "g1",
+		"members": []any{
+			map[string]any{"value": "u1"},
+			map[string]any{"value": "u2"},
+		},
+	}
+	ops := unmarshalOps(t, `[{"op":"remove","path":"Members[Value eq \"u1\"]"}]`)
+	if err := Apply(target, ops); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	members, ok := target["members"].([]any)
+	if !ok {
+		t.Fatalf("members is not a list: %#v", target)
+	}
+	if len(members) != 1 {
+		t.Fatalf("members = %v, want exactly u2 — the revocation was dropped", members)
+	}
+	if m := members[0].(map[string]any); m["value"] != "u2" {
+		t.Errorf("surviving member = %v, want u2", m)
+	}
+}
+
+func TestPathCaseInsensitive_Remove(t *testing.T) {
+	target := map[string]any{"id": "u1", "nickName": "al"}
+	ops := unmarshalOps(t, `[{"op":"remove","path":"NickName"}]`)
+	if err := Apply(target, ops); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, present := target["nickName"]; present {
+		t.Errorf("nickName still present after remove: %v", target)
+	}
+}
+
+func TestPathCaseInsensitive_UnknownAttributeKeepsRequestedSpelling(t *testing.T) {
+	// Resolution must not invent a match. An attribute the resource does
+	// not carry is created verbatim, exactly as before this change.
+	target := map[string]any{"id": "u1"}
+	ops := unmarshalOps(t, `[{"op":"add","path":"displayName","value":"Alice"}]`)
+	if err := Apply(target, ops); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if target["displayName"] != "Alice" {
+		t.Errorf("displayName = %v, want Alice (target=%v)", target["displayName"], target)
+	}
+}
+
+func TestResolveKeyIsDeterministicAcrossCaseVariants(t *testing.T) {
+	// Go randomises map iteration, so a map holding two case-variants must
+	// still resolve to the same key on every call or behaviour would be
+	// nondeterministic. Smallest by byte order wins ("Active" < "active").
+	m := map[string]any{"Active": 1, "active": 2}
+	for i := range 50 {
+		if got := resolveKey(m, "ACTIVE"); got != "Active" {
+			t.Fatalf("iteration %d: resolveKey = %q, want %q", i, got, "Active")
+		}
+	}
+	// An exact match must always win over any case-variant.
+	if got := resolveKey(m, "active"); got != "active" {
+		t.Errorf("resolveKey exact = %q, want %q", got, "active")
+	}
+}
+
 func TestOpAddOnSingularBehavesAsReplace(t *testing.T) {
 	target := map[string]any{
 		"id":       "u1",

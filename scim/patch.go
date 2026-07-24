@@ -286,17 +286,22 @@ func mergePartialResource(target map[string]any, raw json.RawMessage, mode merge
 		return newValueError("value is not a JSON object", err)
 	}
 	for k, v := range overlay {
-		switch existing := target[k].(type) {
+		// Attribute names are case-insensitive (RFC 7643 section 2.1), and
+		// the path-less merge is the shape Azure AD sends most often — so
+		// an overlay key of "Active" must land on the stored "active"
+		// rather than creating a phantom sibling.
+		tk := resolveKey(target, k)
+		switch existing := target[tk].(type) {
 		case []any:
 			incoming, isList := v.([]any)
 			if mode == mergeModeAdd && isList {
-				target[k] = append(existing, incoming...)
+				target[tk] = append(existing, incoming...)
 				continue
 			}
 			// Replace mode OR mismatched type — overwrite.
-			target[k] = v
+			target[tk] = v
 		default:
-			target[k] = v
+			target[tk] = v
 		}
 	}
 	return nil

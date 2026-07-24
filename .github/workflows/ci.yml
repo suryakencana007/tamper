@@ -42,6 +42,29 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" v2.11.3
           "$(go env GOPATH)/bin/golangci-lint" run ./...
 
+      # Vulnerability scan. This is an auth library — a reachable CVE in a
+      # signature-verification or crypto path is the failure mode that
+      # matters most, and it is the one thing the other steps cannot see.
+      #
+      # Deliberately NOT pinned the way golangci-lint is. The tool is fixed
+      # so its behaviour is reproducible, but the vulnerability DATABASE is
+      # fetched live, so a newly published advisory can turn a green
+      # pipeline red with no commit. For a linter that would be drift; for a
+      # vulnerability scanner it is the entire point.
+      #
+      # Symbol-level by default: only advisories tamper actually CALLS fail
+      # the build. Advisories in required-but-uncalled code are reported and
+      # do not gate (currently GO-2026-5932, x/crypto's openpgp package).
+      #
+      # `go run` rather than `go install` + invoke, on purpose: it runs in
+      # the main module's context, so it honours the `toolchain` directive
+      # in go.mod and reports the stdlib version tamper actually links.
+      # Installing the binary separately builds it outside that context,
+      # where a mismatched toolchain either misreports the stdlib or fails
+      # outright with "package requires newer Go version".
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
       # Drift guard: the checked-in sqlc output (audit/sqlitestore) must be
       # byte-reproducible from sqlc.yaml with the pinned generator. Single
       # SQLite driver, so `sqlc generate` is the whole pipeline (no build-tag

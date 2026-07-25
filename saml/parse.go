@@ -73,7 +73,7 @@ func (p *Provider) ParseAssertion(ctx context.Context, samlResponse, relayState,
 		possible = []string{expectedRequestID}
 	}
 	req := buildPostFormRequest(p.SP.AcsURL.String(), samlResponse, relayState)
-	assertion, err := p.SP.ParseResponse(req, possible)
+	assertion, err := p.safeParseResponse(req, possible)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrAssertionInvalid, describeParseError(err))
 	}
@@ -100,6 +100,36 @@ func (p *Provider) ParseAssertion(ctx context.Context, samlResponse, relayState,
 		return nil, fmt.Errorf("%w: provider %q assertion %q", ErrAssertionReplayed, p.Config.ID, assertion.ID)
 	}
 	return &ParsedAssertion{raw: assertion}, nil
+}
+
+// safeParseResponse wraps crewjam's ParseResponse in a recover barrier and
+// normalises a panic into ErrAssertionInvalid.
+//
+// crewjam/saml v0.5.1 nil-derefs a <SubjectConfirmation> that carries no
+// <SubjectConfirmationData> child (validateAssertion, service_provider.go)
+// — it dereferences .Recipient / .NotOnOrAfter with no per-entry nil guard.
+// Reaching it requires IdP-SIGNED malformed material (validateAssertion
+// runs only after the signature verifies), so it is not attacker-reachable
+// under the body-replay threat model. But an assertion — however malformed
+// — must never crash the ACS goroutine; a signed-but-broken assertion has
+// to fail CLOSED as invalid, exactly like any other parse failure. This
+// barrier makes that guarantee independent of the upstream fix.
+func (p *Provider) safeParseResponse(req *http.Request, possible []string) (*crewjamsaml.Assertion, error) {
+	return withParseRecover(func() (*crewjamsaml.Assertion, error) {
+		return p.SP.ParseResponse(req, possible)
+	})
+}
+
+// withParseRecover runs fn under a recover barrier, normalising any panic
+// into ErrAssertionInvalid (fail closed). Extracted so the barrier is unit-
+// testable without a panic-inducing signed SAML fixture.
+func withParseRecover(fn func() (*crewjamsaml.Assertion, error)) (a *crewjamsaml.Assertion, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			a, err = nil, fmt.Errorf("%w: parse panicked: %v", ErrAssertionInvalid, r)
+		}
+	}()
+	return fn()
 }
 
 // describeParseError digs the real cause out of crewjam's error.

@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -92,4 +93,38 @@ func TestBuildPostFormRequest(t *testing.T) {
 	if _, ok := r.PostForm["RelayState"]; ok {
 		t.Error("empty RelayState must not be set")
 	}
+}
+
+// TestWithParseRecover confirms the recover barrier converts a panic in the
+// crewjam parse path into ErrAssertionInvalid (fail closed), so an
+// IdP-signed-but-malformed assertion can never crash the ACS goroutine.
+func TestWithParseRecover(t *testing.T) {
+	t.Run("panic becomes ErrAssertionInvalid", func(t *testing.T) {
+		a, err := withParseRecover(func() (*crewjamsaml.Assertion, error) {
+			panic("crewjam nil-deref on a SubjectConfirmation with no data")
+		})
+		if a != nil {
+			t.Errorf("assertion = %v, want nil on panic", a)
+		}
+		if !errors.Is(err, ErrAssertionInvalid) {
+			t.Fatalf("err = %v, want ErrAssertionInvalid", err)
+		}
+	})
+	t.Run("normal return passes through", func(t *testing.T) {
+		want := &crewjamsaml.Assertion{ID: "a1"}
+		a, err := withParseRecover(func() (*crewjamsaml.Assertion, error) {
+			return want, nil
+		})
+		if err != nil || a != want {
+			t.Fatalf("got (%v,%v), want (%v,nil)", a, err, want)
+		}
+	})
+	t.Run("normal error passes through unchanged", func(t *testing.T) {
+		sentinel := errors.New("boom")
+		if _, err := withParseRecover(func() (*crewjamsaml.Assertion, error) {
+			return nil, sentinel
+		}); !errors.Is(err, sentinel) {
+			t.Errorf("err = %v, want the passed-through sentinel", err)
+		}
+	})
 }

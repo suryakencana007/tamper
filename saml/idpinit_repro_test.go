@@ -100,7 +100,7 @@ func reproProvider(t *testing.T, allowIdPInitiated bool) *Provider {
 		SPCert:            cert,
 		SPKey:             key,
 		AllowIDPInitiated: allowIdPInitiated,
-	}, fakeEntity(certPEM))
+	}, fakeEntity(certPEM), NewMemAssertionReplayStore())
 	if err != nil {
 		t.Fatalf("BuildProvider: %v", err)
 	}

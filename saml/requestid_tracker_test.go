@@ -35,10 +35,17 @@ import (
 	crewjamsaml "github.com/crewjam/saml"
 )
 
-// hook reaches the ValidateRequestID closure BuildProvider installs. It
-// is the single decision point for request-ID correlation: with
-// SP.AllowIDPInitiated forced true, crewjam's own two checks are
-// disabled, so this closure IS the policy.
+// hook reaches the ValidateRequestID closure BuildProvider installs.
+//
+// NOTE ON ROLE: as of the assertion-replay change this closure is a
+// DEMOTED fail-closed pre-filter, not the authoritative correlation
+// decision — that is now correlate() in ParseAssertion, on the SIGNED
+// SubjectConfirmationData (see saml/replay.go and TestCorrelate_TruthTable).
+// The closure's BODY is byte-for-byte unchanged, so these tests still pin
+// its behaviour exactly; they just no longer describe the whole policy.
+// The closure can only REJECT (crewjam's own accept paths are off with
+// AllowIDPInitiated=true), so it can never admit anything correlate() would
+// refuse.
 func hook(t *testing.T) func(crewjamsaml.Response, []string) error {
 	t.Helper()
 	p := reproProvider(t, true)

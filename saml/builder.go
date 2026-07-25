@@ -25,11 +25,17 @@ import (
 //
 // Returns nil-and-nil for an empty input slice in either mode so
 // callers can treat a nil registry as "SAML not configured".
+//
+// replay is the assertion-replay ledger threaded to every BuildProvider
+// call — one instance shared across the registry (the ledger key
+// namespaces by provider id). REQUIRED; a nil store fails every provider's
+// construction. See BuildProvider.
 func BuildRegistryFromConfigs(
 	ctx context.Context,
 	configs []ProviderConfig,
 	fetcher MetadataFetcher,
 	partialOK bool,
+	replay AssertionReplayStore,
 ) (*ProviderRegistry, error) {
 	if len(configs) == 0 {
 		return nil, nil
@@ -53,7 +59,7 @@ func BuildRegistryFromConfigs(
 			}
 			return nil, fmt.Errorf("saml: provider %q: %w", cfg.ID, err)
 		}
-		p, err := BuildProvider(cfg, entity)
+		p, err := BuildProvider(cfg, entity, replay)
 		if err != nil {
 			if partialOK {
 				log.Printf("saml: provider %q construction failed; omitting from registry until next reload: %v", cfg.ID, err)

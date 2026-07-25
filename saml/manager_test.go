@@ -142,6 +142,7 @@ func TestSAMLManager_RegistryRebuildAndBadPEMOmission(t *testing.T) {
 			return fakeEntity(certPEM), nil
 		}),
 		WithAllowIDPInitiated(true),
+		WithAssertionReplayStore(NewMemAssertionReplayStore()),
 	)
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	m.SetClock(func() time.Time { return now })

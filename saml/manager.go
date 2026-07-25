@@ -78,6 +78,16 @@ type Manager struct {
 	allowIDPInitiated bool
 	skewTolerance     time.Duration
 
+	// replay is the assertion-replay ledger threaded into every rebuilt
+	// registry. REQUIRED (WithAssertionReplayStore): rebuildLocked refuses
+	// to build without one, matching the spMetadataURL contract, since
+	// NewManager returns no error.
+	replay AssertionReplayStore
+
+	// warnedNoReplay fires the one-shot SECURITY log at most once when the
+	// configured ledger is NoReplayDefence.
+	warnedNoReplay sync.Once
+
 	mu       sync.RWMutex
 	registry *ProviderRegistry
 	cachedAt time.Time
@@ -128,6 +138,16 @@ func WithAllowIDPInitiated(v bool) ManagerOption {
 // call.
 func WithSkewTolerance(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.skewTolerance = d }
+}
+
+// WithAssertionReplayStore installs the single-use assertion-replay ledger
+// that every rebuilt Provider consumes assertions against. REQUIRED: a
+// Manager without one cannot build a registry (rebuildLocked errors, the
+// same shape as a missing WithSPMetadataURL). Pass NoReplayDefence{} to opt
+// out explicitly — safe only when AllowIDPInitiated is false for every
+// provider, since Layer 1 correlation then covers the whole surface.
+func WithAssertionReplayStore(s AssertionReplayStore) ManagerOption {
+	return func(m *Manager) { m.replay = s }
 }
 
 // NewManager constructs a Manager over the given store. keys may be
@@ -408,6 +428,18 @@ func (m *Manager) rebuildLocked(ctx context.Context) (*ProviderRegistry, error) 
 	if m.spMetadataURL == nil {
 		return nil, fmt.Errorf("saml: manager has no SP-metadata-URL mapping (WithSPMetadataURL)")
 	}
+	if m.replay == nil {
+		return nil, fmt.Errorf("saml: manager has no assertion replay store (WithAssertionReplayStore); " +
+			"pass saml.NewMemAssertionReplayStore() for one process, a shared store for multiple " +
+			"replicas, or saml.NoReplayDefence{} to opt out explicitly")
+	}
+	if _, isNoop := m.replay.(NoReplayDefence); isNoop {
+		m.warnedNoReplay.Do(func() {
+			log.Printf("saml: SECURITY: assertion replay defence is DISABLED (NoReplayDefence). " +
+				"Safe only when AllowIDPInitiated=false for every provider; otherwise a captured " +
+				"IdP-initiated assertion is replayable within its validity window.")
+		})
+	}
 	configs := make([]ProviderConfig, 0, len(recs))
 	for _, rec := range recs {
 		def, derr := m.definitionFromRecord(rec)
@@ -450,7 +482,7 @@ func (m *Manager) rebuildLocked(ctx context.Context) (*ProviderRegistry, error) 
 		m.cachedAt = m.now()
 		return nil, nil
 	}
-	reg, err := BuildRegistryFromConfigs(ctx, configs, m.fetcher, true)
+	reg, err := BuildRegistryFromConfigs(ctx, configs, m.fetcher, true, m.replay)
 	if err != nil {
 		return nil, fmt.Errorf("saml: build registry: %w", err)
 	}

@@ -429,20 +429,43 @@ func (s *SAMLRoutes) ACS(ctx context.Context, providerID string, form SAMLAssert
 	}
 
 	// The cookie is read BEFORE the parse: it carries the AuthnRequest ID
-	// the parse needs as its InResponseTo allow-list (TD-FUNC-28).
+	// the parse needs as its correlator (TD-FUNC-28).
 	claims, hasState := s.readState(ctx, prov.Config.ID)
 
-	// Correlate against the request THIS flow issued. Empty when there
-	// was no prior request (IdP-initiated) — tamper's ValidateRequestID
-	// hook allows that through and the app's policy gate decides.
-	var possibleRequestIDs []string
-	if hasState && claims.RequestID != "" {
-		possibleRequestIDs = []string{claims.RequestID}
+	// The AuthnRequest ID THIS flow issued, or "" when it issued none (no
+	// cookie, expired cookie, or a genuine IdP-initiated flow). A missing
+	// cookie is still indistinguishable from IdP-initiated at THIS layer —
+	// the captured-assertion replay closes one layer down, inside
+	// ParseAssertion, on the signed SubjectConfirmationData. A present
+	// cookie with an empty RequestID honestly reads as "no request".
+	var expectedRequestID string
+	if hasState {
+		expectedRequestID = claims.RequestID
 	}
 
-	assertion, err := prov.ParseAssertion(form.SAMLResponse, form.RelayState, possibleRequestIDs)
+	assertion, err := prov.ParseAssertion(ctx, form.SAMLResponse, form.RelayState, expectedRequestID)
 	if err != nil {
-		return Redirect{}, espressofw.ErrBadRequest("saml assertion invalid").WithCode("SAML_ASSERTION_INVALID")
+		switch {
+		case errors.Is(err, saml.ErrReplayStoreUnavailable):
+			// The ledger is ours; a store outage is a 503, not a client 4xx.
+			return Redirect{}, espressofw.ErrServiceUnavailable("saml replay store unavailable").
+				WithCode("SAML_REPLAY_STORE_UNAVAILABLE").Wrap(err)
+		case errors.Is(err, saml.ErrAssertionReplayed):
+			return Redirect{}, espressofw.ErrBadRequest("saml assertion already consumed").
+				WithCode("SAML_ASSERTION_REPLAYED")
+		case errors.Is(err, saml.ErrUncorrelated), errors.Is(err, saml.ErrNoSubjectConfirmation):
+			return Redirect{}, espressofw.ErrBadRequest("saml assertion does not answer this flow's request").
+				WithCode("SAML_ASSERTION_UNCORRELATED")
+		case errors.Is(err, saml.ErrIdPInitiatedDisabled):
+			return Redirect{}, espressofw.ErrBadRequest("idp-initiated saml sso is disabled").
+				WithCode("SAML_IDP_INITIATED_DISABLED")
+		default:
+			// Signature / timing / audience family stays collapsed — it is
+			// oracle-sensitive, unlike the replay/correlation codes above
+			// (which only tell a party already holding a valid assertion
+			// something it already knows).
+			return Redirect{}, espressofw.ErrBadRequest("saml assertion invalid").WithCode("SAML_ASSERTION_INVALID")
+		}
 	}
 
 	// Mode dispatch. Empty mode reads as login so cookies signed before

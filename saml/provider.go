@@ -88,6 +88,13 @@ type Provider struct {
 	// response signature verification. The app's ACS handler reaches
 	// in for ParseResponse.
 	SP *crewjamsaml.ServiceProvider
+
+	// replay is the single-use ledger ParseAssertion consumes each
+	// assertion against (Layer 2). Unexported so a Provider literal built
+	// outside this package cannot silently omit it; BuildProvider refuses
+	// a nil store. Shared across every Provider in a registry — the ledger
+	// key namespaces by provider id.
+	replay AssertionReplayStore
 }
 
 // ProviderRegistry is the request-time lookup surface. Built once per
@@ -111,9 +118,20 @@ type ProviderRegistry struct {
 // the two responsibilities lets the metadata fetch be retried +
 // degraded (partialOK pattern) without re-running the per-Provider
 // validation.
-func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor) (*Provider, error) {
+//
+// replay is the assertion-replay ledger the built Provider consumes each
+// assertion against. It is REQUIRED: a nil store is a wiring error that
+// fails construction here rather than a silent no-op at request time. Pass
+// NewMemAssertionReplayStore() for a single process, a shared store for
+// multiple replicas, or NoReplayDefence{} to opt out explicitly.
+func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor, replay AssertionReplayStore) (*Provider, error) {
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("saml: provider id is required")
+	}
+	if replay == nil {
+		return nil, fmt.Errorf("saml: provider %q: an AssertionReplayStore is required; "+
+			"pass saml.NewMemAssertionReplayStore() for one process, a shared store for "+
+			"multiple replicas, or saml.NoReplayDefence{} to opt out explicitly", cfg.ID)
 	}
 	if !validProviderID(cfg.ID) {
 		return nil, fmt.Errorf("saml: provider id %q is not a URL-safe path segment", cfg.ID)
@@ -165,12 +183,13 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 		// cannot perform for us — it does NOT open the IdP-initiated
 		// surface.
 		//
-		// The policy itself is enforced ABOVE this layer, off
-		// ParsedAssertion.IdPInitiated() (an empty InResponseTo IS the
-		// definition of IdP-initiated), which is where cfg.
-		// AllowIDPInitiated is read. That gate already existed; until now
-		// it was unreachable dead code, because control never survived
-		// this line to reach it.
+		// The policy itself is enforced in ParseAssertion, by correlate()
+		// reading the SIGNED SubjectConfirmationData.InResponseTo and
+		// cfg.AllowIDPInitiated. (Historically this comment said the gate
+		// lived "above this layer" off ParsedAssertion.IdPInitiated(); as
+		// of the replay-defence change the framework owns that decision on
+		// signed material inside the parse, so a consumer no longer has to
+		// remember to call the gate.)
 		//
 		// No security regression, and it is worth being exact about why:
 		//
@@ -190,29 +209,30 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 		// all-or-nothing and broken; ours is neither.
 		AllowIDPInitiated: true,
 
-		// ValidateRequestID replaces crewjam's request-ID gate with one
-		// that can actually be satisfied. It fully overrides
-		// validateRequestID, and with AllowIDPInitiated=true above the
-		// only other InResponseTo check is skipped — so this hook is the
-		// single decision point.
+		// ValidateRequestID — DEMOTED to a fail-closed advisory pre-filter.
+		// It runs on the UNSIGNED Response.InResponseTo (crewjam evaluates
+		// it before the deferred signature verdict), so it is NOT the
+		// authoritative check. The authoritative correlation decision is
+		// correlate() in ParseAssertion, on the SIGNED
+		// SubjectConfirmationData, which runs AFTER crewjam returns.
 		//
-		//   - No ids supplied  => nothing to correlate against. Allow,
-		//     and let the app's post-parse gate decide whether an
-		//     IdP-initiated assertion is permitted at all
-		//     (ParsedAssertion.IdPInitiated()). This is the
-		//     missing-cookie -> LOGIN fallthrough that makes
-		//     IdP-initiated SSO legitimate; rejecting here would break
-		//     Okta tiles / Azure "My Apps".
-		//   - Ids supplied     => the caller issued an AuthnRequest and
-		//     stashed its ID. The assertion MUST answer that request.
+		// Direction matters, so be exact. This hook can only REJECT, never
+		// admit: with AllowIDPInitiated=true above, crewjam's own accept
+		// paths are off, so the sole way past crewjam's request-ID gate is
+		// this closure returning nil. It therefore cannot admit anything
+		// correlate() would refuse.
 		//
-		// The second case is the replay defence SAML otherwise lacks
-		// entirely: no nonce, no PKCE, and — before this — no
-		// InResponseTo binding either, so any IdP-signed assertion was
-		// accepted by any flow. That is benign-ish on the login leg
-		// (the assertion still proves who the subject is) and dangerous
-		// on the LINK leg, where the flow's own cookie decides WHOSE
-		// account the identity attaches to.
+		//   - Empty list (expectedRequestID==""): fully permissive (returns
+		//     nil). This is the replay-relevant path — a captured assertion
+		//     POSTed with no cookie — and correlate() is authoritative on it.
+		//   - Non-empty (SP-initiated): requires the UNSIGNED
+		//     Response.InResponseTo to match. This is fail-CLOSED and can
+		//     FALSE-REJECT a valid flow whose Response-level InResponseTo
+		//     was stripped by an active MITM or differs from the assertion's
+		//     (a nonconformant IdP). Never a false-admit. It is kept as
+		//     defence-in-depth; correlate() on signed material already
+		//     covers the security, so if this pre-filter ever causes interop
+		//     trouble it can be made unconditionally permissive without loss.
 		ValidateRequestID: func(response crewjamsaml.Response, possibleRequestIDs []string) error {
 			if len(possibleRequestIDs) == 0 {
 				return nil
@@ -245,7 +265,7 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 	// cfg.SkewTolerance rides along as a forensic record (rebuilds may
 	// inspect it) but is not threaded onto the SP struct.
 	_ = cfg.SkewTolerance
-	return &Provider{Config: cfg, SP: sp}, nil
+	return &Provider{Config: cfg, SP: sp, replay: replay}, nil
 }
 
 // validProviderID accepts ASCII letters / digits / hyphen /

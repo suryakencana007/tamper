@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,27 +28,76 @@ type ParsedAssertion struct {
 }
 
 // ParseAssertion validates a SAML response POST body against this
-// provider (signature via the IdP metadata cert, timing under the
-// process clock-skew pin, audience/destination against the SP
-// config) and returns the tamper-owned view.
+// provider and returns the tamper-owned view. It runs, in order:
 //
-// possibleRequestIDs is the InResponseTo allow-list. nil is
-// NORMALIZED to a non-nil empty slice: the two diverge inside the
-// library's request-ID hooks (an operator hook cannot distinguish
-// "empty allow-list" from "the SP forgot to pass one" when handed
-// nil), a walk-scarred foot-gun this API makes impossible rather
-// than documents.
-func (p *Provider) ParseAssertion(samlResponse, relayState string, possibleRequestIDs []string) (*ParsedAssertion, error) {
+//  1. crewjam signature + timing + audience/destination validation
+//     (p.SP.ParseResponse).
+//  2. Layer 1 correlation on SIGNED material (correlate): rejects a
+//     captured assertion presented with no flow, and enforces
+//     AllowIDPInitiated. No I/O — fail-closed by construction.
+//  3. Layer 2 single-use ledger (p.replay.ConsumeAssertion): for the
+//     genuine IdP-initiated class this is the only replay defence.
+//
+// expectedRequestID is the AuthnRequest ID THIS flow issued, or "" when it
+// issued none (a missing/expired state cookie, or a genuine IdP-initiated
+// flow). It is a single value, not the former []string allow-list — the
+// nil/empty ambiguity of that slice was the bypass: an empty list read as
+// "nothing to check" rather than "no request issued", so a replay with no
+// cookie sailed through.
+//
+// ctx flows to the ledger (a real store call on the request path).
+//
+// Failure semantics: correlation errors return their own sentinels
+// (ErrUncorrelated / ErrIdPInitiatedDisabled / ErrNoSubjectConfirmation).
+// A ledger outage returns ErrReplayStoreUnavailable — FAIL CLOSED, mapped
+// to 503, never a silent accept. A consumed assertion returns
+// ErrAssertionReplayed. Every other parse failure stays wrapped in the
+// generic ErrAssertionInvalid so the signature/timing family cannot become
+// an oracle.
+func (p *Provider) ParseAssertion(ctx context.Context, samlResponse, relayState, expectedRequestID string) (*ParsedAssertion, error) {
 	if p == nil || p.SP == nil {
 		return nil, fmt.Errorf("%w: provider service provider is nil", ErrAssertionInvalid)
 	}
-	if possibleRequestIDs == nil {
-		possibleRequestIDs = []string{}
+	if p.replay == nil {
+		// A Provider built through BuildProvider cannot reach here with a
+		// nil ledger (BuildProvider refuses it). This guards a
+		// hand-constructed literal — fail closed, never a silent accept.
+		return nil, fmt.Errorf("%w: provider %q has no assertion replay store", ErrReplayStoreUnavailable, p.Config.ID)
+	}
+
+	// crewjam still gets the expected id as its 1-element allow-list so its
+	// own (unsigned, advisory) checks behave; the authoritative check is
+	// correlate() below, on signed bytes.
+	possible := []string{}
+	if expectedRequestID != "" {
+		possible = []string{expectedRequestID}
 	}
 	req := buildPostFormRequest(p.SP.AcsURL.String(), samlResponse, relayState)
-	assertion, err := p.SP.ParseResponse(req, possibleRequestIDs)
+	assertion, err := p.SP.ParseResponse(req, possible)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrAssertionInvalid, describeParseError(err))
+	}
+
+	// Layer 1: correlation on signed material. Rejects the captured-
+	// assertion replay and enforces AllowIDPInitiated. Runs before the
+	// ledger so a policy-rejected assertion never burns a ledger row.
+	if err := correlate(assertion, expectedRequestID, p.Config.AllowIDPInitiated); err != nil {
+		return nil, err
+	}
+
+	// Layer 2: single-use ledger. Reached only by assertions Layer 1
+	// accepted. Consumed BEFORE the *ParsedAssertion escapes, so no caller
+	// can reach the app hook (token mint, identity link) on a second copy.
+	key, err := assertionReplayKey(p.Config.ID, assertion)
+	if err != nil {
+		return nil, err // unkeyable is not fresh — fail closed
+	}
+	fresh, err := p.replay.ConsumeAssertion(ctx, key, replayExpiry(assertion, time.Now()))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrReplayStoreUnavailable, err)
+	}
+	if !fresh {
+		return nil, fmt.Errorf("%w: provider %q assertion %q", ErrAssertionReplayed, p.Config.ID, assertion.ID)
 	}
 	return &ParsedAssertion{raw: assertion}, nil
 }
@@ -122,27 +172,26 @@ func (pa *ParsedAssertion) NameID() string {
 }
 
 // IdPInitiated reports whether the assertion was delivered without a
-// preceding AuthnRequest. The defining signature is an empty
-// InResponseTo on every SubjectConfirmationData entry — SP-initiated
-// flows always echo the AuthnRequest ID, so a missing value means the
-// IdP started the conversation (portal tiles, bookmarked links). An
-// assertion with no SubjectConfirmation at all reads as
-// IdP-initiated so the policy gate still applies.
+// preceding AuthnRequest — an empty (signed) InResponseTo. SP-initiated
+// flows always echo the AuthnRequest ID, so a missing value means the IdP
+// started the conversation (portal tiles, bookmarked links).
+//
+// Retained as an exported audit / defence-in-depth accessor. Note the
+// authoritative policy decision now lives in ParseAssertion via correlate()
+// — a consumer no longer has to call this gate to enforce
+// AllowIDPInitiated; the parse already did. It reads the same signed
+// SubjectConfirmationData as correlate() (via signedInResponseTo), so the
+// two never disagree. An assertion with no SubjectConfirmation reports true
+// here (nothing answered a request), but such an assertion is REJECTED by
+// ParseAssertion with ErrNoSubjectConfirmation, so it never reaches an app
+// hook that would consult this.
 func (pa *ParsedAssertion) IdPInitiated() bool {
-	a := pa.raw
-	if a == nil || a.Subject == nil {
-		return false
-	}
-	confs := a.Subject.SubjectConfirmations
-	if len(confs) == 0 {
+	got, err := signedInResponseTo(pa.raw)
+	if err != nil {
+		// No SubjectConfirmation — nothing echoes a request.
 		return true
 	}
-	for _, c := range confs {
-		if c.SubjectConfirmationData != nil && c.SubjectConfirmationData.InResponseTo != "" {
-			return false
-		}
-	}
-	return true
+	return got == ""
 }
 
 // AuthnTime returns the assertion's authentication instant as Unix

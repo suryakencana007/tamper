@@ -34,6 +34,11 @@ const HashSize = sha256.Size
 // Action is a stable, dotted string identifying the kind of mutation
 // that produced the event. Convention: "<resource>.<verb>" — e.g.
 // "project.create", "cluster.member.grant", "auth.login".
+//
+// The "system.audit." namespace (ReservedActionPrefix) is RESERVED for the
+// chain machinery's own segment markers. A consumer that derives actions
+// from untrusted input must reject that namespace at the boundary — see
+// IsReservedAction for why the framework cannot enforce it at Log.
 type Action string
 
 // ResourceType narrows the resource_id column to a known kind so

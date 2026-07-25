@@ -1436,3 +1436,31 @@ func TestListScoped_FilterCorrectness(t *testing.T) {
 		})
 	}
 }
+
+// TestIsReservedAction pins the reserved-namespace guard consumers use to
+// keep untrusted input from minting a chain-anchor action (which would
+// truncate Verify's walk root — see IsReservedAction's doc).
+func TestIsReservedAction(t *testing.T) {
+	reserved := []Action{
+		ActionAuditChainRestart,
+		ActionAuditChainMigrate,
+		"system.audit.chain_restart", // the exact truncation-attack string
+		"system.audit.anything",      // whole namespace is fenced
+		Action(ReservedActionPrefix), // the bare prefix
+	}
+	for _, a := range reserved {
+		if !IsReservedAction(a) {
+			t.Errorf("IsReservedAction(%q) = false, want true", a)
+		}
+	}
+	ordinary := []Action{
+		"project.create", "auth.login", "cluster.member.grant",
+		"system.audit", // no trailing dot — not in the namespace
+		"", "system", "audit.system.chain_restart",
+	}
+	for _, a := range ordinary {
+		if IsReservedAction(a) {
+			t.Errorf("IsReservedAction(%q) = true, want false", a)
+		}
+	}
+}

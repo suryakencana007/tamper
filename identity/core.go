@@ -128,6 +128,7 @@ func (c *Core) Register(ctx context.Context, email, password string) (User, Toke
 	}
 	user := User{
 		ID:           u.ID,
+		TenantID:     u.TenantID, // carried, never read
 		Email:        u.Email,
 		PasswordHash: u.PasswordHash,
 		Active:       true,
@@ -138,7 +139,7 @@ func (c *Core) Register(ctx context.Context, email, password string) (User, Toke
 		c.hooks.OnRegistered(ctx, user, first)
 	}
 
-	tokens, err := c.issueTokens(ctx, user.ID, c.now().Unix(), c.defaultACR)
+	tokens, err := c.issueTokens(ctx, user.ID, user.TenantID, c.now().Unix(), c.defaultACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -181,7 +182,7 @@ func (c *Core) Login(ctx context.Context, email, password string) (User, Tokens,
 		return user, Tokens{}, ErrTOTPRequired
 	}
 
-	tokens, err := c.issueTokens(ctx, user.ID, c.now().Unix(), c.defaultACR)
+	tokens, err := c.issueTokens(ctx, user.ID, user.TenantID, c.now().Unix(), c.defaultACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -190,15 +191,23 @@ func (c *Core) Login(ctx context.Context, email, password string) (User, Tokens,
 
 // IssueTokensForUser mints a session with fresh auth_time and the
 // default ACR — the post-TOTP-verify and shim path.
+//
+// The minted session carries an EMPTY tenant. These two shims take a
+// bare user id, so there is no tenant to carry, and resolving one here
+// would mean a second store read this method has never done. A pooled
+// deployment mints through a tenant-aware entry point instead (7b-2);
+// until then this is byte-identical to pre-7b-1 behavior, because
+// nothing supplies a tenant yet.
 func (c *Core) IssueTokensForUser(ctx context.Context, userID string) (Tokens, error) {
-	return c.issueTokens(ctx, userID, 0, "")
+	return c.issueTokens(ctx, userID, "", 0, "")
 }
 
 // IssueTokensForUserWithACR mints a session carrying explicit step-up
 // claims (federated logins thread their own auth_time + ACR through).
 // Non-positive authTime falls back to now; empty acr to the default.
+// Empty tenant, for the reason on IssueTokensForUser.
 func (c *Core) IssueTokensForUserWithACR(ctx context.Context, userID string, authTime int64, acr string) (Tokens, error) {
-	return c.issueTokens(ctx, userID, authTime, acr)
+	return c.issueTokens(ctx, userID, "", authTime, acr)
 }
 
 // Refresh validates and rotates a refresh session: the old row is
@@ -252,7 +261,11 @@ func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, 
 	if !session.AuthTime.IsZero() {
 		carryAuthTime = session.AuthTime.Unix()
 	}
-	tokens, err := c.issueTokens(ctx, session.UserID, carryAuthTime, session.ACR)
+	// session.TenantID rides across the rotation UNCHANGED, exactly like
+	// AuthTime and ACR above. Dropping it here would widen the successor
+	// from one tenant to none — and "none" reads as the single-tenant
+	// shape, which is the wildcard.
+	tokens, err := c.issueTokens(ctx, session.UserID, session.TenantID, carryAuthTime, session.ACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -304,7 +317,12 @@ func (c *Core) RevokeAllSessions(ctx context.Context, userID string) error {
 // issueTokens mints an access JWT and (when refresh is enabled) a
 // persisted refresh session. Non-positive authTime falls back to now,
 // empty acr to the default — the legacy-shim shape.
-func (c *Core) issueTokens(ctx context.Context, userID string, authTime int64, acr string) (Tokens, error) {
+//
+// tenantID is stamped on the successor row verbatim and is never read
+// or defaulted: an empty tenant means a single-tenant deployment, and
+// substituting anything for it here would invent a tenant the caller
+// did not name.
+func (c *Core) issueTokens(ctx context.Context, userID, tenantID string, authTime int64, acr string) (Tokens, error) {
 	if c.jwt == nil {
 		return Tokens{}, ErrNoTokenService
 	}
@@ -334,6 +352,7 @@ func (c *Core) issueTokens(ctx context.Context, userID string, authTime int64, a
 	if err := c.store.CreateRefreshSession(ctx, RefreshSession{
 		ID:        c.newID(),
 		UserID:    userID,
+		TenantID:  tenantID,
 		TokenHash: hash,
 		IssuedAt:  now,
 		ExpiresAt: exp,

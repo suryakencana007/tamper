@@ -26,8 +26,23 @@ import (
 // deactivation gates every authentication entry point (as Login and
 // Refresh already do), and a federated repeat sign-in is one more.
 func (c *Core) ResolveByIdentity(ctx context.Context, provider, subject string) (User, Identity, bool, error) {
-	ident, err := c.store.IdentityByProviderSubject(ctx, provider, subject)
+	return c.ResolveByIdentityInTenant(ctx, "", provider, subject)
+}
+
+// ResolveByIdentityInTenant is ResolveByIdentity within a tenant, so the
+// same (provider, subject) can be federated by two tenants against the
+// same IdP without either resolving to the other's user.
+//
+// A miss in this tenant is found=false with a NIL error — the unlinked
+// signal, unchanged. It is deliberately indistinguishable from "linked,
+// but to another tenant": the caller runs its own policy next and must
+// not be able to learn that the credential exists elsewhere.
+func (c *Core) ResolveByIdentityInTenant(ctx context.Context, tenantID, provider, subject string) (User, Identity, bool, error) {
+	ident, err := c.identityByProviderSubject(ctx, tenantID, provider, subject)
 	if err != nil {
+		if errors.Is(err, ErrTenantRequired) || errors.Is(err, ErrTenancyDisabled) {
+			return User{}, Identity{}, false, err
+		}
 		if errors.Is(err, ErrNotFound) {
 			return User{}, Identity{}, false, nil
 		}
@@ -61,14 +76,27 @@ func (c *Core) ResolveByIdentity(ctx context.Context, provider, subject string) 
 // index) or ErrIdentityTaken (user_identities unique index); the caller
 // folds both onto its collision outcome.
 func (c *Core) ProvisionUserWithIdentity(ctx context.Context, email, provider, subject string) (User, Identity, error) {
-	count, err := c.store.CountUsers(ctx)
+	return c.ProvisionUserWithIdentityInTenant(ctx, "", email, provider, subject)
+}
+
+// ProvisionUserWithIdentityInTenant is ProvisionUserWithIdentity within
+// a tenant. Both rows are stamped with the SAME tenant and written by the
+// SAME single store call, so atomicity is untouched: the tenant adds no
+// round trip between the caller's resolve and its provision. That gap is
+// where the app's email-collision veto wedges (Phase 2d), and widening it
+// would reopen the lost-first-sign-in race.
+//
+// firstUser is counted within the tenant — blocker B2 again, on the
+// federated path this time.
+func (c *Core) ProvisionUserWithIdentityInTenant(ctx context.Context, tenantID, email, provider, subject string) (User, Identity, error) {
+	count, err := c.countUsers(ctx, tenantID)
 	if err != nil {
 		return User{}, Identity{}, fmt.Errorf("identity: count users: %w", err)
 	}
 	first := count == 0
 	now := c.now()
 	userID := c.newID()
-	nu := NewUser{ID: userID, Email: email, PasswordHash: "", CreatedAt: now}
+	nu := NewUser{ID: userID, TenantID: tenantID, Email: email, PasswordHash: "", CreatedAt: now}
 	// The identity's tenant is the user's, by construction rather than by
 	// convention: both rows are written in one atomic call, so reading
 	// nu.TenantID here is what makes it impossible for a (provider,

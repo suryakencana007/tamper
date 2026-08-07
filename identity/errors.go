@@ -86,4 +86,31 @@ var (
 	// ErrLastAuthMethod — unlinking would leave a federated-only user
 	// (empty password hash) with zero sign-in methods.
 	ErrLastAuthMethod = errors.New("identity: cannot unlink the last authentication method")
+
+	// --- tenancy (Phase 7) ---
+
+	// ErrTenantRequired — a tenancy-enabled Core was asked to act with an
+	// empty tenant id. Deny-by-default extends to tenancy: absent and
+	// empty resolve to deny, never to "every tenant" (sketch §6.2).
+	//
+	// Deliberately NOT collapsed into ErrInvalidCredentials. That
+	// collapse exists to stop attackers distinguishing facts ABOUT AN
+	// ACCOUNT — unknown email, bad password, federated-only, deactivated.
+	// This condition is decided from the tenantID argument alone, before
+	// any store read, and is identical for every email and every account,
+	// so it discloses nothing an attacker did not already supply. It is a
+	// wiring bug in the deployment — the tenant-resolving middleware did
+	// not run — and hiding it inside "invalid credentials" would send an
+	// operator hunting a password problem that does not exist.
+	//
+	// Transport obligation: map it onto the SAME generic 401 envelope as
+	// ErrInvalidCredentials. It is legible in logs, not on the wire.
+	ErrTenantRequired = errors.New("identity: tenant id is required when tenancy is enabled")
+
+	// ErrTenancyDisabled — a tenant id was supplied to a Core built
+	// WITHOUT tenancy. Also a deny rather than a silent ignore: the store
+	// has no tenant axis, so honouring the call would run an UNSCOPED
+	// query while the caller believes it is scoped. That is precisely the
+	// wildcard §6.2 forbids, and it fails open.
+	ErrTenancyDisabled = errors.New("identity: tenant id supplied but tenancy is not enabled")
 )

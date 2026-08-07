@@ -12,8 +12,13 @@ import (
 // test double. Linear/map lookups; fine for tests and small embedded
 // uses, not a production store.
 type MemStore struct {
-	mu         sync.RWMutex
-	usersByID  map[string]User
+	mu        sync.RWMutex
+	usersByID map[string]User
+	// emailToID is keyed by (tenant, email), not by email alone. That is
+	// what makes an address unique PER TENANT rather than globally, so two
+	// customers can both have bob@acme.com — blocker B1. Single-tenant
+	// rows all carry tenant "", so their keys and their collision
+	// behaviour are byte-identical to the pre-tenancy map.
 	emailToID  map[string]string
 	sessions   map[string]RefreshSession // by session id
 	hashToID   map[string]string         // token hash -> session id
@@ -21,7 +26,15 @@ type MemStore struct {
 	identities map[string]Identity       // by identity id
 }
 
-var _ Store = (*MemStore)(nil)
+var (
+	_ Store             = (*MemStore)(nil)
+	_ TenantScopedStore = (*MemStore)(nil)
+)
+
+// tenantKey composes a per-tenant index key. NUL cannot appear in an
+// email or a provider subject, so it is an unambiguous separator: no
+// (tenant, value) pair can collide with a different one by concatenation.
+func tenantKey(tenantID, value string) string { return tenantID + "\x00" + value }
 
 // NewMemStore returns an empty store.
 func NewMemStore() *MemStore {
@@ -40,7 +53,7 @@ func NewMemStore() *MemStore {
 func (m *MemStore) CreateUser(_ context.Context, u NewUser, _ bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, taken := m.emailToID[u.Email]; taken {
+	if _, taken := m.emailToID[tenantKey(u.TenantID, u.Email)]; taken {
 		return fmt.Errorf("%w: %s", ErrEmailTaken, u.Email)
 	}
 	m.usersByID[u.ID] = User{
@@ -51,7 +64,7 @@ func (m *MemStore) CreateUser(_ context.Context, u NewUser, _ bool) error {
 		Active:       true,
 		CreatedAt:    u.CreatedAt,
 	}
-	m.emailToID[u.Email] = u.ID
+	m.emailToID[tenantKey(u.TenantID, u.Email)] = u.ID
 	return nil
 }
 
@@ -61,7 +74,7 @@ func (m *MemStore) Seed(u User) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.usersByID[u.ID] = u
-	m.emailToID[u.Email] = u.ID
+	m.emailToID[tenantKey(u.TenantID, u.Email)] = u.ID
 }
 
 // SetActive flips a user's active flag (tests: deactivation mid-session).
@@ -85,11 +98,12 @@ func (m *MemStore) UserByID(_ context.Context, id string) (User, error) {
 	return u, nil
 }
 
-// UserByEmail implements Store.
+// UserByEmail implements Store — the single-tenant lookup, which is the
+// (tenant "", email) key.
 func (m *MemStore) UserByEmail(_ context.Context, email string) (User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	id, ok := m.emailToID[email]
+	id, ok := m.emailToID[tenantKey("", email)]
 	if !ok {
 		return User{}, fmt.Errorf("%w: email %s", ErrNotFound, email)
 	}
@@ -101,6 +115,62 @@ func (m *MemStore) CountUsers(_ context.Context) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return int64(len(m.usersByID)), nil
+}
+
+// --- TenantScopedStore (Phase 7). The isolation contract is on the
+// interface; these are the reference implementation of it. ---
+
+// UserByEmailInTenant implements TenantScopedStore.
+func (m *MemStore) UserByEmailInTenant(_ context.Context, tenantID, email string) (User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.emailToID[tenantKey(tenantID, email)]
+	if !ok {
+		// ErrNotFound, never a permission error: a miss and a
+		// wrong-tenant hit must be indistinguishable (§6.3).
+		return User{}, fmt.Errorf("%w: email %s", ErrNotFound, email)
+	}
+	return m.usersByID[id], nil
+}
+
+// IdentityByProviderSubjectInTenant implements TenantScopedStore.
+func (m *MemStore) IdentityByProviderSubjectInTenant(_ context.Context, tenantID, provider, subject string) (Identity, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, id := range m.identities {
+		if id.TenantID == tenantID && id.Provider == provider && id.Subject == subject {
+			return id, nil
+		}
+	}
+	return Identity{}, fmt.Errorf("%w: identity %s/%s", ErrNotFound, provider, subject)
+}
+
+// CountUsersInTenant implements TenantScopedStore. This is the count the
+// firstUser bootstrap signal reads, so it must exclude other tenants or
+// tenant #2's first admin silently gets firstUser=false (blocker B2).
+func (m *MemStore) CountUsersInTenant(_ context.Context, tenantID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var n int64
+	for _, u := range m.usersByID {
+		if u.TenantID == tenantID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// RevokeAllRefreshSessionsForTenant implements TenantScopedStore.
+func (m *MemStore) RevokeAllRefreshSessionsForTenant(_ context.Context, tenantID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, s := range m.sessions {
+		if s.TenantID == tenantID && !s.Revoked() {
+			s.RevokedAt = at
+			m.sessions[id] = s
+		}
+	}
+	return nil
 }
 
 // CreateRefreshSession implements Store.
@@ -263,7 +333,12 @@ func (m *MemStore) InsertIdentity(_ context.Context, ni NewIdentity) error {
 // the provision tx; caller holds the write lock.
 func (m *MemStore) insertIdentityLocked(ni NewIdentity) error {
 	for _, id := range m.identities {
-		if id.Provider == ni.Provider && id.Subject == ni.Subject {
+		// Uniqueness is per (tenant, provider, subject). Two tenants
+		// federating against the SAME IdP must not collide — otherwise
+		// the second one to link is rejected as a duplicate of a row it
+		// cannot see. Single-tenant rows all carry tenant "", so this is
+		// the pre-tenancy global uniqueness unchanged.
+		if id.TenantID == ni.TenantID && id.Provider == ni.Provider && id.Subject == ni.Subject {
 			return fmt.Errorf("%w: %s/%s", ErrIdentityTaken, ni.Provider, ni.Subject)
 		}
 	}
@@ -320,13 +395,14 @@ func (m *MemStore) CountIdentitiesByUserID(_ context.Context, userID string) (in
 func (m *MemStore) ProvisionUserWithIdentity(_ context.Context, u NewUser, ni NewIdentity, _ bool) (User, Identity, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, taken := m.emailToID[u.Email]; taken {
+	if _, taken := m.emailToID[tenantKey(u.TenantID, u.Email)]; taken {
 		return User{}, Identity{}, fmt.Errorf("%w: %s", ErrEmailTaken, u.Email)
 	}
 	// Insert the identity first (into a copy-checked map); if it
-	// collides, nothing is committed.
+	// collides, nothing is committed. Per (tenant, provider, subject),
+	// matching insertIdentityLocked.
 	for _, id := range m.identities {
-		if id.Provider == ni.Provider && id.Subject == ni.Subject {
+		if id.TenantID == ni.TenantID && id.Provider == ni.Provider && id.Subject == ni.Subject {
 			return User{}, Identity{}, fmt.Errorf("%w: %s/%s", ErrIdentityTaken, ni.Provider, ni.Subject)
 		}
 	}
@@ -336,7 +412,7 @@ func (m *MemStore) ProvisionUserWithIdentity(_ context.Context, u NewUser, ni Ne
 	// field sets (S1016) are incidental, not an invitation to couple them.
 	ident := Identity{ID: ni.ID, UserID: ni.UserID, TenantID: ni.TenantID, Provider: ni.Provider, Subject: ni.Subject, LinkedAt: ni.LinkedAt, LastLoginAt: ni.LastLoginAt} //nolint:staticcheck // S1016: command->entity map, kept explicit
 	m.usersByID[u.ID] = user
-	m.emailToID[u.Email] = u.ID
+	m.emailToID[tenantKey(u.TenantID, u.Email)] = u.ID
 	m.identities[ni.ID] = ident
 	return user, ident, nil
 }

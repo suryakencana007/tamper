@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -214,11 +215,30 @@ func TestMemStore_CreateUser_PersistsTenant(t *testing.T) {
 	}, false); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	got, err := store.UserByEmail(ctx, "gina@globex.com")
+	got, err := store.UserByID(ctx, "u2")
 	if err != nil {
-		t.Fatalf("UserByEmail: %v", err)
+		t.Fatalf("UserByID: %v", err)
 	}
 	if got.TenantID != "globex" {
 		t.Errorf("TenantID = %q, want %q", got.TenantID, "globex")
+	}
+
+	// The tenant-scoped read finds them...
+	scoped, err := store.UserByEmailInTenant(ctx, "globex", "gina@globex.com")
+	if err != nil {
+		t.Fatalf("UserByEmailInTenant: %v", err)
+	}
+	if scoped.ID != "u2" {
+		t.Errorf("UserByEmailInTenant returned %q, want %q", scoped.ID, "u2")
+	}
+
+	// ...and the UNSCOPED read does not. This is the 7b-2 rule, pinned
+	// here because it is easy to read as a regression: "" is a tenant
+	// like any other, and Store.UserByEmail is the ""-tenant lookup. If
+	// it could reach into a tenant, a tenancy-OFF caller would resolve
+	// tenant-owned rows — cross-tenant access by omission, which is the
+	// fail-open shape deny-by-default exists to prevent (§6.2).
+	if _, err := store.UserByEmail(ctx, "gina@globex.com"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unscoped UserByEmail found a tenant-owned user: err = %v, want ErrNotFound", err)
 	}
 }

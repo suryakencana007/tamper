@@ -376,6 +376,20 @@ func TestRunLeakSuite_PassesAgainstCompliantStore(t *testing.T) {
 	RunLeakSuite(t, func() identity.TenantScopedStore { return newFixture(leakNone) })
 }
 
+// TestRunLeakSuite_GreenAgainstTwoTenantMemStore is slice 7b-2's DoD
+// line: the reference implementation must satisfy the contract the
+// harness checks. MemStore gained the scoped methods in 7b-2, so this is
+// the first slice in which it can be the target at all.
+//
+// It is also the honest boundary of what the suite proves. The suite
+// asserts at the STORE, so this shows MemStore isolates correctly — it
+// says nothing about whether identity.Core chose the scoped method. That
+// second property needs a Core-level test, which lives in
+// identity/tenancy_test.go.
+func TestRunLeakSuite_GreenAgainstTwoTenantMemStore(t *testing.T) {
+	RunLeakSuite(t, func() identity.TenantScopedStore { return identity.NewMemStore() })
+}
+
 // TestRecorderReportsCompliantStoreAsGreen is the control for every
 // test below it. If the recorder reported failure unconditionally, each
 // leak case would pass vacuously and this whole file would prove

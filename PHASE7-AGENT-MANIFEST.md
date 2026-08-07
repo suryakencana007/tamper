@@ -147,9 +147,26 @@ grep -rn '"github.com/suryakencana007/tamper/tenant"' --include=*.go . | grep -v
 id: 7a-2
 milestone: M1
 risk: LOW
-depends_on: [7a-1]
-design_ref: "§3.3, §4.3"
+depends_on: [7a-1, 7b-1]
+design_ref: "§3.3, §4.2, §4.3"
 ```
+
+> **Amended 2026-08-07.** As frozen, this slice could not be built. Its
+> `RunLeakSuite` signature names `identity.TenantScopedStore`, which 7b-2
+> introduced — and 7b-2 is `depends_on: [7a-2, 7b-1]`. A true 2-cycle,
+> compile-verified (`undefined: identity.TenantScopedStore`). Independently,
+> the suite has to SEED tenants, and the only write paths on the port are the
+> ones inherited from `Store`; no slice defines a `CreateUserInTenant`, so the
+> tenant can only arrive on the record via `NewUser.TenantID` — which is 7b-1.
+> So `depends_on: [7a-1]` was wrong on its own terms, cycle or no cycle.
+>
+> The fix moves the **declaration** of `TenantScopedStore` here and re-gates
+> the slice on 7b-1. 7b-2 keeps every semantic obligation and keeps its gate
+> on 7a-2, so the leak suite still exists before the change it has to prove —
+> which is the whole point of sketch §3.3. Order becomes
+> `7a-1 → 7b-1 → 7a-2 → 7b-2`; 7a-2 leaves the parallel track and joins the
+> critical path. Precedent: 7a-1 shipped `tenant.Resolver` the same way — a
+> port declared one slice before its first implementation, on purpose.
 
 **Goal.** The cross-tenant leak suite, exported so adapter authors run it
 against their own store. This is the instrument that replaces "Barista runs it
@@ -160,10 +177,27 @@ in production" (sketch §3).
 - `crypto/testing.go`, `audit/testing_export.go` — how this repo exports test helpers
 
 **writes**
+- `identity/store.go` — the `TenantScopedStore` **DECLARATION ONLY**. No
+  implementation, no `MemStore` methods, no `Core` routing, no boot guard:
+  all four are 7b-2. A diff that touches `core.go`, `linking.go`,
+  `memstore.go` or `provider.go` means this slice has quietly become 7b-2
+  without 7b-2's mutation proofs — stop.
 - `identity/tenanttest/tenanttest.go`
-- `identity/tenanttest/tenanttest_test.go` (self-test against `MemStore`)
+- `identity/tenanttest/tenanttest_test.go` (self-test against in-package
+  fixtures; `MemStore` cannot satisfy the interface until 7b-2)
 
 **new symbols**
+
+```go
+// identity/store.go — declaration only; 7b-2 implements and routes it.
+type TenantScopedStore interface {
+    Store
+    UserByEmailInTenant(ctx context.Context, tenantID, email string) (User, error)
+    IdentityByProviderSubjectInTenant(ctx context.Context, tenantID, provider, subject string) (Identity, error)
+    CountUsersInTenant(ctx context.Context, tenantID string) (int64, error)
+    RevokeAllRefreshSessionsForTenant(ctx context.Context, tenantID string, at time.Time) error
+}
+```
 
 ```go
 package tenanttest
@@ -184,18 +218,48 @@ func RunLeakSuite(t *testing.T, newStore func() identity.TenantScopedStore)
 - `CountUsersInTenant`: A's count excludes B's users.
 - `RefreshSessionByHash`: a session minted in B is not usable from A.
 - `RevokeAllRefreshSessionsForTenant`: revoking A leaves B's sessions live.
-- `""` mode: with a single-tenant store, every case is vacuous and skips cleanly.
+
+> **The `""` mode case was REMOVED in the 2026-08-07 amendment.** It read:
+> "with a single-tenant store, every case is vacuous and skips cleanly." It is
+> unimplementable, and dangerously so. Nothing the suite can observe separates
+> a single-tenant store from a leaky pooled one — seed A and B, ask as A for
+> B's row, and a store that ignores `tenantID` returns B's row exactly like a
+> store that has only ever had one tenant. Any auto-detection is therefore a
+> heuristic that resolves the ambiguity in the store's favour: it goes quiet
+> precisely when it finds the bug it exists to find. That is playbook step 5's
+> failure mode inside the instrument §3.3 built to replace it, and §6.2
+> settles it — ambiguous means deny, and in a harness deny means FAIL, never
+> SKIP. A single-tenant adapter has no isolation to prove and simply does not
+> run this suite. At 7l-1 the question dissolves: `""` becomes an explicit
+> single-tenant value and every store is tenant-scoped.
 
 **invariants**
 - The suite fails on a permission-shaped error, not just on a returned row.
   404-not-403 is the property under test (sketch §6.3).
+- **The suite never skips.** No case may resolve to `t.Skip` on any input. A
+  skipped case reports as green and guards nothing.
+- `TenantScopedStore` lands as a bare declaration. Implementing it anywhere in
+  this slice — even on `MemStore` — is 7b-2's work and moves 7b-2's mutation
+  proofs out from under it.
 - No `time.Sleep`. No wall-clock dependence.
 
-**tests** — self-test: `RunLeakSuite` green against a two-tenant `MemStore`
-(after 7b-2) and a deliberately-broken store must fail it. Ship the broken
-store as an unexported fixture proving the suite bites.
+**tests** — self-test: `RunLeakSuite` green against a compliant two-tenant
+in-package fixture, and RED against a deliberately-broken one. `MemStore`
+cannot be the target until 7b-2 implements the interface. Ship one broken
+fixture PER LEAK SHAPE, unexported, so the proof is per-case rather than
+"something went red".
 
-**mutation** — the fixture IS the mutation. Confirm the broken store fails.
+Proving a test suite FAILS needs a seam: `RunLeakSuite` keeps its
+`*testing.T` signature and delegates to an unexported `runLeakSuite(t
+harnessT, …)` over a minimal `Helper/Errorf/Fatalf/Run` interface, which the
+self-test drives with a recorder. Without it, "a leaky fixture fails the
+suite" is an unverifiable claim.
+
+**mutation** — the fixtures ARE the mutation; confirm each one fails. Then one
+mutation on the suite itself: relax the assertion from
+`errors.Is(err, identity.ErrNotFound)` to "any non-nil error" and confirm the
+permission-shaped-error test goes green, proving the 404-not-403 check is
+load-bearing rather than decorative.
 
 **verify**
 ```sh
@@ -204,8 +268,12 @@ go test -race ./identity/...
 
 **dod**
 - [ ] Suite is exported and runnable from an external module
-- [ ] A deliberately-leaky fixture fails the suite (proof it bites)
+- [ ] A deliberately-leaky fixture fails the suite (proof it bites), one per leak shape
+- [ ] A permission-shaped error fails the suite, not just a returned row
 - [ ] No sleeps, no clock dependence, no shared state between `t.Run`s
+- [ ] No `t.Skip` reachable on any input
+- [ ] `identity/store.go` gains the declaration and NOTHING else; `core.go`,
+      `linking.go`, `memstore.go`, `provider.go` are untouched
 
 ---
 
@@ -277,7 +345,12 @@ tenant when tenancy is on, and fails at boot when the store cannot.
 - `TAMPER-DESIGN.md` §playbook step 3 — the type-assertion failure mode
 
 **writes**
-- `identity/store.go` — `TenantScopedStore`
+- `identity/store.go` — **nothing.** `TenantScopedStore` is DECLARED in 7a-2
+  (2026-08-07 amendment). If this slice needs to edit that declaration, then
+  7a-2's harness was written against a different contract: reconcile it
+  deliberately and re-run the leak suite, do not let the two drift. That drift
+  is the 4e-2 trap — a contract written one slice early, quietly adjusted when
+  a later slice wires it into the request path.
 - `identity/core.go` — `WithTenancy` option, construction-time assertion, routing
 - `identity/linking.go` — tenant-scoped resolve/provision
 - `identity/memstore.go` — implement the scoped interface
@@ -286,7 +359,9 @@ tenant when tenancy is on, and fails at boot when the store cannot.
 **new symbols**
 
 ```go
-// identity/store.go
+// identity/store.go — DECLARED IN 7a-2, repeated here for reference only.
+// This slice implements it (on MemStore) and routes through it; it does not
+// author it. See the note in **writes** above.
 type TenantScopedStore interface {
     Store
     UserByEmailInTenant(ctx context.Context, tenantID, email string) (User, error)
@@ -1050,21 +1125,25 @@ fallback, and collapse the `*InTenant` names.
 ## Appendix — dependency order
 
 ```
-7a-1 ──┬─ 7a-2 ──┐
-       └─ 7b-1 ──┴─ 7b-2 ─┬─ 7b-3 ─────────────┐
-                          ├─ 7c-1 ─┬─ 7c-2 ────┤
-                          │        └─ 7d-1     │
-                          ├─ 7e-1 ─┬─ 7e-2 ────┤
-                          │        └─ 7f-1 ─ 7f-2 ─┤
-                          ├─ 7g-1 ─┬─ 7g-2 ────┤
-                          │        └─ 7h-1 ────┤
-                          ├─ 7i-1 ─────────────┤
-                          └─ 7j-1              │
-7k-1 (independent)                             │
-                                          7l-1 ┘
+7a-1 ─ 7b-1 ─ 7a-2 ─ 7b-2 ─┬─ 7b-3 ───────────────┐
+                           ├─ 7c-1 ─┬─ 7c-2 ──────┤
+                           │        └─ 7d-1       │
+                           ├─ 7e-1 ─┬─ 7e-2 ──────┤
+                           │        └─ 7f-1 ─ 7f-2┤
+                           ├─ 7g-1 ─┬─ 7g-2 ──────┤
+                           │        └─ 7h-1 ──────┤
+                           ├─ 7i-1 ───────────────┤
+                           └─ 7j-1                │
+7k-1 (independent)                                │
+                                             7l-1 ┘
 ```
 
-Critical path: `7a-1 → 7b-1 → 7b-2 → 7e-1 → 7f-1 → 7f-2 → 7l-1`.
+The `7a-1 → 7b-1 → 7a-2` head is the 2026-08-07 amendment. 7a-2 used to sit
+parallel to 7b-1; it now follows it, because the leak suite cannot seed a
+tenant without 7b-1's `TenantID` fields and cannot compile without the
+`TenantScopedStore` declaration it now carries.
+
+Critical path: `7a-1 → 7b-1 → 7a-2 → 7b-2 → 7e-1 → 7f-1 → 7f-2 → 7l-1`.
 
 `7k-1` has no dependencies and closes a gap that exists today. Ship it first if
 anything else stalls.

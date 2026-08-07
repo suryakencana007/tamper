@@ -201,7 +201,7 @@ The only milestone that must land whole; everything else composes on it.
 | Slice | What | Risk |
 |---|---|---|
 | **7a-1** | `tamper/tenant` package: `Descriptor{ID, Slug, ParentID, Status}` neutral record, `Store` + `Resolver` ports, `MemStore` reference impl, `WithTenant`/`FromContext` propagation, `ErrNotFound`/`ErrSuspended` sentinels. No consumer yet. | LOW — pure addition, nothing imports it. |
-| **7a-2** | `identity/tenanttest`: the exported cross-tenant leak conformance harness. Runs green against `MemStore` in `""` mode (vacuously) and against a two-tenant `MemStore` once 7b lands. | LOW |
+| **7a-2** | `identity/tenanttest`: the exported cross-tenant leak conformance harness, plus the `identity.TenantScopedStore` **declaration** it is written against. Self-tested against in-package fixtures — one deliberately-leaky fixture per leak shape — because `MemStore` cannot satisfy the interface until 7b-2. **Runs after 7b-1** (amended 2026-08-07, see below). | LOW |
 | **7b-1** | `TenantID` field on `User`, `NewUser`, `RefreshSession`, `Identity`, `NewIdentity`. Zero behavior change — the core reads and writes it, nothing branches on it yet. Parity: every existing test passes UNCHANGED. | LOW — the parity proof is the point. |
 | **7b-2** | `identity.TenantScopedStore` + `Core` upgrade assertion + `WithTenancy(enabled)` option. Core routes `Register`/`Login`/`ResolveByIdentity`/`ProvisionUserWithIdentity` through the scoped methods when tenancy is on. **Fixes B1 and B2.** | **HIGH** — the semantic change. Needs both mutation proofs in §6. |
 | **7b-3** | `examples/multitenant`: two tenants, two domains, two OIDC providers on the fake IdP, one process, driven by a test that asserts a cross-tenant login is rejected. | MED |
@@ -209,6 +209,30 @@ The only milestone that must land whole; everything else composes on it.
 **M1 exit criteria:** the leak suite is green against a two-tenant store; the
 multitenant example's test asserts a genuine cross-tenant denial; Barista CI
 green with zero diff in its adapter.
+
+> **Amendment, 2026-08-07 — M1 slice order.** M1 now runs
+> `7a-1 → 7b-1 → 7a-2 → 7b-2`, not with 7a-2 parallel to 7b-1. Two defects
+> forced it, both found when 7a-2 was opened and both compile-verified:
+>
+> 1. `RunLeakSuite`'s signature named `identity.TenantScopedStore`, which 7b-2
+>    introduced, while 7b-2 gates on 7a-2 — a literal cycle. The
+>    **declaration** moves to 7a-2 (7b-2 keeps the implementation, the routing,
+>    the boot guard and both mutation proofs, and keeps its gate on 7a-2, so
+>    the suite still exists before the change it proves). This mirrors how
+>    §4 already treats a port: 7a-1 shipped `tenant.Resolver` with no
+>    implementation, consumed four slices later.
+> 2. The suite must SEED tenants, and every write path on the port is
+>    inherited from `Store` — no slice defines a `CreateUserInTenant`. So the
+>    tenant can only arrive on the record, via 7b-1's `TenantID` fields.
+>    7a-2 was under-gated independently of the cycle.
+>
+> The `""`-mode case is **removed**, not deferred. Nothing the suite can
+> observe distinguishes a single-tenant store from a leaky pooled one, so any
+> "detect and skip" is a heuristic that goes quiet exactly when it finds the
+> bug it exists to find. §6.2 governs: ambiguous means deny, and in a harness
+> deny means FAIL. A single-tenant adapter has no isolation to prove and does
+> not run the suite. At 7l-1 the question dissolves — `""` becomes an explicit
+> single-tenant value and every store is tenant-scoped.
 
 ### M2 — Token and key binding
 

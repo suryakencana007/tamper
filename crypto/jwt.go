@@ -1,8 +1,12 @@
 package crypto
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -28,24 +32,192 @@ type JWTService struct {
 	secret []byte
 	ttl    time.Duration
 	issuer string
+	// signer, when non-nil, replaces the built-in HS256 path. nil is the
+	// default and the ONLY configuration that can produce a
+	// byte-identical pre-seam token — see sign.
+	signer Signer
+	// verifiers resolves a token's `kid` to the Signer that can check
+	// it: key rotation, and eventually a per-tenant key. Empty means
+	// "verify with signer".
+	verifiers map[string]Signer
 	// now is the clock source; tests override via Testing().SetNow.
 	now func() time.Time
+}
+
+// JWTOption configures a JWTService at construction.
+type JWTOption func(*JWTService)
+
+// WithSigner replaces the built-in HS256 signing with s — the seam that
+// makes asymmetric keys possible without changing a call site.
+//
+// Supplying a Signer bypasses the JWTConfig.Secret requirement: signing
+// is delegated, so the service needs no key material of its own and an
+// empty Secret is no longer a programmer error. The panic stays for the
+// default path, where an empty secret still means every token is
+// forgeable.
+//
+// A service with a Signer no longer produces byte-identical tokens to
+// the default path unless the Signer is an equivalent HS256 with no
+// kid — which is the point: you asked for different signing.
+func WithSigner(s Signer) JWTOption { return func(j *JWTService) { j.signer = s } }
+
+// WithVerifiers supplies the verification keys, keyed by `kid`, for
+// rotation or per-tenant keys. A token's kid is looked up here; an
+// unknown kid FAILS CLOSED rather than falling back to the signing key,
+// because a fallback would let a token name a key that does not exist
+// and still be checked against one that does.
+//
+// The map is copied, so a later mutation by the caller cannot change
+// verification behaviour underneath a running service.
+func WithVerifiers(byKID map[string]Signer) JWTOption {
+	return func(j *JWTService) {
+		if byKID == nil {
+			j.verifiers = nil
+			return
+		}
+		cp := make(map[string]Signer, len(byKID))
+		maps.Copy(cp, byKID)
+		j.verifiers = cp
+	}
 }
 
 // NewJWTService constructs a JWTService from a JWTConfig. Panics on
 // empty secret — callers are expected to validate their config at
 // startup; reaching NewJWTService with an empty secret is a programmer
 // error.
-func NewJWTService(cfg JWTConfig) *JWTService {
-	if cfg.Secret == "" {
-		panic("auth: jwt secret is empty — config validation should have caught this")
-	}
-	return &JWTService{
+//
+// With no options the service is exactly what it was before the Signer
+// seam existed, down to the bytes it emits: the default path does not
+// route through Signer at all.
+func NewJWTService(cfg JWTConfig, opts ...JWTOption) *JWTService {
+	j := &JWTService{
 		secret: []byte(cfg.Secret),
 		ttl:    cfg.TTL,
 		issuer: cfg.Issuer,
 		now:    time.Now,
 	}
+	for _, opt := range opts {
+		opt(j)
+	}
+	// The secret is only required when THIS service does the signing.
+	if j.signer == nil && cfg.Secret == "" {
+		panic("auth: jwt secret is empty — config validation should have caught this")
+	}
+	return j
+}
+
+// sign produces the signed token for claims.
+//
+// The default branch is deliberately the original code, unchanged and
+// untouched by the seam: byte-identity with a pre-7d-1 token is
+// guaranteed by construction rather than merely asserted by a test. The
+// pinned-token test then proves the guarantee held.
+func (j *JWTService) sign(claims jwt.Claims) (string, error) {
+	if j.signer == nil {
+		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		return tok.SignedString(j.secret)
+	}
+	tok := jwt.NewWithClaims(signerMethod{s: j.signer}, claims)
+	if kid := j.signer.KeyID(); kid != "" {
+		tok.Header["kid"] = kid
+	}
+	// The key travels inside the Signer, so nothing is passed here.
+	return tok.SignedString(nil)
+}
+
+// parserOptions are the validation rules both verification paths apply.
+// Shared so the delegated path cannot drift from the default one.
+func (j *JWTService) parserOptions() []jwt.ParserOption {
+	return []jwt.ParserOption{
+		jwt.WithTimeFunc(j.now),
+		jwt.WithIssuer(j.issuer),
+		jwt.WithExpirationRequired(),
+	}
+}
+
+// resolveVerifier picks the Signer that may check a token carrying kid.
+//
+// Fails closed on an unknown kid. Falling back to the signing key would
+// mean a token could name any key it liked and still be verified against
+// the one key the service holds, which makes the kid header decorative
+// at exactly the moment it becomes load-bearing.
+func (j *JWTService) resolveVerifier(kid string) (Signer, error) {
+	if len(j.verifiers) > 0 {
+		s, ok := j.verifiers[kid]
+		if !ok {
+			return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		}
+		return s, nil
+	}
+	if j.signer == nil {
+		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	return j.signer, nil
+}
+
+// parseClaims verifies tokenStr's signature and validates its claims
+// into claims.
+//
+// The default branch is the original ParseWithClaims call, unchanged.
+// The delegated branch verifies the signature through the resolved
+// Signer and then hands the claims to jwt.NewValidator — golang-jwt's
+// OWN validator, with the same options — rather than re-implementing
+// expiry and issuer checks. Duplicating a security-critical validation
+// is how the two paths would quietly diverge.
+func (j *JWTService) parseClaims(tokenStr string, claims jwt.Claims) error {
+	if j.signer == nil && len(j.verifiers) == 0 {
+		tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc, j.parserOptions()...)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		}
+		if !tok.Valid {
+			return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		}
+		return nil
+	}
+
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	var hdr struct {
+		Alg string `json:"alg"`
+		Kid string `json:"kid"`
+	}
+	if err := json.Unmarshal(headerRaw, &hdr); err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	verifier, err := j.resolveVerifier(hdr.Kid)
+	if err != nil {
+		return err
+	}
+	// The token does not get to choose its algorithm. Accepting the
+	// header's alg would be the classic confusion attack.
+	if hdr.Alg != verifier.Alg() {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if err := verifier.Verify(parts[0]+"."+parts[1], sig); err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	claimsRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if err := json.Unmarshal(claimsRaw, claims); err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if err := jwt.NewValidator(j.parserOptions()...).Validate(claims); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	return nil
 }
 
 // AccessClaims is the v1.14 shape of the access-token JWT. Extends
@@ -199,8 +371,7 @@ func (j *JWTService) IssueAccessForTenant(userID, tenantID string, authTime int6
 			ExpiresAt: jwt.NewNumericDate(now.Add(j.ttl)),
 		},
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := tok.SignedString(j.secret)
+	signed, err := j.sign(claims)
 	if err != nil {
 		return "", fmt.Errorf("auth: sign jwt: %w", err)
 	}
@@ -251,16 +422,8 @@ func (j *JWTService) Verify(tokenStr string) (string, error) {
 // access JWT — see AccessClaims.Purpose for why that is safe.
 func (j *JWTService) VerifyAccess(tokenStr string) (*AccessClaims, error) {
 	claims := &AccessClaims{}
-	tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc,
-		jwt.WithTimeFunc(j.now),
-		jwt.WithIssuer(j.issuer),
-		jwt.WithExpirationRequired(),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
-	}
-	if !tok.Valid {
-		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	if err := j.parseClaims(tokenStr, claims); err != nil {
+		return nil, err
 	}
 	if claims.Purpose != "" && claims.Purpose != purposeAccess {
 		return nil, fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
@@ -350,8 +513,7 @@ func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
 			ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
 		},
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := tok.SignedString(j.secret)
+	signed, err := j.sign(claims)
 	if err != nil {
 		return "", fmt.Errorf("auth: sign totp-pending jwt: %w", err)
 	}
@@ -364,16 +526,8 @@ func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
 // submitted to the totp-verify endpoint.
 func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
 	claims := &totpPendingClaims{}
-	tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc,
-		jwt.WithTimeFunc(j.now),
-		jwt.WithIssuer(j.issuer),
-		jwt.WithExpirationRequired(),
-	)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidToken, err)
-	}
-	if !tok.Valid {
-		return "", fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	if err := j.parseClaims(tokenStr, claims); err != nil {
+		return "", err
 	}
 	if claims.Purpose != purposeTOTPPending {
 		return "", fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)

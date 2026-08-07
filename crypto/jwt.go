@@ -271,6 +271,46 @@ func (j *JWTService) VerifyAccess(tokenStr string) (*AccessClaims, error) {
 	return claims, nil
 }
 
+// VerifyAccessInTenant is VerifyAccess plus the tenant pin: the token's
+// `tid` claim must equal tenantID EXACTLY, and every other outcome is a
+// rejection.
+//
+// One equality does all the work, and it is worth reading the table
+// rather than the rule:
+//
+//	route ""     token ""        allow  — single-tenant, byte-identical to before
+//	route ""     token "acme"    REJECT — a tenant token on an untenanted route
+//	route "acme" token ""        REJECT — tenancy is on; see below
+//	route "acme" token "acme"    allow
+//	route "acme" token "globex"  REJECT — the cross-tenant case
+//
+// The third row is where 7c-1's legacy tolerance ENDS, and it ends here
+// deliberately. AccessClaims.TenantID is tolerant of a missing `tid`
+// because a single-tenant deployment's existing tokens have none — but
+// once a route names a tenant, an absent tid is not a match, it is the
+// absence of an answer, and reading absence as a match is precisely the
+// wildcard deny-by-default forbids (sketch §6.2). A caller that wants
+// the tolerant read still has VerifyAccess.
+//
+// A mismatch collapses onto ErrInvalidToken with a message
+// indistinguishable from an ordinary invalid token. That is not
+// tidiness: a distinguishable "wrong tenant" error tells the caller
+// that its token is well-formed and merely pointed at the wrong place,
+// which is a tenant-existence oracle. One status, one message, no
+// signal — the discipline this package already applies to every other
+// JWT failure mode (§6.3).
+func (j *JWTService) VerifyAccessInTenant(tokenStr, tenantID string) (*AccessClaims, error) {
+	claims, err := j.VerifyAccess(tokenStr)
+	if err != nil {
+		return nil, err
+	}
+	if claims.TenantID != tenantID {
+		// Deliberately the SAME message the generic invalid branch uses.
+		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	return claims, nil
+}
+
 func (j *JWTService) keyFunc(t *jwt.Token) (any, error) {
 	if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 		return nil, fmt.Errorf("%w: unexpected signing method %q", ErrInvalidToken, t.Method.Alg())

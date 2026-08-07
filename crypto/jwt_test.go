@@ -632,3 +632,114 @@ func decodeSegment(t *testing.T, token string) string {
 	}
 	return string(raw)
 }
+
+// --- Phase 7 slice 7c-2: VerifyAccessInTenant ----------------------
+
+// TestVerifyAccessInTenant_Matrix is the whole rule. Only exact equality
+// passes; absent, empty and mismatched all reject.
+func TestVerifyAccessInTenant_Matrix(t *testing.T) {
+	s := pinnedService(t)
+	for _, tc := range []struct {
+		name        string
+		tokenTenant string
+		routeTenant string
+		wantOK      bool
+	}{
+		// The compatibility path — a single-tenant deployment's token on
+		// a single-tenant route. Must still verify.
+		{"untenanted token, untenanted route", "", "", true},
+		// Where 7c-1's legacy tolerance ends. A route that names a tenant
+		// cannot accept a token that names none.
+		{"untenanted token, tenanted route", "", "acme", false},
+		{"tenanted token, untenanted route", "acme", "", false},
+		{"matching", "acme", "acme", true},
+		{"cross tenant", "acme", "globex", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tok, err := s.IssueAccessForTenant(pinnedSubject, tc.tokenTenant, pinnedAuthAt, ACRLocalPassword)
+			if err != nil {
+				t.Fatalf("issue: %v", err)
+			}
+			claims, err := s.VerifyAccessInTenant(tok, tc.routeTenant)
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("VerifyAccessInTenant: %v", err)
+				}
+				if claims.TenantID != tc.tokenTenant {
+					t.Errorf("TenantID = %q, want %q", claims.TenantID, tc.tokenTenant)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected a rejection")
+			}
+			if !errors.Is(err, ErrInvalidToken) {
+				t.Errorf("err = %v, want ErrInvalidToken", err)
+			}
+			if claims != nil {
+				t.Errorf("rejection returned claims: %+v", claims)
+			}
+		})
+	}
+}
+
+// TestVerifyAccessInTenant_MismatchIsIndistinguishable pins the
+// anti-oracle property at the crypto layer. A wrong-tenant rejection
+// must not be separable from an ordinary invalid-token one: if it were,
+// a caller could enumerate which tenants exist by watching the error
+// change, and could learn that its token is genuine but misaimed.
+func TestVerifyAccessInTenant_MismatchIsIndistinguishable(t *testing.T) {
+	s := pinnedService(t)
+
+	tok, err := s.IssueAccessForTenant(pinnedSubject, "acme", pinnedAuthAt, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	_, crossErr := s.VerifyAccessInTenant(tok, "globex")
+	if crossErr == nil {
+		t.Fatal("cross-tenant token verified")
+	}
+
+	// The reference: a token whose signature does not check out at all.
+	forged := tok[:len(tok)-4] + "AAAA"
+	_, badErr := s.VerifyAccessInTenant(forged, "globex")
+	if badErr == nil {
+		t.Fatal("forged token verified")
+	}
+
+	if !errors.Is(crossErr, ErrInvalidToken) || !errors.Is(badErr, ErrInvalidToken) {
+		t.Fatalf("both must wrap ErrInvalidToken: cross=%v bad=%v", crossErr, badErr)
+	}
+	// The cross-tenant message must not name the tenant, the claim, or
+	// the fact that a comparison happened.
+	msg := crossErr.Error()
+	for _, leak := range []string{"acme", "globex", "tenant", "tid", "mismatch"} {
+		if strings.Contains(strings.ToLower(msg), leak) {
+			t.Errorf("cross-tenant error discloses %q: %s", leak, msg)
+		}
+	}
+}
+
+// TestVerifyAccessInTenant_PreservesVerifyAccessRejections: pinning a
+// tenant must not weaken any check VerifyAccess already made.
+func TestVerifyAccessInTenant_PreservesVerifyAccessRejections(t *testing.T) {
+	s := pinnedService(t)
+	for _, tc := range []struct{ name, token string }{
+		{"malformed", "not-a-jwt"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.VerifyAccessInTenant(tc.token, ""); !errors.Is(err, ErrInvalidToken) {
+				t.Errorf("err = %v, want ErrInvalidToken", err)
+			}
+		})
+	}
+	// A totp-pending token must not authenticate, tenant or no tenant.
+	pending, err := s.IssueTOTPPending(pinnedSubject)
+	if err != nil {
+		t.Fatalf("IssueTOTPPending: %v", err)
+	}
+	if _, err := s.VerifyAccessInTenant(pending, ""); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("totp-pending token accepted as an access token: %v", err)
+	}
+}

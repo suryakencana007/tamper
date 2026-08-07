@@ -75,6 +75,28 @@ type AccessClaims struct {
 	// graceful rollout (no mass logout on deploy) without reopening the
 	// bypass.
 	Purpose string `json:"purpose,omitempty"`
+	// TenantID names the tenant this token was minted for, in a pooled
+	// multi-tenant deployment. Opaque and app-defined; tamper compares it
+	// for equality and never parses it.
+	//
+	// Legacy-tolerant on exactly the same terms as purpose above, and the
+	// tolerance has the same shape: every access JWT minted before this
+	// claim existed carries no `tid` and reads as "", and VerifyAccess
+	// accepts it. That buys a graceful rollout — no mass logout on the
+	// deploy that introduces tenancy — for the single-tenant deployments
+	// that are the only ones in a position to have such tokens.
+	//
+	// It is NOT a licence to accept an empty tid forever. The tolerance
+	// ends where tenancy begins: once a deployment enables tenancy, an
+	// empty tid must REJECT, because there "" is not a tenant but the
+	// absence of one, and treating absence as a match is the wildcard
+	// deny-by-default forbids. That rejection lands with
+	// VerifyAccessInTenant in 7c-2; VerifyAccess is unchanged here.
+	//
+	// omitempty is load-bearing, not cosmetic: it is what makes a
+	// no-tenant token byte-identical to a pre-tenancy one, so this claim
+	// costs single-tenant deployments nothing on the wire.
+	TenantID string `json:"tid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -135,6 +157,26 @@ func (j *JWTService) Issue(userID string) (string, error) {
 // ErrInvalidToken so the caller can't accidentally mint a JWT that
 // would always trip the step-up gate.
 func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (string, error) {
+	return j.IssueAccessForTenant(userID, "", authTime, acr)
+}
+
+// IssueAccessForTenant mints an access JWT carrying a `tid` claim naming
+// the tenant, for pooled multi-tenant deployments.
+//
+// An empty tenantID is legal and means the single-tenant deployment:
+// `tid` is omitted entirely and the token is byte-identical to one
+// IssueAccess produced before this claim existed. That is why IssueAccess
+// is a one-line delegation rather than a parallel implementation — two
+// mint paths would be two chances for them to drift.
+//
+// tenantID is deliberately NOT validated. tamper does not parse, namespace
+// or canonicalize a tenant id (sketch §4.1); deciding that a tenant is
+// real is the application's job, and the boot guard already refused a
+// store that cannot scope by one.
+//
+// Same rejections as IssueAccess otherwise: empty userID, non-positive
+// authTime, empty acr.
+func (j *JWTService) IssueAccessForTenant(userID, tenantID string, authTime int64, acr string) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
 	}
@@ -149,6 +191,7 @@ func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (str
 		AuthTime: authTime,
 		ACR:      acr,
 		Purpose:  purposeAccess,
+		TenantID: tenantID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
@@ -190,6 +233,14 @@ func (j *JWTService) Verify(tokenStr string) (string, error) {
 // acrValues" — both trip the step-up gate, which is the intended
 // migration path (operators get a forced re-auth on sensitive
 // endpoints once, then their refreshed JWTs carry the new claims).
+//
+// The `tid` claim is READ but not enforced here, and that is deliberate
+// for this slice: a missing tid parses as "" and a present one is handed
+// to the caller untouched. VerifyAccess has no way to know which tenant
+// the request was routed to, so it cannot decide whether a tid matches —
+// that comparison needs the routed tenant and lands in
+// VerifyAccessInTenant (7c-2). Until then, reading tid from these claims
+// and comparing it yourself is the app's job.
 //
 // Rejects any token whose `purpose` claim names a different token
 // shape. This is the other half of the discrimination VerifyTOTPPending

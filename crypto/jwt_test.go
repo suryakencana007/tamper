@@ -472,3 +472,163 @@ func TestVerifyAccess_AcceptsLegacyTokenWithoutPurpose(t *testing.T) {
 		t.Errorf("Purpose = %q, want empty", got.Purpose)
 	}
 }
+
+// --- Phase 7 slice 7c-1: the `tid` claim ---------------------------
+
+// pinnedPre7cToken is a REAL access token minted by this service BEFORE
+// the tid claim existed, captured from the code at 7b-3 and pasted here
+// verbatim. It is the fixed point every byte-identity claim in this file
+// is measured against: a value produced by the old code cannot drift
+// when the new code changes, which a freshly-computed expectation could.
+const (
+	pinnedSecret  = "pin-secret"
+	pinnedIssuer  = "pin-issuer"
+	pinnedSubject = "user-1"
+	pinnedNow     = 1700000000
+	pinnedAuthAt  = 1699999000
+
+	pinnedPre7cPayload = "eyJhdXRoX3RpbWUiOjE2OTk5OTkwMDAsImFjciI6InVybjp0YW1wZXI6YXV0aDpsb2NhbC1wYXNzd29yZCIsInB1cnBvc2UiOiJhY2Nlc3MiLCJpc3MiOiJwaW4taXNzdWVyIiwic3ViIjoidXNlci0xIiwiZXhwIjoxNzAwMDAzNjAwLCJpYXQiOjE3MDAwMDAwMDB9"
+
+	pinnedPre7cToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." + pinnedPre7cPayload +
+		".AJXqC7-FmGqvpioil-LBHnweaYrqTafXSI3XRdVkmLk"
+)
+
+func pinnedService(t *testing.T) *JWTService {
+	t.Helper()
+	s := NewJWTService(JWTConfig{Secret: pinnedSecret, TTL: time.Hour, Issuer: pinnedIssuer})
+	s.Testing().SetNow(func() time.Time { return time.Unix(pinnedNow, 0).UTC() })
+	return s
+}
+
+// TestIssueAccess_NoTenantIsByteIdenticalToPre7c is the invariant that
+// makes this claim free for single-tenant deployments. The assertion is
+// on the ENCODED payload, not the parsed struct, because a struct
+// comparison cannot see the thing that would break: a `"tid":""` key
+// appearing on the wire. Every existing token would change shape, and
+// anything pinning a token — a golden fixture, a cached signature, an
+// audit row — would break on deploy.
+func TestIssueAccess_NoTenantIsByteIdenticalToPre7c(t *testing.T) {
+	s := pinnedService(t)
+
+	tok, err := s.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d segments, want 3", len(parts))
+	}
+	if parts[1] != pinnedPre7cPayload {
+		t.Errorf("encoded payload drifted from the pre-7c token.\n got: %s\nwant: %s\n"+
+			"A no-tenant token must be byte-identical to one minted before the tid claim "+
+			"existed — check that omitempty is still on TenantID.", parts[1], pinnedPre7cPayload)
+	}
+	// The signature covers header+payload, so a whole-token match proves
+	// the header did not move either.
+	if tok != pinnedPre7cToken {
+		t.Errorf("full token drifted:\n got: %s\nwant: %s", tok, pinnedPre7cToken)
+	}
+}
+
+// TestIssueAccessForTenant_EmptyTenantMatchesIssueAccess pins the
+// delegation: the two entry points must produce the same bytes for the
+// single-tenant case, or there are two mint paths that can drift.
+func TestIssueAccessForTenant_EmptyTenantMatchesIssueAccess(t *testing.T) {
+	s := pinnedService(t)
+
+	plain, err := s.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	viaTenant, err := s.IssueAccessForTenant(pinnedSubject, "", pinnedAuthAt, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccessForTenant: %v", err)
+	}
+	if plain != viaTenant {
+		t.Errorf("empty-tenant mint differs from IssueAccess:\n  %s\n  %s", plain, viaTenant)
+	}
+}
+
+// TestIssueAccessForTenant_RoundTrip: a tenant goes in, the same tenant
+// comes out, and the claim is actually on the wire.
+func TestIssueAccessForTenant_RoundTrip(t *testing.T) {
+	s := pinnedService(t)
+
+	tok, err := s.IssueAccessForTenant(pinnedSubject, "acme", pinnedAuthAt, ACRIncommonSilver)
+	if err != nil {
+		t.Fatalf("IssueAccessForTenant: %v", err)
+	}
+	claims, err := s.VerifyAccess(tok)
+	if err != nil {
+		t.Fatalf("VerifyAccess: %v", err)
+	}
+	if claims.TenantID != "acme" {
+		t.Errorf("TenantID = %q, want %q", claims.TenantID, "acme")
+	}
+	if claims.Subject != pinnedSubject || claims.ACR != ACRIncommonSilver {
+		t.Errorf("other claims disturbed: %+v", claims)
+	}
+
+	// The claim is `tid` on the wire, not the Go field name. Decode the
+	// payload rather than trusting the struct tag by inspection.
+	payload := decodeSegment(t, tok)
+	if !strings.Contains(payload, `"tid":"acme"`) {
+		t.Errorf("payload does not carry tid: %s", payload)
+	}
+}
+
+// TestVerifyAccess_LegacyTokenReadsEmptyTenant is the legacy-tolerance
+// half. The token below was minted before the claim existed; it must
+// still verify, and its tenant must read as "" rather than failing.
+func TestVerifyAccess_LegacyTokenReadsEmptyTenant(t *testing.T) {
+	s := pinnedService(t)
+
+	claims, err := s.VerifyAccess(pinnedPre7cToken)
+	if err != nil {
+		t.Fatalf("a pre-7c token no longer verifies: %v — this would log out every existing "+
+			"session on the deploy that adds tenancy", err)
+	}
+	if claims.TenantID != "" {
+		t.Errorf("legacy token TenantID = %q, want empty", claims.TenantID)
+	}
+	if claims.Subject != pinnedSubject {
+		t.Errorf("Subject = %q, want %q", claims.Subject, pinnedSubject)
+	}
+}
+
+// TestIssueAccessForTenant_RejectionsUnchanged: adding a parameter must
+// not weaken the existing guards.
+func TestIssueAccessForTenant_RejectionsUnchanged(t *testing.T) {
+	s := pinnedService(t)
+	for _, tc := range []struct {
+		name     string
+		subject  string
+		authTime int64
+		acr      string
+	}{
+		{"empty subject", "", pinnedAuthAt, ACRLocalPassword},
+		{"zero auth_time", pinnedSubject, 0, ACRLocalPassword},
+		{"negative auth_time", pinnedSubject, -1, ACRLocalPassword},
+		{"empty acr", pinnedSubject, pinnedAuthAt, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.IssueAccessForTenant(tc.subject, "acme", tc.authTime, tc.acr); !errors.Is(err, ErrInvalidToken) {
+				t.Errorf("err = %v, want ErrInvalidToken", err)
+			}
+		})
+	}
+}
+
+// decodeSegment returns the token's decoded payload as a string.
+func decodeSegment(t *testing.T, token string) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d segments, want 3", len(parts))
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	return string(raw)
+}

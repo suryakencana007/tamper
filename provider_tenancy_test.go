@@ -9,6 +9,7 @@ import (
 	tamper "github.com/suryakencana007/tamper"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/oidc"
+	"github.com/suryakencana007/tamper/saml"
 )
 
 // Slice 7b-2 — the tenancy boot guard. Every tenancy misconfiguration
@@ -63,6 +64,29 @@ func TestNew_TenancyRequiresTenantScopedProviderStore(t *testing.T) {
 		t.Fatal("New accepted an oidc.ProviderStore that cannot scope by tenant")
 	}
 	if !strings.Contains(err.Error(), "TenantScopedProviderStore") {
+		t.Errorf("boot error does not name the required interface: %v", err)
+	}
+	if !strings.Contains(err.Error(), "MemProviderStore") {
+		t.Errorf("boot error does not name the concrete type: %v", err)
+	}
+}
+
+// TestNew_TenancyRequiresTenantScopedSAMLStore is the SAML half of the
+// boot guard (slice 7e-2), mirroring the OIDC one above.
+func TestNew_TenancyRequiresTenantScopedSAMLStore(t *testing.T) {
+	_, err := tamper.New(tamper.Config{
+		JWT:      validJWT(),
+		Identity: &tamper.IdentityConfig{Store: identity.NewMemStore()},
+		SAML: &tamper.SAMLConfig{
+			Store:         saml.NewMemProviderStore(), // implements ProviderStore only
+			SPMetadataURL: func(id, _ string) string { return "https://x.test/" + id },
+		},
+		Tenancy: &tamper.TenancyConfig{Enabled: true},
+	})
+	if err == nil {
+		t.Fatal("New accepted a saml.ProviderStore that cannot scope by tenant")
+	}
+	if !strings.Contains(err.Error(), "saml.TenantScopedProviderStore") {
 		t.Errorf("boot error does not name the required interface: %v", err)
 	}
 	if !strings.Contains(err.Error(), "MemProviderStore") {

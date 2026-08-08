@@ -199,6 +199,13 @@ func New(cfg Config) (*Provider, error) {
 						"oidc.TenantScopedProviderStore; %T does not", cfg.OIDC.Store)
 			}
 		}
+		if cfg.SAML != nil {
+			if _, ok := cfg.SAML.Store.(saml.TenantScopedProviderStore); !ok {
+				return nil, fmt.Errorf(
+					"tamper: Tenancy.Enabled requires a saml.ProviderStore that implements "+
+						"saml.TenantScopedProviderStore; %T does not", cfg.SAML.Store)
+			}
+		}
 	}
 
 	// --- keyset (validates the KEK entries) ---

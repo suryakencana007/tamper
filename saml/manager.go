@@ -88,16 +88,59 @@ type Manager struct {
 	// configured ledger is NoReplayDefence.
 	warnedNoReplay sync.Once
 
-	mu       sync.RWMutex
-	registry *ProviderRegistry
-	cachedAt time.Time
-	ttl      time.Duration
+	// spMetadataURLForTenant is the tenant-aware form of spMetadataURL.
+	// When set it wins, because a pooled deployment's ACS/metadata URLs
+	// usually vary by tenant. Mirrors oidc.WithRedirectURLForTenant.
+	spMetadataURLForTenant func(tenantID, id, acsURL string) string
+
+	// mu guards registries. STILL an RWMutex, for the reason the OIDC
+	// Manager records: the read path dominates. Per-tenant keying turns a
+	// single cached value into a keyed map; it adds no second lock (§6.6).
+	mu sync.RWMutex
+	// registries is the cache, keyed by tenant. The "" key is the
+	// single-tenant deployment and holds exactly one registry.
+	//
+	// MAP GROWTH: bounded, not restricted to known tenants — identical
+	// decision and identical reasoning to oidc.Manager.registries. The
+	// Manager has no tenant.Store to validate ids against, so at
+	// maxCachedTenants an insert evicts the least-recently-rebuilt entry.
+	// Refusing to cache past the cap would let an attacker fill it with
+	// junk and force every real tenant onto the uncached path.
+	registries map[string]*cachedRegistry
+	ttl        time.Duration
 
 	now func() time.Time
 }
 
+// cachedRegistry is one tenant's cache entry. Mirrors the OIDC type:
+// freshness keys on cachedAt, never on registry != nil, so an empty
+// tenant caches its emptiness for the full TTL.
+type cachedRegistry struct {
+	registry *ProviderRegistry
+	cachedAt time.Time
+}
+
+// maxCachedTenants bounds the registry cache. Same value and same
+// reasoning as the OIDC Manager's.
+const maxCachedTenants = 1024
+
 // ManagerOption configures a Manager at construction.
 type ManagerOption func(*Manager)
+
+// WithSPMetadataURLForTenant supplies the (tenant, provider, ACS URL) →
+// SP-metadata-URL mapping for pooled deployments. Takes precedence over
+// WithSPMetadataURL when both are set.
+//
+// The SAML analogue of oidc.WithRedirectURLForTenant, carrying the extra
+// acsURL argument the single-tenant form already had — the one shape
+// difference between the two packages, and it is SAML's, not tenancy's.
+func WithSPMetadataURLForTenant(fn func(tenantID, id, acsURL string) string) ManagerOption {
+	return func(m *Manager) {
+		if fn != nil {
+			m.spMetadataURLForTenant = fn
+		}
+	}
+}
 
 // WithTTL sets the registry cache-freshness window. Zero (the
 // default) rebuilds on every GetRegistry call.
@@ -155,10 +198,11 @@ func WithAssertionReplayStore(s AssertionReplayStore) ManagerOption {
 // that must seal refuse with ErrNoKeySet.
 func NewManager(store ProviderStore, keys *tampercrypto.KeySet, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		store:   store,
-		keys:    keys,
-		fetcher: DefaultMetadataFetcher,
-		now:     time.Now,
+		store:      store,
+		keys:       keys,
+		fetcher:    DefaultMetadataFetcher,
+		registries: make(map[string]*cachedRegistry),
+		now:        time.Now,
 	}
 	for _, o := range opts {
 		o(m)
@@ -191,14 +235,22 @@ func (m *Manager) SetMetadataFetcher(fn MetadataFetcher) {
 // the next mutation regardless of ttl (Year-9999 cachedAt sentinel).
 // Passing nil clears the cache. Test-seam only.
 func (m *Manager) PinRegistry(reg *ProviderRegistry) {
+	m.PinRegistryForTenant("", reg)
+}
+
+// PinRegistryForTenant is PinRegistry for one tenant's key. Mirrors
+// oidc.Manager.PinRegistryForTenant.
+func (m *Manager) PinRegistryForTenant(tenantID string, reg *ProviderRegistry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.registry = reg
 	if reg == nil {
-		m.cachedAt = time.Time{}
+		delete(m.registries, tenantID)
 		return
 	}
-	m.cachedAt = time.Date(pinnedCacheTimestampYear, time.December, 31, 23, 59, 59, 0, time.UTC)
+	m.registries[tenantID] = &cachedRegistry{
+		registry: reg,
+		cachedAt: time.Date(pinnedCacheTimestampYear, time.December, 31, 23, 59, 59, 0, time.UTC),
+	}
 }
 
 const pinnedCacheTimestampYear = 9999
@@ -335,28 +387,42 @@ func (m *Manager) TestMetadata(ctx context.Context, idpMetadataURL string) (*Met
 // OIDC Manager. Returns (nil, nil) when no usable enabled providers
 // exist.
 func (m *Manager) GetRegistry(ctx context.Context) (*ProviderRegistry, error) {
+	return m.GetRegistryForTenant(ctx, "")
+}
+
+// GetRegistryForTenant is GetRegistry scoped to one tenant. Mirrors
+// oidc.Manager.GetRegistryForTenant exactly: same double-checked
+// locking, same per-key nil-sentinel symmetry, same fail-closed on a
+// store that cannot scope.
+//
+// Returns (nil, nil) when the tenant has no usable enabled providers.
+func (m *Manager) GetRegistryForTenant(ctx context.Context, tenantID string) (*ProviderRegistry, error) {
 	m.mu.RLock()
-	cached := m.registry
-	cachedAt := m.cachedAt
+	entry := m.registries[tenantID]
 	m.mu.RUnlock()
-	if m.cacheFresh(cachedAt) {
-		return cached, nil
+	if entry != nil && m.cacheFresh(entry.cachedAt) {
+		return entry.registry, nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cacheFresh(m.cachedAt) {
-		return m.registry, nil
+	if e := m.registries[tenantID]; e != nil && m.cacheFresh(e.cachedAt) {
+		return e.registry, nil
 	}
-	return m.rebuildLocked(ctx)
+	return m.rebuildLocked(ctx, tenantID)
 }
 
 // Reload clears the cache + eagerly rebuilds from the store.
 func (m *Manager) Reload(ctx context.Context) error {
+	return m.ReloadForTenant(ctx, "")
+}
+
+// ReloadForTenant is Reload for one tenant's key, touching no other
+// tenant's entry. Mirrors oidc.Manager.ReloadForTenant.
+func (m *Manager) ReloadForTenant(ctx context.Context, tenantID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.registry = nil
-	m.cachedAt = time.Time{}
-	_, err := m.rebuildLocked(ctx)
+	delete(m.registries, tenantID)
+	_, err := m.rebuildLocked(ctx, tenantID)
 	return err
 }
 
@@ -415,17 +481,18 @@ func (m *Manager) cacheFresh(cachedAt time.Time) bool {
 // PEM material (a bad cert/key logs + omits that provider — one
 // mis-provisioned IdP must not take the rest down), and builds the
 // registry with partialOK=true. Caller MUST hold mu.Lock.
-func (m *Manager) rebuildLocked(ctx context.Context) (*ProviderRegistry, error) {
-	recs, err := m.store.ListEnabledProviders(ctx)
+func (m *Manager) rebuildLocked(ctx context.Context, tenantID string) (*ProviderRegistry, error) {
+	recs, err := m.listEnabled(ctx, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("saml: list enabled providers: %w", err)
+		return nil, err
 	}
 	if len(recs) == 0 {
-		m.registry = nil
-		m.cachedAt = m.now()
+		// Per-tenant nil sentinel, cached with a fresh timestamp so an
+		// empty tenant honours the TTL exactly as a populated one does.
+		m.storeLocked(tenantID, nil)
 		return nil, nil
 	}
-	if m.spMetadataURL == nil {
+	if m.spMetadataURL == nil && m.spMetadataURLForTenant == nil {
 		return nil, fmt.Errorf("saml: manager has no SP-metadata-URL mapping (WithSPMetadataURL)")
 	}
 	if m.replay == nil {
@@ -466,7 +533,7 @@ func (m *Manager) rebuildLocked(ctx context.Context) (*ProviderRegistry, error) 
 			IdPMetadataURL:         def.IdPMetadataURL,
 			EntityID:               def.EntityID,
 			ACSURL:                 def.ACSURL,
-			MetadataURL:            m.spMetadataURL(def.ID, def.ACSURL),
+			MetadataURL:            m.spMetadataFor(tenantID, def.ID, def.ACSURL),
 			SPCert:                 cert,
 			SPKey:                  signer,
 			DisplayName:            def.DisplayName,
@@ -478,23 +545,86 @@ func (m *Manager) rebuildLocked(ctx context.Context) (*ProviderRegistry, error) 
 		})
 	}
 	if len(configs) == 0 {
-		m.registry = nil
-		m.cachedAt = m.now()
+		// Every provider for this tenant failed PEM parsing and was
+		// logged + omitted above. That is the rebuild resilience, and it
+		// is now PER TENANT: one mis-provisioned IdP takes down neither
+		// its own tenant's other providers nor any other tenant's.
+		m.storeLocked(tenantID, nil)
 		return nil, nil
 	}
 	reg, err := BuildRegistryFromConfigs(ctx, configs, m.fetcher, true, m.replay)
 	if err != nil {
 		return nil, fmt.Errorf("saml: build registry: %w", err)
 	}
-	m.registry = reg
-	m.cachedAt = m.now()
+	m.storeLocked(tenantID, reg)
 	return reg, nil
 }
 
+// listEnabled reads the tenant's enabled providers. The untenanted key
+// uses the original call, unchanged. A named tenant REQUIRES the scoped
+// store; falling back to ListEnabledProviders would hand one tenant
+// every tenant's IdPs. Mirrors oidc.Manager.listEnabled.
+func (m *Manager) listEnabled(ctx context.Context, tenantID string) ([]ProviderRecord, error) {
+	if tenantID == "" {
+		recs, err := m.store.ListEnabledProviders(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("saml: list enabled providers: %w", err)
+		}
+		return recs, nil
+	}
+	scoped, ok := m.store.(TenantScopedProviderStore)
+	if !ok {
+		return nil, fmt.Errorf(
+			"saml: tenant-scoped registry requires a ProviderStore implementing "+
+				"saml.TenantScopedProviderStore; %T does not", m.store)
+	}
+	recs, err := scoped.ListEnabledProvidersForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("saml: list enabled providers for tenant: %w", err)
+	}
+	return recs, nil
+}
+
+// spMetadataFor maps a provider to its SP-metadata URL. The
+// tenant-aware mapping wins when configured. Mirrors
+// oidc.Manager.redirectFor, plus SAML's acsURL argument.
+func (m *Manager) spMetadataFor(tenantID, providerID, acsURL string) string {
+	if m.spMetadataURLForTenant != nil {
+		return m.spMetadataURLForTenant(tenantID, providerID, acsURL)
+	}
+	return m.spMetadataURL(providerID, acsURL)
+}
+
+// storeLocked caches one tenant's result and enforces the map bound.
+// Caller MUST hold mu.Lock. Mirrors oidc.Manager.storeLocked.
+func (m *Manager) storeLocked(tenantID string, reg *ProviderRegistry) {
+	if _, exists := m.registries[tenantID]; !exists && len(m.registries) >= maxCachedTenants {
+		var oldestKey string
+		var oldest time.Time
+		for k, e := range m.registries {
+			if oldest.IsZero() || e.cachedAt.Before(oldest) {
+				oldestKey, oldest = k, e.cachedAt
+			}
+		}
+		delete(m.registries, oldestKey)
+	}
+	m.registries[tenantID] = &cachedRegistry{registry: reg, cachedAt: m.now()}
+}
+
+// invalidateCache clears the untenanted entry. Called by
+// Create/Update/Delete, whose store operations carry no tenant.
 func (m *Manager) invalidateCache() {
+	m.InvalidateTenant("")
+}
+
+// InvalidateTenant drops one tenant's cached registry. ONE key: another
+// tenant's cache is never touched. Mirrors oidc.Manager.InvalidateTenant,
+// and exists for the same reason — tamper names no tenant column, so
+// Create/Update/Delete cannot know which tenant a provider row belongs
+// to and the application says so.
+func (m *Manager) InvalidateTenant(tenantID string) {
 	m.mu.Lock()
-	m.registry = nil
-	m.cachedAt = time.Time{}
+	delete(m.registries, tenantID)
 	m.mu.Unlock()
 }
 

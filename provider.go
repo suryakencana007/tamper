@@ -188,6 +188,17 @@ func New(cfg Config) (*Provider, error) {
 				"tamper: Tenancy.Enabled requires an identity.Store that implements "+
 					"identity.TenantScopedStore; %T does not", cfg.Identity.Store)
 		}
+		// Same guard for the OIDC provider store. Without it a pooled
+		// deployment boots happily and fails on the first tenant-scoped
+		// registry build — a per-request failure for a misconfiguration,
+		// which is what §6.4 exists to prevent.
+		if cfg.OIDC != nil {
+			if _, ok := cfg.OIDC.Store.(oidc.TenantScopedProviderStore); !ok {
+				return nil, fmt.Errorf(
+					"tamper: Tenancy.Enabled requires an oidc.ProviderStore that implements "+
+						"oidc.TenantScopedProviderStore; %T does not", cfg.OIDC.Store)
+			}
+		}
 	}
 
 	// --- keyset (validates the KEK entries) ---

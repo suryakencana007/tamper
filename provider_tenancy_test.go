@@ -8,6 +8,7 @@ import (
 
 	tamper "github.com/suryakencana007/tamper"
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/oidc"
 )
 
 // Slice 7b-2 — the tenancy boot guard. Every tenancy misconfiguration
@@ -41,6 +42,51 @@ func TestNew_TenancyRequiresTenantScopedStore(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "TenantScopedStore") {
 		t.Errorf("boot error does not name the required interface: %v", err)
+	}
+}
+
+// TestNew_TenancyRequiresTenantScopedProviderStore is the OIDC half of
+// the boot guard (slice 7e-1). Without it a pooled deployment boots
+// happily and fails on the first tenant-scoped registry build — a
+// per-request failure for a misconfiguration.
+func TestNew_TenancyRequiresTenantScopedProviderStore(t *testing.T) {
+	_, err := tamper.New(tamper.Config{
+		JWT:      validJWT(),
+		Identity: &tamper.IdentityConfig{Store: identity.NewMemStore()},
+		OIDC: &tamper.OIDCConfig{
+			Store:       oidc.NewMemProviderStore(), // implements ProviderStore only
+			RedirectURL: func(id string) string { return "https://x.test/" + id },
+		},
+		Tenancy: &tamper.TenancyConfig{Enabled: true},
+	})
+	if err == nil {
+		t.Fatal("New accepted an oidc.ProviderStore that cannot scope by tenant")
+	}
+	if !strings.Contains(err.Error(), "TenantScopedProviderStore") {
+		t.Errorf("boot error does not name the required interface: %v", err)
+	}
+	if !strings.Contains(err.Error(), "MemProviderStore") {
+		t.Errorf("boot error does not name the concrete type: %v", err)
+	}
+}
+
+// TestNew_TenancyDisabledAcceptsPlainProviderStore: the compatibility
+// path is untouched — a pre-Phase-7 provider store still boots.
+func TestNew_TenancyDisabledAcceptsPlainProviderStore(t *testing.T) {
+	p, err := tamper.New(tamper.Config{
+		JWT:      validJWT(),
+		Identity: &tamper.IdentityConfig{Store: identity.NewMemStore()},
+		OIDC: &tamper.OIDCConfig{
+			Store:       oidc.NewMemProviderStore(),
+			RedirectURL: func(id string) string { return "https://x.test/" + id },
+		},
+	})
+	if err != nil {
+		t.Fatalf("New rejected a plain provider store with tenancy off: %v", err)
+	}
+	defer func() { _ = p.Close() }()
+	if p.OIDC == nil {
+		t.Fatal("OIDC manager not constructed")
 	}
 }
 

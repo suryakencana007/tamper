@@ -965,8 +965,60 @@ milestone: M5
 risk: HIGH
 depends_on: [7b-2]
 design_ref: "§5 M5, §8 open item 1"
-blocked_by_decision: "one chain vs chain-per-tenant — MUST be resolved before this slice opens"
 ```
+
+> **UNBLOCKED 2026-08-08.** Open item 1 is decided: **ONE CHAIN**, tenant in
+> the canonical row at v4, **with commitment-based redaction shipped inside
+> v4**. Full reasoning in sketch §8 item 1 — including the two original
+> premises that were checked and found wrong, and the one condition that would
+> flip the answer.
+>
+> **v4 contains**, in order: v3's field sequence unchanged, then
+> `tenant_id` (a NEW top-level `Event.TenantID` — the row's SCOPE) after
+> `request_id`, then `actor.tenant_id` (`Actor.TenantID`, promoted from
+> carried-not-hashed to hashed).
+>
+> **Those two are different facts and conflating them is a correctness bug.**
+> A support engineer or an ActorTypeSystem actor in tenant A acting on tenant
+> B's resource has actor-tenant A and event-tenant B. A tenant export filtered
+> on `Actor.TenantID` silently omits exactly the cross-tenant admin actions the
+> customer most wants to see. Export filters on `Event.TenantID`.
+>
+> **The tenant must be INSIDE the hash.** Do not follow the `cluster_id`
+> precedent, which is explicitly "purely a query-time filter, not part of
+> integrity". `cluster_id` is a visibility filter inside one trust domain; a
+> tenant IS the trust boundary, and an unhashed tenant column can be
+> re-attributed from A to B without breaking anything. That is the entire
+> justification for v4 existing.
+>
+> **PII fields hash as stored commitments** — `actor.email`, `actor.name`,
+> `actor.ip`, `before`, `after` become `H(row_salt || field_name || value)`
+> with the salt in its own column. The encoder reads the STORED commitment and
+> never re-derives it from plaintext, so erasure (null the plaintext, drop the
+> salt, keep the 32 bytes) leaves the hash unchanged and the chain verifies
+> through it. A v4 that hashes plaintext PII is the version that cannot answer
+> an erasure request and must not ship.
+>
+> **The migration** adds columns and an index, **rewrites zero existing rows**,
+> and emits exactly ONE v4 chain-restart anchor THROUGH `Log` so it carries the
+> real latest hash (the zero sentinel is true only on an empty table and would
+> fail the boot gate on any real DB). Emit the anchor ONLY when tenancy is
+> configured, so a `""`-only deployment keeps writing v3 and invariant 1 is
+> satisfied trivially. The anchor must land BEFORE the first v4 write in the
+> same boot: `verifyRows` returns the anchor's `canonical_version` and
+> `walkChain` uses it to OVERRIDE every row's own column, so v4 rows sitting
+> after a v3 anchor read as tamper.
+>
+> **A tenant-filtered export may claim** per-row authenticity and position —
+> each row ships its own prev_hash/hash, recomputable without access to anyone
+> else's data, and attribution cannot have been reassigned after the fact
+> because the tenant is inside the payload. **It may NOT claim** completeness
+> or contiguity: consecutive exported rows do not link to each other, the links
+> run through other tenants' rows. Label it `"is_chain": false`,
+> `"completeness": "issuer-attested"`. A hash-path restoring contiguity
+> discloses every other tenant's event volume and timing, so it is never the
+> default — Phase 7 spends a whole slice keeping StartLogin from being an
+> enumeration oracle; do not ship one with a signature on it.
 
 **reads** — `audit/audit.go`, `audit/canonical_legacy_v2.go`, `audit/migration.go`, `audit/verify_boot.go`, `audit/sqlitestore/migrations/*`
 

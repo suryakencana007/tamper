@@ -356,14 +356,86 @@ Saying it costs nothing and closes a question every evaluator will ask.
 
 ## 8. Open items
 
-1. **One audit chain or one per tenant?** The sketch assumes **one chain with
-   tenant in the canonical row** (v4): per-tenant chains multiply the
-   boot-verify cost by tenant count and destroy global ordering, which is the
-   property that makes the chain worth having. The counter-argument is
-   per-tenant export and per-tenant retention deletion, which a single chain
-   makes structurally impossible without breaking the chain. **Decide before
-   7i-1 opens** — it is the one choice in Phase 7 that cannot be revised
-   additively.
+1. **One audit chain or one per tenant? — DECIDED 2026-08-08: ONE CHAIN**,
+   tenant in the canonical row at `canonical_version=4`, **with
+   commitment-based redaction shipped inside v4**. Recorded here because §8
+   says the reasoning must be written down, and because this is the one Phase 7
+   choice that cannot be revised additively.
+
+   **Both premises the original assumption rested on are wrong.** They were
+   checked against the code and should stop being reasons for anything:
+
+   - *"per-tenant chains multiply the boot-verify cost by tenant count"* —
+     **false**. `verifyChainPostMigrationStore` hashes every row once;
+     bucketing the same sorted result set by tenant is the same SHA-256 count.
+     Per-tenant chains multiply QUERIES, not hashes.
+   - *"global ordering is the property that makes the chain worth having"* —
+     **overstated**. The ordering is `Event.At`, which `Log` FABRICATES by
+     bumping 1ns on collision under an in-process mutex. It is also additively
+     recoverable under per-tenant chains, via checkpoint rows. Neither premise
+     carries the decision.
+
+   **The reason that does carry it, which the original text never made.** A
+   hash chain exists to detect DELETION, not merely edits. Under per-tenant
+   chains, deleting the whole of tenant X's chain leaves nothing behind: no
+   global row references it, enumeration finds T−1 chains and reports success,
+   and "tenant X was wiped" is byte-identical to "tenant X never emitted an
+   event". Per-tenant chains buy the ability to drop a tenant's log without
+   breaking anything by surrendering the ability to DETECT that a tenant's log
+   was dropped — and for a log whose adversary model includes the operator
+   (the model `RehashChainInPlace`'s own warning already assumes), that is a
+   bad trade at any price. The proposed fix — checkpoint rows committing each
+   tenant's tip hash — is a global chain with less in it.
+
+   Secondary: per-tenant chains force `audit` to ENUMERATE TENANTS to emit
+   genesis rows and run boot verification, so `audit` would depend on
+   `tenant.Store`. Today it depends on nothing but its own store. That breaks
+   §6.5 and the opaque-pass-through discipline `Actor.TenantID` already
+   follows.
+
+   **Per-tenant erasure is NOT a reason to pick per-tenant chains.** Erasing
+   one data subject is a middle-of-chain deletion under BOTH topologies, and
+   it is the commoner demand by an order of magnitude. It is solved by
+   redaction, which is available under either — so it cannot discriminate
+   between them.
+
+   **What was checked and found unavailable.** A mid-table genesis row is
+   UNCONSTRUCTIBLE through the port: `Log` sets `e.PrevHash = latestHash()`
+   unconditionally. So "segment per tenant-era" is not an escape hatch. The
+   only real ones are commitment redaction, whole-row tombstones, and
+   export-then-anchor-then-prefix-prune — the last of which costs EVERY
+   tenant's pre-anchor walkable proof, so it is offered last.
+
+   Also corrected while checking: prefix-prune tolerance does NOT come from
+   the chain-restart anchor. `walkChain` seeds `prev = e.PrevHash` at row 0 —
+   it TRUSTS the first surviving row. The anchor selects the walk root and the
+   encoder version. (A consequence worth its own issue: deleting the oldest N
+   rows is undetectable without head-hash notarisation.)
+
+   **The honest residual.** Rows written before the v4 anchor hash plaintext
+   and are permanently un-redactable; they can only age out through
+   `PruneOlderThan`. That window closes the day v4 ships and grows every month
+   it slips.
+
+   **Reserved, named but not built** (rule 7): a per-tenant rolling accumulator
+   carried as a hashed v4 field plus a periodic
+   `system.audit.tenant_checkpoint`, which would give tenant-scoped
+   completeness with no cross-tenant leakage.
+
+   **REVISIT before 7i-1 opens if** a signed or in-pipeline DPA requires
+   physical removal of one tenant's audit rows on a cadence differing from the
+   pool's longest retention, AND counsel will not accept irreversible
+   redaction-in-place as discharge. That is this decision's one structurally
+   unfixable gap; it arrives on the second enterprise contract, not in an
+   exotic edge case, and no engineering closes it. The question is for legal
+   with the contract text in hand — it is not answerable from the codebase.
+
+   **Separate blocker, independent of this fork, and arguably more urgent.**
+   `Log` is SELECT-latest-hash then INSERT, under an IN-PROCESS mutex with an
+   IN-PROCESS `lastAt` watermark. Two replicas writing one audit DB race on
+   both and break the chain — under either topology. Pooled deployments are
+   usually multi-replica. Confirm the deployment's writer topology before M5
+   lands.
 2. **Does `identity.User.Email` stay globally unique in `""` mode?** Yes, by
    the parity contract. But an app migrating from `""` to real tenants needs a
    backfill story: assign every existing row a tenant, then flip. That guide is

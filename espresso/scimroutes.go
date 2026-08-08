@@ -27,6 +27,27 @@ type SCIMConfig struct {
 	// BaseURL is the operator's chart override for meta.location; empty
 	// derives the prefix from each request's scheme + host.
 	BaseURL string
+
+	// BaseURLForTenant maps a tenant to its own absolute URL prefix, for
+	// pooled deployments where each customer reaches SCIM on its own host
+	// (acme.example.com) or path segment.
+	//
+	// Optional. Nil — or a function returning "" — falls through to
+	// BaseURL and then to the request's own scheme + host, so a
+	// single-tenant deployment produces byte-identical DTOs to a
+	// pre-Phase-7 build.
+	//
+	// It exists because meta.location and $ref are ABSOLUTE URLs a SCIM
+	// client will follow. Rendering acme's resources under globex's host
+	// hands a working link to the wrong place: the client follows it,
+	// authenticates against a host it was never provisioned for, and the
+	// failure looks like a broken integration rather than a boundary
+	// problem.
+	//
+	// The tenant comes from the validated principal, like everything else
+	// in this surface — never from the request's Host header, which the
+	// caller controls.
+	BaseURLForTenant func(tenantID string) string
 	// BulkMaxOperations is advertised in ServiceProviderConfig.bulk.
 	BulkMaxOperations int
 	// MaxResults is the enforced List page cap, advertised verbatim as
@@ -136,6 +157,29 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 // runtime condition).
 func scimTenant(ctx context.Context) string {
 	return MustGetPrincipal(ctx).TenantID
+}
+
+// baseURL resolves the absolute URL prefix for THIS request's tenant.
+//
+// One shim, so every meta.location and $ref in the surface is built from
+// one decision — the 7g-1 discipline applied to URLs instead of queries.
+//
+// It reads GetPrincipal rather than scimTenant deliberately: the SCIM
+// discovery endpoints (ServiceProviderConfig, ResourceTypes, Schemas)
+// are commonly mounted UNAUTHENTICATED so a connector can read
+// capabilities before it holds a credential, and scimTenant's
+// MustGetPrincipal would panic there. No principal means no tenant,
+// which falls through to the process-wide behavior — correct, because a
+// request with no identity has no tenant to be scoped to.
+func (s *SCIMRoutes) baseURL(r *http.Request) string {
+	if s.cfg.BaseURLForTenant != nil {
+		if p, ok := GetPrincipal(r.Context()); ok {
+			if u := s.cfg.BaseURLForTenant(p.TenantID); u != "" {
+				return u
+			}
+		}
+	}
+	return ResolveBaseURL(r, s.cfg.BaseURL)
 }
 
 // --- store routing shims ---------------------------------------------
@@ -305,7 +349,7 @@ func (s *SCIMRoutes) ServiceProviderConfig(w http.ResponseWriter, r *http.Reques
 		},
 		Meta: ResourceMeta{
 			ResourceType: "ServiceProviderConfig",
-			Location:     ResolveBaseURL(r, s.cfg.BaseURL) + s.cfg.Prefix + "/ServiceProviderConfig",
+			Location:     s.baseURL(r) + s.cfg.Prefix + "/ServiceProviderConfig",
 		},
 	})
 }

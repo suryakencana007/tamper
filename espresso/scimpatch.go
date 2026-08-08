@@ -29,7 +29,7 @@ func (s *SCIMRoutes) UsersPatch(w http.ResponseWriter, r *http.Request) {
 		s.writeUserStoreErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	current := userRecordToResource(rec, base, s.cfg.Prefix)
 
 	// If-Match against the pre-mutation state (matches Replace/Delete).
@@ -80,7 +80,7 @@ func (s *SCIMRoutes) GroupsPatch(w http.ResponseWriter, r *http.Request) {
 		s.writeGroupStoreErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	current := groupRecordToResource(rec, base, s.cfg.Prefix)
 
 	if ok, _, _ := CheckIfMatch(r, ResourceETag(rec.Updated)); !ok {

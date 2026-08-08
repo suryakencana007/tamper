@@ -23,7 +23,7 @@ func (s *SCIMRoutes) UsersList(w http.ResponseWriter, r *http.Request) {
 		writeListErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	resources := make([]json.RawMessage, 0, len(page.Users))
 	for i := range page.Users {
 		raw, err := json.Marshal(userRecordToResource(page.Users[i], base, s.cfg.Prefix))
@@ -51,7 +51,7 @@ func (s *SCIMRoutes) GroupsList(w http.ResponseWriter, r *http.Request) {
 		writeListErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	resources := make([]json.RawMessage, 0, len(page.Groups))
 	for i := range page.Groups {
 		raw, err := json.Marshal(groupRecordToResource(page.Groups[i], base, s.cfg.Prefix))

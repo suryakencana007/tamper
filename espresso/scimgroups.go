@@ -46,7 +46,7 @@ func (s *SCIMRoutes) GroupsCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeGroupStoreErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	w.Header().Set("Location", base+s.cfg.Prefix+"/Groups/"+rec.ID)
 	WriteETagHeader(w, ResourceETag(rec.Updated))
 	WriteSCIMJSON(w, http.StatusCreated, groupRecordToResource(rec, base, s.cfg.Prefix))
@@ -65,7 +65,7 @@ func (s *SCIMRoutes) GroupsGet(w http.ResponseWriter, r *http.Request) {
 		s.writeGroupStoreErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	WriteETagHeader(w, ResourceETag(rec.Updated))
 	WriteSCIMJSON(w, http.StatusOK, groupRecordToResource(rec, base, s.cfg.Prefix))
 }
@@ -116,7 +116,7 @@ func (s *SCIMRoutes) GroupsReplace(w http.ResponseWriter, r *http.Request) {
 		s.writeGroupStoreErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	WriteETagHeader(w, ResourceETag(rec.Updated))
 	WriteSCIMJSON(w, http.StatusOK, groupRecordToResource(rec, base, s.cfg.Prefix))
 }

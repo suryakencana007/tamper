@@ -430,6 +430,52 @@ Saying it costs nothing and closes a question every evaluator will ask.
    exotic edge case, and no engineering closes it. The question is for legal
    with the contract text in hand — it is not answerable from the codebase.
 
+   **ANSWERED 2026-08-09: NOT TRIGGERED. The compliance target is ISO/IEC
+   27001, as the provider.** 7i-1 is clear to open.
+
+   The condition needed both halves and ISO 27001 supplies neither. It is an
+   ISMS standard, not a data-subject-rights regime: it requires that a
+   retention policy be DEFINED and that records be protected, not that any
+   particular customer's rows be destroyed on that customer's own schedule.
+   There is no DPA-style physical-removal clause to satisfy, so the question of
+   whether redaction discharges one does not arise.
+
+   It argues the same way the decision already did:
+
+   - **A.5.33 protection of records** — protect from loss, destruction and
+     falsification. Per-tenant chains surrender exactly that: a wiped tenant
+     chain is byte-indistinguishable from a tenant that never logged. This is
+     the reason the decision turned on, restated in the auditor's vocabulary.
+   - **A.8.15 logging** — logs protected against tampering and unauthorised
+     deletion. One chain is the stronger control and the one demonstrable in a
+     single walk.
+   - **A.5.33 / A.8.10 retention and deletion-when-no-longer-required** —
+     `PruneOlderThan` is a uniform, tenant-blind cutoff, which is CORRECT under
+     a provider-defined uniform ISMS retention policy. It breaks only under
+     per-customer contractual variance, which is the DPA case and not this one.
+
+   **The condition stays recorded rather than deleted.** ISO 27001 A.5.34
+   defers to applicable PII law. Selling into a GDPR-covered market under DPAs
+   can revive it, and if it does, the analysis above is the analysis to re-run
+   — not a new one.
+
+   **Two obligations ISO does add.**
+
+   - The single-writer defect below stops being merely a bug. Under A.8.15 the
+     chain IS the tamper-protection control, and a control that fails under the
+     deployment's own topology is a reproducible nonconformity. It wants its
+     own slice, AHEAD of 7i-1 if certification is near — it is not in 7i-1's
+     scope and must not be smuggled into it (rule 7).
+   - **A.8.17 clock synchronisation** needs a written answer. `Event.At` is not
+     purely a synchronised clock reading: `Log` bumps it by 1ns on collision
+     against a process-local watermark. That is defensible — it is a
+     sequence-preserving adjustment, and it is what makes `ORDER BY at` follow
+     chain order — but it should be documented before it is asked about live,
+     not improvised in the room.
+
+   Scope and the Statement of Applicability are the certifying auditor's call,
+   not this document's.
+
    **Separate blocker, independent of this fork, and arguably more urgent.**
    `Log` is SELECT-latest-hash then INSERT, under an IN-PROCESS mutex with an
    IN-PROCESS `lastAt` watermark. Two replicas writing one audit DB race on

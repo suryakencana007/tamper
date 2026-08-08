@@ -117,6 +117,21 @@ type Actor struct {
 	Email  string
 	Name   string `json:"name,omitempty"`
 	IP     string
+
+	// TenantID names the tenant the actor was acting in; "" is a
+	// single-tenant deployment. Opaque and app-defined, as everywhere
+	// else.
+	//
+	// CARRIED, NOT HASHED. canonicalPayloadV3 enumerates its fields
+	// explicitly rather than marshalling this struct, so adding this
+	// field does not move a single existing row's chain hash — verified
+	// by the byte-parity tests, and the reason it was safe to add here.
+	// Putting the tenant INTO the canonical row is slice 7i-1
+	// (canonical_version=4), which is blocked on an undecided question:
+	// one chain with the tenant in the row, or one chain per tenant.
+	// This field does not pre-empt that answer; it only makes the value
+	// available to an emitter before it is decided.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // actorCtxKey is the context key used by WithActor + ActorFromContext.
@@ -154,7 +169,18 @@ func ActorFromContext(ctx context.Context) Actor {
 // name lands in Name (v1.1 — TD-AUDIT-03); Email stays empty (SAs
 // don't have email addresses).
 func ActorService(saID, saName string) Actor {
-	return Actor{Type: ActorTypeServiceAccount, UserID: saID, Name: saName}
+	return ActorServiceInTenant(saID, saName, "")
+}
+
+// ActorServiceInTenant is ActorService for a pooled deployment: the same
+// actor, plus the tenant the service account was acting in.
+//
+// The existing fields keep their exact meaning — UserID is still the
+// service account's id, Name still its human-readable name. The tenant
+// is additional context, not a redefinition, so an emitter that ignores
+// it produces the row it always did.
+func ActorServiceInTenant(saID, saName, tenantID string) Actor {
+	return Actor{Type: ActorTypeServiceAccount, UserID: saID, Name: saName, TenantID: tenantID}
 }
 
 // clusterIDCaptureKey is the context key used by WithClusterIDCapture

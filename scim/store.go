@@ -213,3 +213,218 @@ type GroupStore interface {
 	// ListFiltered takes the RAW client filter string (see UserStore).
 	ListFiltered(ctx context.Context, startIndex, count int, filter string) (GroupPage, error)
 }
+
+// --- Phase 7: pooled multi-tenancy -----------------------------------
+//
+// TenantScopedUserStore is the pooled-multi-tenancy upgrade of
+// UserStore: the same surface, plus a tenant-constrained form of every
+// method that can cross a tenant boundary. All seven can, which is why
+// all seven are here — shrinking the list is exactly where a leak gets
+// in.
+//
+// OPTIONAL interface, the same mechanism identity.Store and
+// oidc.ProviderStore already use. Implementing it is additive: an
+// existing UserStore keeps compiling and keeps its behavior, and a ""
+// tenantID selects the single-tenant table shape it already has.
+//
+// The tenant reaches these methods from the VALIDATED SERVICE-ACCOUNT
+// TOKEN and from nowhere else — never a URL path segment, never a
+// header. See espresso.Principal.TenantID.
+//
+// tamper still names no column. How a row is filed under a tenant is the
+// application's schema; this port only says which tenant is asking.
+//
+// Implementations MUST be safe for concurrent use.
+type TenantScopedUserStore interface {
+	UserStore
+
+	// CreateInTenant persists a new user INTO tenantID. The tenant is
+	// stamped on the row here; it is not derived from the payload, which
+	// the client controls.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	CreateInTenant(ctx context.Context, tenantID string, w UserWrite, meta WriteMeta) (UserRecord, error)
+
+	// GetInTenant reads one user by id WITHIN tenantID. An id belonging to
+	// another tenant is ErrNotFound — the SCIM transport renders that as a
+	// 404 byte-identical to a genuine miss, so the response cannot be used
+	// to discover that a resource exists elsewhere.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	GetInTenant(ctx context.Context, tenantID, id string) (UserRecord, error)
+
+	// ReplaceInTenant rewrites a user WITHIN tenantID.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ReplaceInTenant(ctx context.Context, tenantID, id string, w UserWrite, meta WriteMeta) (UserRecord, error)
+
+	// DeleteInTenant removes a user WITHIN tenantID.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	DeleteInTenant(ctx context.Context, tenantID, id string, meta WriteMeta) error
+
+	// SavePatchInTenant persists a PATCH-mutated user WITHIN tenantID.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	SavePatchInTenant(ctx context.Context, tenantID, id string, w UserWrite, ops []Operation) (UserRecord, error)
+
+	// ListInTenant pages the tenant's users. A page that included another
+	// tenant's rows would leak on the very first unfiltered request an
+	// integration makes.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ListInTenant(ctx context.Context, tenantID string, startIndex, count int) (UserPage, error)
+
+	// ListFilteredInTenant pages the tenant's users under a client filter.
+	// The tenant constraint is the implementation's, ANDed with the
+	// translated filter — a client-supplied filter must never be the only
+	// thing narrowing the query.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ListFilteredInTenant(ctx context.Context, tenantID string, startIndex, count int, filter string) (UserPage, error)
+}
+
+// TenantScopedGroupStore is the pooled-multi-tenancy upgrade of
+// GroupStore. Same contract as TenantScopedUserStore, plus
+// ValidateMembersInTenant — read its doc, it is the method most likely
+// to be left untenanted and the one that leaks a WRITE when it is.
+type TenantScopedGroupStore interface {
+	GroupStore
+
+	// CreateInTenant persists a new group INTO tenantID.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	CreateInTenant(ctx context.Context, tenantID string, w GroupWrite, meta GroupWriteMeta) (GroupRecord, error)
+
+	// GetInTenant reads one group by id WITHIN tenantID.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	GetInTenant(ctx context.Context, tenantID, id string) (GroupRecord, error)
+
+	// ReplaceInTenant rewrites a group WITHIN tenantID.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ReplaceInTenant(ctx context.Context, tenantID, id string, w GroupWrite, meta GroupWriteMeta) (GroupRecord, error)
+
+	// DeleteInTenant removes a group WITHIN tenantID.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	DeleteInTenant(ctx context.Context, tenantID, id string, meta GroupWriteMeta) error
+
+	// SavePatchInTenant persists a PATCH-mutated group WITHIN tenantID.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	SavePatchInTenant(ctx context.Context, tenantID, id string, w GroupWrite, ops []Operation) (GroupRecord, error)
+
+	// ValidateMembersInTenant checks that every member id exists, is
+	// SCIM-managed, AND belongs to tenantID.
+	//
+	// This is the one that looks skippable and is the most dangerous.
+	// Without the tenant constraint, tenant A can nest tenant B's user into
+	// an A group: a cross-tenant WRITE that never touches a tenant-scoped
+	// read path, so no amount of scoping the reads catches it.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ValidateMembersInTenant(ctx context.Context, tenantID string, members []MemberRef) error
+
+	// ListInTenant pages the tenant's groups.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ListInTenant(ctx context.Context, tenantID string, startIndex, count int) (GroupPage, error)
+
+	// ListFilteredInTenant pages the tenant's groups under a client filter.
+	// See UserStore's note: the tenant constraint is ANDed with the filter.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. A "" tenantID selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ListFilteredInTenant(ctx context.Context, tenantID string, startIndex, count int, filter string) (GroupPage, error)
+}

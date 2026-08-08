@@ -22,7 +22,25 @@ var ErrInvalidCredential = errors.New("tamper/espresso: invalid credential")
 // serves the caller's own record with an ETag derived from
 // CreatedAt); apps project whatever their surfaces need.
 type Principal struct {
-	ID          string
+	ID string
+
+	// TenantID is the tenant this service account acts in; "" is a
+	// single-tenant deployment.
+	//
+	// IT COMES FROM THE TOKEN, NEVER FROM THE URL PATH OR A HEADER.
+	// The ServiceAccountValidator returns it as part of vouching for the
+	// credential, so it is a fact the deployment authenticated — not a
+	// value the caller supplied.
+	//
+	// A path-derived tenant is a horizontal-privilege-escalation bug with
+	// extra steps: the caller is authenticated, so the request looks
+	// legitimate in every log, and it reads every other customer's
+	// directory by editing one URL segment. The same goes for a header.
+	// If a handler in this package ever needs the tenant, it reads it
+	// here; a route that wants a tenant in its path may use it for
+	// routing, but must never let it reach a store.
+	TenantID string
+
 	Name        string
 	Description string
 	CreatedAt   time.Time
@@ -94,7 +112,7 @@ func RequireServiceAccount(v ServiceAccountValidator) func(http.Handler) http.Ha
 				return
 			}
 			ctx := context.WithValue(r.Context(), principalKey{}, principal)
-			ctx = audit.WithActor(ctx, audit.ActorService(principal.ID, principal.Name))
+			ctx = audit.WithActor(ctx, audit.ActorServiceInTenant(principal.ID, principal.Name, principal.TenantID))
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

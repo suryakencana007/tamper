@@ -45,7 +45,7 @@ func (s *SCIMRoutes) UsersCreate(w http.ResponseWriter, r *http.Request) {
 		active = *body.Active
 	}
 	familyName, givenName := pickSCIMNameParts(body)
-	rec, err := s.users.Create(r.Context(), scim.UserWrite{
+	rec, err := s.userCreate(r.Context(), scim.UserWrite{
 		UserName:   userName,
 		FamilyName: familyName,
 		GivenName:  givenName,
@@ -71,7 +71,7 @@ func (s *SCIMRoutes) UsersGet(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "user not found", "")
 		return
 	}
-	rec, err := s.users.Get(r.Context(), id)
+	rec, err := s.userGet(r.Context(), id)
 	if err != nil {
 		s.writeUserStoreErr(w, err)
 		return
@@ -101,7 +101,7 @@ func (s *SCIMRoutes) UsersReplace(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusBadRequest, "userName is required", SCIMTypeInvalidValue)
 		return
 	}
-	before, err := s.users.Get(r.Context(), id)
+	before, err := s.userGet(r.Context(), id)
 	if err != nil {
 		s.writeUserStoreErr(w, err)
 		return
@@ -119,7 +119,7 @@ func (s *SCIMRoutes) UsersReplace(w http.ResponseWriter, r *http.Request) {
 		active = *body.Active
 	}
 	familyName, givenName := pickSCIMNameParts(body)
-	rec, err := s.users.Replace(r.Context(), id, scim.UserWrite{
+	rec, err := s.userReplace(r.Context(), id, scim.UserWrite{
 		UserName:   userName,
 		FamilyName: familyName,
 		GivenName:  givenName,
@@ -143,7 +143,7 @@ func (s *SCIMRoutes) UsersDelete(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "user not found", "")
 		return
 	}
-	before, err := s.users.Get(r.Context(), id)
+	before, err := s.userGet(r.Context(), id)
 	if err != nil {
 		s.writeUserStoreErr(w, err)
 		return
@@ -153,7 +153,7 @@ func (s *SCIMRoutes) UsersDelete(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusPreconditionFailed, "If-Match precondition failed", "")
 		return
 	}
-	if err := s.users.Delete(r.Context(), id, scim.WriteMeta{IfMatchPresent: ifMatchPresent, Before: &before}); err != nil {
+	if err := s.userDelete(r.Context(), id, scim.WriteMeta{IfMatchPresent: ifMatchPresent, Before: &before}); err != nil {
 		s.writeUserStoreErr(w, err)
 		return
 	}

@@ -18,7 +18,7 @@ import (
 func (s *SCIMRoutes) UsersList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	startIndex, count := s.parsePagination(q)
-	page, err := s.users.ListFiltered(r.Context(), startIndex, count, q.Get("filter"))
+	page, err := s.userListFiltered(r.Context(), startIndex, count, q.Get("filter"))
 	if err != nil {
 		writeListErr(w, err)
 		return
@@ -46,7 +46,7 @@ func (s *SCIMRoutes) UsersList(w http.ResponseWriter, r *http.Request) {
 func (s *SCIMRoutes) GroupsList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	startIndex, count := s.parsePagination(q)
-	page, err := s.groups.ListFiltered(r.Context(), startIndex, count, q.Get("filter"))
+	page, err := s.groupListFiltered(r.Context(), startIndex, count, q.Get("filter"))
 	if err != nil {
 		writeListErr(w, err)
 		return

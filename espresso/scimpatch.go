@@ -24,7 +24,7 @@ func (s *SCIMRoutes) UsersPatch(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "user not found", "")
 		return
 	}
-	rec, err := s.users.Get(r.Context(), id)
+	rec, err := s.userGet(r.Context(), id)
 	if err != nil {
 		s.writeUserStoreErr(w, err)
 		return
@@ -53,7 +53,7 @@ func (s *SCIMRoutes) UsersPatch(w http.ResponseWriter, r *http.Request) {
 		writePatchApplyError(w, err)
 		return
 	}
-	saved, err := s.users.SavePatch(r.Context(), id, scim.UserWrite{
+	saved, err := s.userSavePatch(r.Context(), id, scim.UserWrite{
 		UserName:   patched.UserName,
 		ExternalID: patched.ExternalID,
 		Active:     patched.Active,
@@ -75,7 +75,7 @@ func (s *SCIMRoutes) GroupsPatch(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "group not found", "")
 		return
 	}
-	rec, err := s.groups.Get(r.Context(), id)
+	rec, err := s.groupGet(r.Context(), id)
 	if err != nil {
 		s.writeGroupStoreErr(w, err)
 		return
@@ -103,7 +103,7 @@ func (s *SCIMRoutes) GroupsPatch(w http.ResponseWriter, r *http.Request) {
 		writePatchApplyError(w, err)
 		return
 	}
-	saved, err := s.groups.SavePatch(r.Context(), id, scim.GroupWrite{
+	saved, err := s.groupSavePatch(r.Context(), id, scim.GroupWrite{
 		DisplayName:           patched.DisplayName,
 		ExternalID:            patched.ExternalID,
 		Members:               groupMemberRefs(patched.Members),

@@ -24,11 +24,17 @@ type MemStore struct {
 	hashToID   map[string]string         // token hash -> session id
 	totp       map[string]TOTPState      // by user id
 	identities map[string]Identity       // by identity id
+	// invitations is keyed by invitation id; invHashToID indexes the
+	// token hash. Two maps rather than one so MarkAccepted can address a
+	// row by id without holding the token.
+	invitations map[string]Invitation
+	invHashToID map[string]string
 }
 
 var (
 	_ Store             = (*MemStore)(nil)
 	_ TenantScopedStore = (*MemStore)(nil)
+	_ InvitationStore   = (*MemStore)(nil)
 )
 
 // tenantKey composes a per-tenant index key. NUL cannot appear in an
@@ -39,12 +45,14 @@ func tenantKey(tenantID, value string) string { return tenantID + "\x00" + value
 // NewMemStore returns an empty store.
 func NewMemStore() *MemStore {
 	return &MemStore{
-		usersByID:  make(map[string]User),
-		emailToID:  make(map[string]string),
-		sessions:   make(map[string]RefreshSession),
-		hashToID:   make(map[string]string),
-		totp:       make(map[string]TOTPState),
-		identities: make(map[string]Identity),
+		usersByID:   make(map[string]User),
+		emailToID:   make(map[string]string),
+		sessions:    make(map[string]RefreshSession),
+		hashToID:    make(map[string]string),
+		totp:        make(map[string]TOTPState),
+		identities:  make(map[string]Identity),
+		invitations: make(map[string]Invitation),
+		invHashToID: make(map[string]string),
 	}
 }
 
@@ -428,4 +436,67 @@ func (m *MemStore) LiveSessionCount(userID string) int {
 		}
 	}
 	return n
+}
+
+// --- invitations (7j-1) ------------------------------------------------
+
+// CreateInvitation implements InvitationStore.
+func (m *MemStore) CreateInvitation(_ context.Context, inv Invitation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, dup := m.invHashToID[inv.TokenHash]; dup {
+		// Astronomically improbable with a 256-bit token, and a hard
+		// error rather than an overwrite: silently replacing a row would
+		// mean one invitation quietly invalidating another.
+		return fmt.Errorf("%w: invitation token hash", ErrInvitationConsumed)
+	}
+	m.invitations[inv.ID] = inv
+	m.invHashToID[inv.TokenHash] = inv.ID
+	return nil
+}
+
+// InvitationByHash implements InvitationStore.
+//
+// Returns pending, expired and accepted rows alike. Filtering here would
+// turn "already accepted" into a not-found and "expired" into something
+// else, and the core needs both to reach one collapsed error.
+func (m *MemStore) InvitationByHash(_ context.Context, hash string) (Invitation, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok := m.invHashToID[hash]
+	if !ok {
+		return Invitation{}, fmt.Errorf("%w: invitation", ErrNotFound)
+	}
+	inv, ok := m.invitations[id]
+	if !ok {
+		return Invitation{}, fmt.Errorf("%w: invitation", ErrNotFound)
+	}
+	return inv, nil
+}
+
+// MarkAccepted implements InvitationStore as a COMPARE-AND-SET.
+//
+// The whole write — read the row, test AcceptedAt, set it — happens
+// under a single exclusive lock. That is the in-memory equivalent of
+//
+//	UPDATE invitations SET accepted_at = $2
+//	 WHERE id = $1 AND accepted_at IS NULL
+//
+// and it is the reason the check cannot be hoisted into the core: split
+// the read from the write and two concurrent accepts both see a pending
+// invitation. An RLock here instead of a Lock would reintroduce exactly
+// that race.
+func (m *MemStore) MarkAccepted(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inv, ok := m.invitations[id]
+	if !ok {
+		return fmt.Errorf("%w: invitation %s", ErrNotFound, id)
+	}
+	if !inv.AcceptedAt.IsZero() {
+		return fmt.Errorf("%w: invitation %s", ErrInvitationConsumed, id)
+	}
+	inv.AcceptedAt = at
+	m.invitations[id] = inv
+	return nil
 }

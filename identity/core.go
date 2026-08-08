@@ -35,7 +35,8 @@ type Core struct {
 	totpRequired bool
 	defaultACR   string
 	hooks        Hooks
-	throttling   Throttling // zero value = no rate limiting (pre-7k-1 behavior)
+	throttling   Throttling      // zero value = no rate limiting (pre-7k-1 behavior)
+	invitations  InvitationStore // nil = invitation verbs error (opt-in, 7j-1)
 	now          func() time.Time
 	newID        func() string
 }

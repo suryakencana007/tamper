@@ -137,6 +137,34 @@ var (
 	// envelope instead — that is a legitimate choice and it is safe,
 	// because the error does not vary by account either way.
 	ErrThrottled = errors.New("identity: too many attempts")
+
+	// --- invitations (Phase 7, 7j-1) ---
+
+	// ErrInvitationInvalid is the single collapsed rejection for every
+	// invitation failure mode — unknown token, malformed token, expired,
+	// already accepted, or issued for a different tenant.
+	//
+	// One error by design, the same posture as ErrInvalidCredentials and
+	// ErrInvalidSession. Separating expired from accepted would tell
+	// whoever holds a stale link whether somebody else used it — which
+	// is a fact about another person's actions inside a tenant. The
+	// honest message for all of them is "this link no longer works".
+	ErrInvitationInvalid = errors.New("identity: invitation is not valid")
+
+	// ErrInvitationConsumed is the STORE sentinel for a compare-and-set
+	// that lost: MarkAccepted found the invitation already accepted.
+	//
+	// It exists so implementations have something precise to return, and
+	// so the losing side of a concurrent accept is distinguishable from
+	// an infrastructure failure. The core never surfaces it — it
+	// collapses into ErrInvitationInvalid at the boundary.
+	ErrInvitationConsumed = errors.New("identity: invitation already accepted")
+
+	// ErrNoInvitationStore — an invitation verb was invoked on a Core
+	// constructed without WithInvitations. A programmer error surfaced
+	// loudly, exactly like ErrNoTokenService and ErrNoKeySet, rather
+	// than a silent no-op that looks like a delivery problem.
+	ErrNoInvitationStore = errors.New("identity: core has no invitation store")
 )
 
 // ThrottledError carries the retry hint alongside ErrThrottled.

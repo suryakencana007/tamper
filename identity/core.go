@@ -35,6 +35,7 @@ type Core struct {
 	totpRequired bool
 	defaultACR   string
 	hooks        Hooks
+	throttling   Throttling // zero value = no rate limiting (pre-7k-1 behavior)
 	now          func() time.Time
 	newID        func() string
 }
@@ -283,6 +284,21 @@ func (c *Core) LoginInTenant(ctx context.Context, tenantID, email, password stri
 	if err != nil {
 		_ = crypto.VerifyStub(password)
 		return User{}, Tokens{}, ErrInvalidCredentials
+	}
+	// Throttle on the NORMALISED address, and before the store read.
+	//
+	// Normalised, because a limiter keyed on the raw input is evaded by
+	// changing the case of one letter — the attacker gets a fresh bucket
+	// per spelling of the same account, which is no limiter at all.
+	//
+	// Before the read, because that ordering is the whole of the
+	// non-disclosure property: the key is composed from what the caller
+	// typed, so a throttled answer is identical for an address that
+	// exists, one that never existed, one that is federated-only and one
+	// that is deactivated. Move this below the lookup and "throttled"
+	// starts meaning "this account is real".
+	if retryAfter, ok := c.allowLogin(ctx, tenantID, normalised); !ok {
+		return User{}, Tokens{}, &ThrottledError{RetryAfter: retryAfter}
 	}
 	user, err := c.userByEmail(ctx, tenantID, normalised)
 	if err != nil {

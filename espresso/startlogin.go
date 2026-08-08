@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/tenant"
 )
@@ -28,23 +29,26 @@ import (
 // carries the hint.
 var ErrThrottled = errors.New("espresso: start-login throttled")
 
-// Throttle is the rate-limit port.
+// Throttle is the rate-limit port. 7k-1 moved the definition to
+// crypto.Throttle; this is an ALIAS so every StartLogin caller written
+// against the 7f-2 name keeps compiling.
 //
-// Defined here rather than waiting for 7k-1 because this endpoint needs
-// it NOW: it is unauthenticated, it takes an arbitrary email, and it
-// touches a store on every call. 7k-1 supplies the token-bucket
-// implementation and wires the remaining surfaces; this is the interface
-// they will share.
+// The move was forced, not cosmetic. identity throttles Login and the
+// TOTP verifies, and identity cannot import espresso — espresso imports
+// identity. crypto is the package both already depend on. The manifest
+// offered "crypto/throttle.go or espresso/throttle.go"; only one of them
+// can be wired on all five surfaces.
+//
+// An alias rather than a redeclared interface, on the discipline
+// TAMPER-DESIGN's playbook step 3 states and Resolver below follows: a
+// defined type here would silently fail to accept the very
+// implementations it exists to accept.
 //
 // Keys are CALLER-COMPOSED. tamper does not decide whether email, IP,
 // domain or tenant is the right dimension to limit on — that is
 // deployment-dependent, and a framework that picked one would be wrong
 // for half its users.
-type Throttle interface {
-	// Allow reports whether the action may proceed and, when it may not,
-	// how long until it may.
-	Allow(ctx context.Context, key string) (ok bool, retryAfter time.Duration)
-}
+type Throttle = crypto.Throttle
 
 // Resolver is the port StartLogin resolves domains through.
 //

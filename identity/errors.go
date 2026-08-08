@@ -1,6 +1,9 @@
 package identity
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // Error taxonomy. The application maps these onto its own wire errors
 // (Barista: domain.ErrUnauthorized / ErrAlreadyExists / ErrInvalid …).
@@ -113,4 +116,43 @@ var (
 	// query while the caller believes it is scoped. That is precisely the
 	// wildcard §6.2 forbids, and it fails open.
 	ErrTenancyDisabled = errors.New("identity: tenant id supplied but tenancy is not enabled")
+
+	// --- rate limiting (Phase 7, 7k-1) ---
+
+	// ErrThrottled — the configured Throttle refused the attempt. Match
+	// with errors.Is; the retry hint travels on *ThrottledError.
+	//
+	// Deliberately NOT collapsed into ErrInvalidCredentials, and this is
+	// the case worth stating carefully because it looks like it should
+	// be. The collapse hides facts about an ACCOUNT. This condition is
+	// decided from the caller-supplied key alone, BEFORE any store read,
+	// so it is identical whether the address exists, never existed, is
+	// federated-only or is deactivated — it discloses nothing an attacker
+	// did not just type. Collapsing it would also be actively harmful:
+	// the honest client that backs off on a 429 would instead be told its
+	// password was wrong and would keep trying.
+	//
+	// Transport obligation: 429 with Retry-After. A deployment that would
+	// rather not admit to limiting at all may render the generic 401
+	// envelope instead — that is a legitimate choice and it is safe,
+	// because the error does not vary by account either way.
+	ErrThrottled = errors.New("identity: too many attempts")
 )
+
+// ThrottledError carries the retry hint alongside ErrThrottled.
+//
+// Its message is FIXED — no email, no user id, no key. The value that
+// composed the key came from the caller, but the error crosses into logs
+// and sometimes onto the wire, and a limiter that echoes the attempted
+// address into either is how a rate limit becomes a credential-stuffing
+// receipt.
+type ThrottledError struct {
+	// RetryAfter is how long until the attempt may be retried. It is a
+	// property of the bucket, not of the account.
+	RetryAfter time.Duration
+}
+
+func (e *ThrottledError) Error() string { return ErrThrottled.Error() }
+
+// Unwrap makes errors.Is(err, ErrThrottled) match.
+func (e *ThrottledError) Unwrap() error { return ErrThrottled }

@@ -263,3 +263,86 @@ func assertAudit(t *testing.T, logger audit.Logger) {
 		}
 	}
 }
+
+// TestSCIM_RateLimited proves the limiter is actually MOUNTED, not merely
+// available. Slice 7k-1 wires it in main.go; without a test that drives
+// the router past the burst, deleting the two lines that install it
+// leaves this whole suite green — which is exactly how the exit-3 chain
+// guard went quietly missing in Phase 0c.
+//
+// A connector is a machine on a loop. It does not get tired and it does
+// not back off unless told to, so "someone would notice" is not a
+// control.
+func TestSCIM_RateLimited(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	router, provider, _, _, err := buildHandler(dbPath, "test-jwt-secret", testSAToken)
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+	defer func() { _ = provider.Close() }()
+
+	idp := &scimClient{t: t, r: router, token: testSAToken}
+
+	// The demo bucket is burst 20, refilling 10/s. Sixty back-to-back
+	// reads outrun it comfortably; the loop takes far less than the two
+	// seconds it would take to earn them back.
+	var limited *httptest.ResponseRecorder
+	for range 60 {
+		rec := idp.do(http.MethodGet, "/scim/v2/Users", nil)
+		if rec.Code == http.StatusTooManyRequests {
+			limited = rec
+			break
+		}
+	}
+	if limited == nil {
+		t.Fatal("60 back-to-back SCIM reads were never rate limited; the throttle " +
+			"is not mounted on the SCIM surface")
+	}
+
+	// A connector fail-closes on an app-branded body, so the refusal must
+	// arrive in the RFC 7644 §3.12 envelope.
+	if ct := limited.Header().Get("Content-Type"); ct != "application/scim+json" {
+		t.Errorf("content-type = %q, want application/scim+json — a SCIM client "+
+			"cannot parse this refusal", ct)
+	}
+	if body := limited.Body.String(); !bytes.Contains([]byte(body), []byte(tamperespresso.SchemaError)) {
+		t.Errorf("429 body is not a SCIM error envelope: %s", body)
+	}
+	if ra := limited.Header().Get("Retry-After"); ra == "" {
+		t.Error("429 carries no Retry-After; a connector that cannot tell how long " +
+			"to wait will hot-loop on the refusal")
+	}
+}
+
+// TestSCIM_ThrottleRunsInsideTheAuthGate pins the composition order. With
+// the limiter OUTSIDE RequireServiceAccount there is no principal yet, so
+// every request keys as unauthenticated, one global bucket limits every
+// tenant, and an unauthenticated flood can lock out real connectors. The
+// symptom is invisible in a single-tenant demo, which is why it is
+// asserted rather than left to a comment.
+func TestSCIM_ThrottleRunsInsideTheAuthGate(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	router, provider, _, _, err := buildHandler(dbPath, "test-jwt-secret", testSAToken)
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+	defer func() { _ = provider.Close() }()
+
+	// Exhaust the anonymous budget many times over. Every one of these is
+	// rejected by the auth gate before the limiter is ever consulted.
+	anon := &scimClient{t: t, r: router, token: ""}
+	for range 100 {
+		if rec := anon.do(http.MethodGet, "/scim/v2/Users", nil); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("anonymous request status = %d, want 401", rec.Code)
+		}
+	}
+
+	// The authenticated connector still has its full budget.
+	idp := &scimClient{t: t, r: router, token: testSAToken}
+	rec := idp.do(http.MethodGet, "/scim/v2/Users", nil)
+	if rec.Code == http.StatusTooManyRequests {
+		t.Error("an unauthenticated flood consumed the authenticated connector's " +
+			"budget; the limiter is mounted outside the service-account gate, so " +
+			"every caller shares one bucket")
+	}
+}

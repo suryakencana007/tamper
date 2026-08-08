@@ -476,12 +476,29 @@ Saying it costs nothing and closes a question every evaluator will ask.
    Scope and the Statement of Applicability are the certifying auditor's call,
    not this document's.
 
-   **Separate blocker, independent of this fork, and arguably more urgent.**
-   `Log` is SELECT-latest-hash then INSERT, under an IN-PROCESS mutex with an
-   IN-PROCESS `lastAt` watermark. Two replicas writing one audit DB race on
-   both and break the chain — under either topology. Pooled deployments are
-   usually multi-replica. Confirm the deployment's writer topology before M5
-   lands.
+   **Separate blocker, independent of this fork — FIXED 2026-08-09.**
+   `Log` was SELECT-latest-hash then INSERT under an IN-PROCESS mutex with an
+   IN-PROCESS `lastAt` watermark. Two replicas writing one audit DB raced on
+   both and forked the chain, under either topology, and pooled deployments
+   are usually multi-replica. Under ISO 27001 A.8.15 the chain IS the
+   tamper-protection control, so this was a reproducible nonconformity rather
+   than a latent risk.
+
+   Reproduced first (two loggers over one file forked at 40 concurrent
+   appends, `stored_prev=000…0` — one writer saw an empty table while another
+   had already inserted), then closed: the append is now one `BEGIN IMMEDIATE`
+   transaction on a dedicated connection, and the `at` watermark is the later
+   of the in-process value and the DB's. IMMEDIATE rather than a default
+   deferred transaction, because a deferred one takes a read lock and only
+   tries to upgrade at the INSERT, where it deadlocks against another reader
+   that no `busy_timeout` can resolve. Written as literal SQL rather than a
+   `_txlock=immediate` DSN flag, because an unrecognised DSN parameter is
+   ignored silently and "the fix is present but inert" is the failure mode
+   this subsystem exists to prevent.
+
+   Single-writer behaviour is unchanged: the two watermarks are primed equal
+   at open and every append advances both, so the DB value can only match or
+   trail.
 2. **Does `identity.User.Email` stay globally unique in `""` mode?** Yes, by
    the parity contract. But an app migrating from `""` to real tenants needs a
    backfill story: assign every existing row a tenant, then flip. That guide is

@@ -167,6 +167,59 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// THE CHAIN WRITE IS ONE SERIALISED TRANSACTION, not a mutex.
+	//
+	// Appending to a hash chain is read-latest-hash, compute, insert —
+	// a read-modify-write, and it is only atomic if something makes it
+	// so. Until this change the only thing was l.mu, which is
+	// IN-PROCESS: two replicas sharing one audit DB both read the same
+	// latest hash, both computed against it, and both inserted. The
+	// result is two rows claiming the same predecessor — a forked chain
+	// that the boot verify reports as tamper, on a database nobody
+	// tampered with. Reproduced in
+	// TestMultiWriter_ConcurrentLoggersKeepTheChainIntact, which failed
+	// with stored_prev=000...0 before this transaction existed: one
+	// writer saw an empty table while another had already inserted.
+	//
+	// BEGIN IMMEDIATE, not a plain BeginTx. SQLite's default deferred
+	// transaction takes a READ lock and only tries to upgrade at the
+	// INSERT — by which point another writer may hold the write lock,
+	// and the upgrade fails with SQLITE_BUSY that no busy_timeout can
+	// resolve (both sides hold read locks; neither can proceed).
+	// IMMEDIATE takes the write lock up front, so the second writer
+	// simply waits out its busy_timeout and then reads a latest hash
+	// that already includes the first writer's row.
+	//
+	// On a dedicated *sql.Conn because BEGIN and COMMIT must land on the
+	// SAME connection, and a pooled *sql.DB gives no such guarantee. The
+	// SQL is written out rather than configured through a DSN flag
+	// (_txlock=immediate) deliberately: an unrecognised DSN parameter is
+	// ignored silently, and "the fix is present but inert" is the exact
+	// failure mode this whole subsystem exists to make impossible.
+	//
+	// l.mu is kept. It costs nothing and keepssame-process writers off the
+	// database lock entirely, so the transaction only ever contends
+	// across processes.
+	conn, err := l.store.DB.Conn(ctx)
+	if err != nil {
+		return Event{}, fmt.Errorf("audit: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return Event{}, fmt.Errorf("audit: begin chain-append transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// context.Background: the rollback must run even when ctx is
+			// what failed, or the connection returns to the pool holding
+			// a write lock and every later append blocks on it.
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	q := sqlitestore.New(conn)
+
 	// v1.8 follow-up #3 — enforce strictly monotonic `at`. Two
 	// time.Now() calls inside the boot bootstraps
 	// (bootstrapAuditChainRestart's v=2 + v=3 emits +
@@ -186,8 +239,22 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	// SELECT queries respectively. This fix closes the
 	// remaining class — v=3 vs v=3 same-`at` collisions where the
 	// canonical_version tiebreak doesn't help.
-	if !l.lastAt.IsZero() && !e.At.After(l.lastAt) {
-		e.At = l.lastAt.Add(time.Nanosecond)
+	// The watermark is the LATER of the in-process one and the DB's, for
+	// the same reason the hash read moved inside the transaction: the
+	// in-process value knows nothing about another replica's writes. Max
+	// rather than replace, so a single-writer deployment behaves exactly
+	// as before — at open the two are primed equal and every append
+	// advances both, so the DB value can only match or trail.
+	watermark := l.lastAt
+	if dbAt, aerr := q.GetLatestAt(ctx); aerr == nil {
+		if dbAt = dbAt.UTC(); dbAt.After(watermark) {
+			watermark = dbAt
+		}
+	} else if !errors.Is(aerr, sql.ErrNoRows) {
+		return Event{}, fmt.Errorf("audit: read at watermark: %w", aerr)
+	}
+	if !watermark.IsZero() && !e.At.After(watermark) {
+		e.At = watermark.Add(time.Nanosecond)
 	}
 
 	// v4 rows commit to their PII before the payload is built, because
@@ -204,7 +271,7 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 		e.Commitments = ComputeCommitments(salt, e)
 	}
 
-	prev, err := l.latestHash(ctx)
+	prev, err := latestHashFrom(ctx, q)
 	if err != nil {
 		return Event{}, err
 	}
@@ -235,7 +302,7 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	// rows that DID land.
 	l.lastAt = e.At.UTC()
 
-	if err := l.store.Queries.InsertEvent(ctx, sqlitestore.InsertEventParams{
+	if err := q.InsertEvent(ctx, sqlitestore.InsertEventParams{
 		ID:               e.ID,
 		At:               e.At.UTC(),
 		ActorUserID:      e.Actor.UserID,
@@ -264,6 +331,10 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	}); err != nil {
 		return Event{}, fmt.Errorf("audit: insert: %w", err)
 	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return Event{}, fmt.Errorf("audit: commit chain append: %w", err)
+	}
+	committed = true
 	return e, nil
 }
 
@@ -292,7 +363,25 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 // recent at the same at" (since v=3 chain rows always follow v=2
 // chain_restart in chain order).
 func (l *SQLiteLogger) latestHash(ctx context.Context) ([]byte, error) {
-	row, err := l.store.Queries.GetLatestHash(ctx)
+	return latestHashFrom(ctx, l.store.Queries)
+}
+
+// latestHashFrom is latestHash against an explicit Queries, so the chain
+// append can read it INSIDE its transaction.
+//
+// HONEST SCOPE, because the tempting claim is wrong. This is not what
+// makes the append safe — BEGIN IMMEDIATE is. Once the write lock is
+// held no other writer can commit, so even a read through the pooled
+// handle would return the same value. Swapping this back for
+// l.latestHash leaves every multi-writer test green, and that was
+// checked rather than assumed.
+//
+// It is kept because it makes the invariant LOCAL: the read and the
+// insert are visibly the same transaction, so the next person to touch
+// this function cannot reintroduce the race by moving a line. Defensive
+// clarity, not the load-bearing part.
+func latestHashFrom(ctx context.Context, q *sqlitestore.Queries) ([]byte, error) {
+	row, err := q.GetLatestHash(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return make([]byte, HashSize), nil
 	}

@@ -272,10 +272,17 @@ func ActorSystem(name string) Actor {
 //     chain genesis. `barista audit verify` walks forward from the
 //     latest restart row (v3 if present, v2 otherwise) by default;
 //     `--legacy --canonical-version=N` walks the prior segment.
+//   - CanonicalVersion4 — Phase 7 rows. Adds the tenant to the hashed
+//     payload (`tenant_id` + `actor.tenant_id`) and moves the PII
+//     fields to stored salted commitments so a row can be redacted
+//     without breaking the chain. Emitted only by a tenancy-configured
+//     logger; a single-tenant deployment keeps writing v3 forever, so
+//     its bytes are unchanged.
 const (
 	CanonicalVersion1 = 1
 	CanonicalVersion2 = 2
 	CanonicalVersion3 = 3
+	CanonicalVersion4 = 4
 )
 
 // Event is the wire-shaped audit-log entry. Fields are deliberately
@@ -320,6 +327,41 @@ type Event struct {
 	// DB carry CanonicalVersion1 and are walked under the v0.9
 	// canonical shape by `barista audit verify --legacy`.
 	CanonicalVersion int
+
+	// --- Phase 7 (canonical_version=4) ---
+
+	// TenantID is the row's SCOPE: the tenant whose log this event
+	// belongs in. Empty on a single-tenant deployment and on every
+	// pre-v4 row.
+	//
+	// DIFFERENT FROM Actor.TenantID, and conflating the two is a
+	// correctness bug rather than a stylistic one. A support engineer
+	// or an ActorTypeSystem actor belonging to tenant A, acting on
+	// tenant B's resource, has Actor.TenantID=A and TenantID=B. A
+	// tenant export filtered on the ACTOR's tenant silently omits
+	// exactly the cross-tenant administrative actions a customer most
+	// wants to see. Export filters on THIS field.
+	//
+	// Part of the hash at v4. Unlike ClusterID above — which is
+	// documented as a query-time filter and deliberately outside
+	// integrity — the tenant is the trust boundary, and an unhashed
+	// tenant column could be re-attributed from one customer to
+	// another without breaking anything.
+	TenantID string
+
+	// RowSalt is the per-row salt the Commitments were computed under.
+	// 32 random bytes on a v4 row; nil on pre-v4 rows; ALL ZEROES on a
+	// row whose PII has been redacted (see redaction.go).
+	//
+	// Not part of the hash. It is an input to the commitments, not to
+	// the payload, which is what lets it be destroyed on erasure while
+	// the payload stays reproducible.
+	RowSalt []byte
+
+	// Commitments are the salted hashes of the PII fields, and are what
+	// canonicalPayloadV4 actually hashes in place of the plaintext.
+	// Zero on pre-v4 rows.
+	Commitments Commitments
 }
 
 // Filter narrows ListEvents queries. Zero-valued fields mean "any."
@@ -552,6 +594,8 @@ func canonicalPayloadForVersion(e Event, prevHash []byte, version int) ([]byte, 
 		return canonicalPayloadLegacyV2(e, prevHash), nil
 	case CanonicalVersion3:
 		return canonicalPayloadV3(e, prevHash), nil
+	case CanonicalVersion4:
+		return canonicalPayloadV4(e, prevHash), nil
 	default:
 		return nil, fmt.Errorf("audit: unknown canonical_version=%d", version)
 	}

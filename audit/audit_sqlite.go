@@ -58,6 +58,22 @@ type SQLiteLogger struct {
 // SELECT against the users table). Slow lookups block the Log call.
 type SQLiteLoggerOptions struct {
 	EmailLookup func(ctx context.Context, userID string) (email string, ok bool)
+
+	// Tenancy switches new emissions to canonical_version=4: the tenant
+	// enters the hashed payload and PII moves to redactable commitments
+	// (Phase 7, 7i-1).
+	//
+	// FALSE IS THE DEFAULT AND IT IS BYTE-IDENTICAL TO PRE-7i-1. A
+	// single-tenant deployment keeps writing v3 rows with v3 hashes
+	// forever, no v4 anchor is emitted, and nothing about its audit DB
+	// changes — which is invariant 1 of the phase, satisfied by not
+	// participating rather than by careful equivalence.
+	//
+	// Existing rows are never rewritten either way. v4 applies to rows
+	// written from here on; every older row keeps its own
+	// canonical_version and its own hash, and the verify walk dispatches
+	// per row exactly as it already does for v2 and v3.
+	Tenancy bool
 }
 
 // NewSQLiteLogger opens (or creates) the audit DB at dbPath and
@@ -123,7 +139,15 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 		e.Actor.Type = ActorTypeUser
 	}
 	if e.CanonicalVersion == 0 {
-		e.CanonicalVersion = CanonicalVersion3
+		// A tenancy-configured logger writes v4; everyone else keeps
+		// writing v3. An explicit CanonicalVersion on the event still
+		// wins, which is what lets the boot bootstraps emit anchors at
+		// a chosen version.
+		if l.opts.Tenancy {
+			e.CanonicalVersion = CanonicalVersion4
+		} else {
+			e.CanonicalVersion = CanonicalVersion3
+		}
 	}
 
 	// v1.1 — service-direct emission email enrichment (TD-AUDIT-04).
@@ -164,6 +188,20 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	// canonical_version tiebreak doesn't help.
 	if !l.lastAt.IsZero() && !e.At.After(l.lastAt) {
 		e.At = l.lastAt.Add(time.Nanosecond)
+	}
+
+	// v4 rows commit to their PII before the payload is built, because
+	// the payload hashes the COMMITMENTS rather than the values. Done
+	// here, once, at write time — the verify path reads the stored
+	// commitments back and never re-derives them, which is what lets a
+	// redacted row still hash to what it hashed to originally.
+	if e.CanonicalVersion == CanonicalVersion4 && len(e.RowSalt) == 0 {
+		salt, serr := NewRowSalt()
+		if serr != nil {
+			return Event{}, serr
+		}
+		e.RowSalt = salt
+		e.Commitments = ComputeCommitments(salt, e)
 	}
 
 	prev, err := l.latestHash(ctx)
@@ -215,6 +253,14 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 		PrevHash:         e.PrevHash,
 		Hash:             e.Hash,
 		CanonicalVersion: int64(e.CanonicalVersion),
+		TenantID:         e.TenantID,
+		ActorTenantID:    e.Actor.TenantID,
+		RowSalt:          nonNilBytes(e.RowSalt),
+		CActorEmail:      nonNilBytes(e.Commitments.ActorEmail),
+		CActorName:       nonNilBytes(e.Commitments.ActorName),
+		CActorIp:         nonNilBytes(e.Commitments.ActorIP),
+		CBefore:          nonNilBytes(e.Commitments.Before),
+		CAfter:           nonNilBytes(e.Commitments.After),
 	}); err != nil {
 		return Event{}, fmt.Errorf("audit: insert: %w", err)
 	}
@@ -818,7 +864,17 @@ func fromRow(r sqlitestore.Event) Event {
 		PrevHash:         r.PrevHash,
 		Hash:             r.Hash,
 		CanonicalVersion: int(r.CanonicalVersion),
+		TenantID:         r.TenantID,
+		RowSalt:          r.RowSalt,
+		Commitments: Commitments{
+			ActorEmail: r.CActorEmail,
+			ActorName:  r.CActorName,
+			ActorIP:    r.CActorIp,
+			Before:     r.CBefore,
+			After:      r.CAfter,
+		},
 	}
+	e.Actor.TenantID = r.ActorTenantID
 	if r.BeforeJson != "" {
 		e.Before = json.RawMessage(r.BeforeJson)
 	}
@@ -865,4 +921,19 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// nonNilBytes coerces a nil slice to an empty one.
+//
+// The v4 columns are NOT NULL DEFAULT x”, but a DEFAULT only applies
+// when the column is OMITTED from the INSERT — driver-marshalled nil
+// arrives as an explicit SQL NULL and trips the constraint. Every v3
+// emission carries nil for all six, so without this a tenancy-disabled
+// logger cannot write a row at all: the "" path breaking on the very
+// migration that was supposed to leave it alone.
+func nonNilBytes(b []byte) []byte {
+	if b == nil {
+		return []byte{}
+	}
+	return b
 }

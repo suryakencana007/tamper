@@ -26,4 +26,12 @@ type Event struct {
 	PrevHash         []byte
 	Hash             []byte
 	CanonicalVersion int64
+	TenantID         string
+	ActorTenantID    string
+	RowSalt          []byte
+	CActorEmail      []byte
+	CActorName       []byte
+	CActorIp         []byte
+	CBefore          []byte
+	CAfter           []byte
 }

@@ -17,16 +17,27 @@ possible.
 
 | Item | DoD line | Result |
 |---|---|---|
-| 2.1 | Barista CI green, zero adapter diff | **FAILED** — 4 tests, one root cause. See §2.5. |
+| 2.1 | Barista CI green, zero adapter diff | **CLOSED** — red first, then green after the §2.5 fix |
 | 2.2 | Boot verify on a real Barista DB | **CLOSED** — byte parity, mutation-proved |
 | 2.3 | Docker deploy-artifact boots, chain self-test OK | **CLOSED** — `69 events across 3 segments` |
 | 2.4 | `-race` on the full suite | **CLOSED** — 16/16 packages, 0 races |
 
-**The headline: migration 005 breaks external callers of the exported
-`audit/sqlitestore` package.** Barista's identity adapter needed zero changes —
-the additive-first promise held there — but four Barista tests that were green
-on `v0.2.5` go red on the Phase 7 tip. Full analysis in **§2.5**. That is an
-invariant-1 violation and it blocks the `7l-1` flip until it is answered.
+**All four are now closed, and the fourth found a real defect on the way.**
+Migration 005 broke external callers of the exported `audit/sqlitestore`
+package: four Barista tests green on `v0.2.5` went red on the Phase 7 tip, one
+root cause, an invariant-1 violation by a consumer that never asked for
+tenancy. Barista's identity adapter needed zero changes throughout — that half
+of the additive-first promise always held.
+
+Fixed at the shared boundary rather than per-caller (`sqltypes.Blob`, issue
+#20). **`moon run barista:ci` is now GREEN** — 10 tasks, 40m, exit 0, with
+**zero changes to Barista**. Analysis and the fix's reasoning in **§2.5**.
+
+> This is the entry that justifies the file. Every other item confirmed
+> something already believed; this one contradicted it. The proxy that stood in
+> for Barista CI all phase — a hand-written legacy adapter plus a golden
+> port-call trace — was faithful to the half it modelled and blind to this one,
+> because it only ever exercised the ports, never a direct `InsertEvent`.
 
 Two corrections to what this file used to say, both found by running it:
 
@@ -132,6 +143,21 @@ v0.2.6-0.20260809034721-e00ba94e4f2e -> all 4 FAIL
 ```
 
 Diagnosis in **§2.5**.
+
+### RE-RUN after the fix — GREEN, DoD line CLOSED
+
+With `sqltypes.Blob` in place (branch `fix/sqlitestore-nil-blob-params`) and
+Barista still completely unmodified:
+
+```
+moon run barista:ci   ->  MOON_EXIT=0
+                          10 tasks completed, 40m 1s, zero failures
+git diff --stat -- '*identity*'  ->  empty
+```
+
+Both halves of the line now hold: **CI green, and zero diff in the identity
+adapter.** Barista's `go.mod` was restored to `v0.2.5` afterwards; the bump
+lands when tamper cuts a release.
 
 ### 2.2 `7i-1` — boot verify on a real Barista audit DB
 
@@ -323,6 +349,36 @@ decision between at least:
 
 **B is the recommendation.** A is disqualified by the rebuild; C relabels the
 problem instead of solving it.
+
+### RESOLVED — B, in `fix/sqlitestore-nil-blob-params`
+
+`audit/sqlitestore/sqltypes.Blob` is a `[]byte` whose `driver.Valuer` renders
+nil as `x''` and whose `Scanner` reads NULL back as empty, mapped onto the six
+columns through `sqlc.yaml` overrides. No SQL change; no row rewritten.
+
+It lives in a **sub-package**, not in `sqlitestore` itself: pointing the
+override at a type in the generated package makes sqlc emit
+`import ".../audit/sqlitestore"` *inside* package `sqlitestore`, a self-import
+that does not build. That was confirmed by building it, not assumed.
+
+`nonNilBytes` and the six `[]byte{}` stubs in `canonical_legacy_v2_test.go`
+were deleted rather than kept alongside. They were the same coercion in the
+wrong place, and leaving them would keep tamper's own writes passing while an
+outside caller still broke — the precise asymmetry that hid this defect.
+
+Proof:
+
+| Check | Result |
+|---|---|
+| `TestInsertEventParams_BareStructLiteral` (outside-caller regression) | PASS |
+| Mutation: restore `return nil, nil` in `Blob.Value` | compiles; test **runs**; fails with the original `row_salt (1299)` |
+| Revert | green |
+| `sqltypes` unit tests (Valuer / Scan NULL / buffer aliasing / bad type) | 5/5 |
+| `go test -race ./... -count=1` | 17 packages, 0 failures, 0 races |
+| `sqlc generate` then diff | no-op — generation reproducible |
+| `go vet`, `golangci-lint run ./...` | clean, 0 issues |
+| Barista's four tests, Barista unmodified | all PASS |
+| `moon run barista:ci`, Barista unmodified | **GREEN**, exit 0 |
 
 Whatever is chosen, the regression test belongs in tamper: construct
 `InsertEventParams` as a bare struct literal, insert, and require success.

@@ -549,3 +549,36 @@ Saying it costs nothing and closes a question every evaluator will ask.
    everywhere else. It is breaking, it belongs in v0.4.0 alongside `7l-1`, and
    it is a separate change from `7l-1` under rule 7: one release, two
    deliberate breaks, one migration guide.
+7. **`7l-1`'s tenant argument is a TYPE, not a string — DECIDED 2026-08-09.**
+   §5 M6 says `""` stays legal "as an explicit single-tenant value, not an
+   unset one". Threading a bare `string` cannot express that: `""` is both the
+   single-tenant value AND what a caller who forgot to thread the tenant
+   passes, and no code can tell them apart.
+
+   That is not a hypothetical. It is the same unimplementability that got the
+   `""` case **removed** from 7a-2's leak suite — "nothing the suite can
+   observe separates a single-tenant store from a leaky pooled one" — and
+   §6.2 governs: ambiguous means deny. A bare string reintroduces the
+   ambiguity at the API surface, one release after the harness rejected it,
+   and deletes `ErrTenantRequired`, which is the only thing catching a
+   forgotten tenant today.
+
+   So the flip threads `tenant.ID`, whose **zero value is invalid**:
+
+   ```go
+   type ID struct { v string; set bool }   // zero value: unset -> deny
+   var Single = ID{set: true}              // "" said out loud
+   func New(s string) ID                   // New("") is INVALID, not Single
+   ```
+
+   `New("")` is deliberately invalid rather than an alias for `Single`: an
+   empty string arriving from a claim, a header or a config lookup means the
+   lookup produced nothing, and that is exactly the case that must deny. A
+   deployment that genuinely has one tenant writes `tenant.Single` and says so.
+
+   This satisfies both constraints at once rather than trading one off:
+   invariant "`""` stays legal" holds, and standing rule 2 "absent or empty
+   resolves to deny" holds, because absent and empty are finally different
+   values. It is a larger break than a string swap — every tenant-taking
+   signature changes shape, not just name — and v0.4.0 is the release that
+   can carry it.

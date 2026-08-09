@@ -294,6 +294,38 @@ r.Get("/api/me", surfaces.RequireAuth(
 Using `PinTenant` on an authenticated route compiles and skips the token
 cross-check. That is why they are two names and not one boolean.
 
+### It is one line per ROUTER, not one line per application
+
+This is the part of the upgrade that costs real time, and it is the one thing
+the compiler cannot tell you — a missing pin is a run-time 404, not a build
+error.
+
+Every router you construct needs the pin, and that includes **test harnesses
+that build their own**. Barista's production wiring took a single line; its
+test suite needed the same line in **nine** more places, because the
+federation handler tests assemble a router directly rather than going through
+the application's. Until they were pinned, every OIDC and SAML start leg
+returned:
+
+```json
+{"error":{"code":"OIDC_PROVIDER_NOT_FOUND","message":"provider not found"}}
+```
+
+That is the deliberate deny doing its job — a request with no tenant cannot
+resolve a provider, and the response is deliberately indistinguishable from a
+genuine miss so it discloses nothing. It reads correctly to a caller and
+confusingly to an upgrader, which is worth knowing in advance.
+
+Find them before you start:
+
+```sh
+grep -rn 'Portafilter()\|chi.NewRouter()\|http.NewServeMux()' --include='*_test.go' .
+```
+
+A harness that does not pin is testing a router your application never
+builds, so the pin belongs there for correctness, not just to make the suite
+pass.
+
 ---
 
 ## 6. The isolation contract you now owe
@@ -344,9 +376,11 @@ public API.
 4. At each one, pick the right constructor: `Single` for a single-tenant
    deployment, `New` for untrusted input, `FromStored` for values out of your
    own tables.
-5. Add `PinTenant` to your router. Without it, pre-auth federation routes 404
-   and authenticated routes 401 — both deliberately indistinguishable from an
-   ordinary miss.
+5. Add `PinTenant` to **every** router you construct — production and each
+   test harness that builds its own (`grep -rn 'Portafilter()' --include='*_test.go'`).
+   Without it, pre-auth federation routes 404 and authenticated routes 401,
+   both deliberately indistinguishable from an ordinary miss. Barista needed
+   one line in production and nine in its tests.
 6. Wire `tenanttest.RunLeakSuite` against your store and watch it pass.
 7. Grep your own code for `FromStored` and confirm every call sits on a value
    that came out of storage.

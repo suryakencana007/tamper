@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore"
 )
 
 // TestInsertEventParams_BareStructLiteral is the regression guard for the

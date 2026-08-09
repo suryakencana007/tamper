@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore"
 )
 
 // v10ChainFixtureRow mirrors the JSON shape committed at
@@ -215,44 +215,13 @@ func seedV10FixtureIntoStore(t *testing.T) *SQLiteLogger {
 	return l
 }
 
-// insertEventDirect bypasses Logger.Log so a test can insert rows at
-// arbitrary canonical_versions with pre-computed PrevHash + Hash. Used
-// by the v1.0 fixture replay + the tamper tests.
+// insertEventDirect is the in-package shim over the logger's direct write.
+// The body used to live here and hand-stub the v4 columns; both the write and
+// the coercion now belong to the package proper, so a fixture helper cannot
+// drift from what a real caller can express.
 func insertEventDirect(t *testing.T, l *SQLiteLogger, e Event) error {
 	t.Helper()
-	beforeJSON := ""
-	if len(e.Before) > 0 {
-		beforeJSON = string(e.Before)
-	}
-	afterJSON := ""
-	if len(e.After) > 0 {
-		afterJSON = string(e.After)
-	}
-	return l.store.Queries.InsertEvent(context.Background(), sqlitestore.InsertEventParams{
-		ID:               e.ID,
-		At:               e.At.UTC(),
-		ActorUserID:      e.Actor.UserID,
-		ActorEmail:       e.Actor.Email,
-		ActorIp:          e.Actor.IP,
-		ActorType:        string(e.Actor.Type),
-		ActorName:        e.Actor.Name,
-		Action:           string(e.Action),
-		ResourceType:     string(e.ResourceType),
-		ResourceID:       e.ResourceID,
-		ClusterID:        e.ClusterID,
-		RequestID:        e.RequestID,
-		BeforeJson:       beforeJSON,
-		AfterJson:        afterJSON,
-		PrevHash:         e.PrevHash,
-		Hash:             e.Hash,
-		CanonicalVersion: int64(e.CanonicalVersion),
-		// The v4 columns are deliberately NOT set here. They used to be
-		// hand-stubbed to []byte{} because a nil slice marshalled to an
-		// explicit NULL; sqltypes.Blob now coerces that at the boundary,
-		// so a pre-v4 struct literal writes correctly with no help. Do
-		// not re-add the stubs — their absence is what keeps this
-		// helper honest about what an outside caller can express.
-	})
+	return l.insertEventDirect(context.Background(), e)
 }
 
 // TestV10Chain_RoundTripsThroughLoggerLog asserts the bootstrap write

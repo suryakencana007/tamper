@@ -7,7 +7,7 @@ package sqlitestore
 import (
 	"time"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes"
 )
 
 type Event struct {

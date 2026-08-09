@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore"
 )
 
 // TestMigrateLegacyV2Hashes_FreshInstallNoOp confirms the greenfield

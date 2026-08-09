@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes"
 )
 
 // TestBlob_NilValuesAsEmptyNotNull is the property the type exists for: a nil

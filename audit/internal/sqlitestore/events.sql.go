@@ -9,7 +9,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes"
 )
 
 const countAuditEventsByActionSince = `-- name: CountAuditEventsByActionSince :many

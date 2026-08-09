@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore"
-	"github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes"
 )
 
 // SQLiteLogger is the production audit.Logger backed by a dedicated
@@ -1026,3 +1026,65 @@ func bytesEqual(a, b []byte) bool {
 //
 // The coercion now lives at the boundary every caller shares, in
 // sqlitestore/sqltypes.Blob.
+
+// insertEventDirect writes a row exactly as given, skipping the chain
+// computation Log performs. It is the single implementation behind both the
+// package's own fixture helpers and the exported InsertEventDirectForTest.
+//
+// It writes whatever it is handed, including a row that breaks the chain.
+// Nothing here validates PrevHash/Hash, because the tamper-detection tests
+// need to be able to write a bad row on purpose.
+func (l *SQLiteLogger) insertEventDirect(ctx context.Context, e Event) error {
+	beforeJSON := ""
+	if len(e.Before) > 0 {
+		beforeJSON = string(e.Before)
+	}
+	afterJSON := ""
+	if len(e.After) > 0 {
+		afterJSON = string(e.After)
+	}
+	return l.store.Queries.InsertEvent(ctx, sqlitestore.InsertEventParams{
+		ID:               e.ID,
+		At:               e.At.UTC(),
+		ActorUserID:      e.Actor.UserID,
+		ActorEmail:       e.Actor.Email,
+		ActorIp:          e.Actor.IP,
+		ActorType:        string(e.Actor.Type),
+		ActorName:        e.Actor.Name,
+		Action:           string(e.Action),
+		ResourceType:     string(e.ResourceType),
+		ResourceID:       e.ResourceID,
+		ClusterID:        e.ClusterID,
+		RequestID:        e.RequestID,
+		BeforeJson:       beforeJSON,
+		AfterJson:        afterJSON,
+		PrevHash:         e.PrevHash,
+		Hash:             e.Hash,
+		CanonicalVersion: int64(e.CanonicalVersion),
+		TenantID:         e.TenantID,
+		ActorTenantID:    e.Actor.TenantID,
+		RowSalt:          sqltypes.Blob(e.RowSalt),
+		CActorEmail:      sqltypes.Blob(e.Commitments.ActorEmail),
+		CActorName:       sqltypes.Blob(e.Commitments.ActorName),
+		CActorIp:         sqltypes.Blob(e.Commitments.ActorIP),
+		CBefore:          sqltypes.Blob(e.Commitments.Before),
+		CAfter:           sqltypes.Blob(e.Commitments.After),
+	})
+}
+
+// IsUniqueViolation reports whether err is a SQLite UNIQUE or PRIMARY KEY
+// constraint violation from the audit store.
+//
+// Exported because a consumer replaying fixture rows has to tell "this ID is
+// already in the chain" apart from "the database fell over", and it must use
+// the SQLite classifier specifically: the audit DB is always SQLite regardless
+// of which driver the application's main store was built with, so a
+// build-tag-dependent classifier would look for a Postgres SQLSTATE and miss
+// this entirely.
+//
+// Previously callers reached into audit/sqlitestore for this. That package is
+// now internal, and this is the only thing outside tamper ever legitimately
+// needed from it.
+func IsUniqueViolation(err error) bool {
+	return sqlitestore.IsUniqueViolation(err)
+}

@@ -516,3 +516,36 @@ Saying it costs nothing and closes a question every evaluator will ask.
    and currently absent entirely. If Phase 7 slips, 7k-1 should be pulled out
    and shipped on its own — a pooled deployment without per-tenant throttling
    turns one abusive customer into everyone's outage.
+6. **Breaking-change budget — DECIDED 2026-08-09: Barista compatibility is no
+   longer a design constraint.** Barista has no users yet, so the right
+   enterprise-auth API wins over keeping Barista compiling. This does not
+   license gratuitous churn; it removes *compat with one consumer* from the
+   list of reasons to accept a worse design.
+
+   Two things it does NOT change, and both were checked before recording it:
+
+   - **Standing rule 1 still holds inside a release.** `tenantID == ""` stays
+     byte-identical for as long as the additive phase is open. This decision is
+     about what v0.4.0 may break on purpose, not a licence to break the ""
+     path in a slice. Those are different budgets and conflating them is how
+     #20 got shipped.
+   - **tamper is a public module.** `v0.2.0`-`v0.2.5` are on the proxy, so the
+     API is reachable by consumers nobody has enumerated. "Barista has no
+     users" bounds the KNOWN consumers, not the module's reach. The decision
+     stands anyway — one deliberate breaking release, announced in
+     `MIGRATION-v0.4.md` — but it is a breaking release, not a free one.
+
+   **What it immediately unlocks.** `audit/sqlitestore` is a public package
+   today, so tamper's SQLite schema is public API: Barista builds
+   `InsertEventParams` in two PRODUCTION files, and tamper leaks the generated
+   types through `StoreForDebug`, `FromRowForDebug` and
+   `SQLiteAuditQueriesForTest`. That is what made #20 possible, and
+   `sqltypes.Blob` only fixed the symptom — the next migration that adds a
+   `NOT NULL` column re-opens the identical hole for the identical reason.
+
+   Moving the generated layer under `audit/internal/` makes the class
+   impossible rather than survivable, and replaces the leaks with seams in
+   tamper's own neutral `Event` vocabulary — which is what rule 5 asks for
+   everywhere else. It is breaking, it belongs in v0.4.0 alongside `7l-1`, and
+   it is a separate change from `7l-1` under rule 7: one release, two
+   deliberate breaks, one migration guide.

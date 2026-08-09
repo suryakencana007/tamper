@@ -299,16 +299,30 @@ the only callers that exist today.
 **Do not fix it inside a slice** (rule 7 / 4e). It needs its own change, with a
 decision between at least:
 
-- **A.** Drop `NOT NULL` from the six columns and coerce NULL→empty on read.
-  Smallest blast radius; changes 005, which has now been applied to real DBs,
-  so it needs a 006 rather than an edit.
-- **B.** Keep the schema, override the six fields in `sqlc.yaml` to a type
-  whose `driver.Valuer` renders nil as `x''`. Fixes every caller at once
-  without touching SQL. `COALESCE(?, x'')` is **not** an option — §5 records
-  that it degrades the params to `Column20 interface{}`.
-- **C.** Declare `audit/sqlitestore` non-public and move it under `internal/`.
-  Honest about intent, but it is a breaking change for anyone already
-  importing it, and it does not help before `7l-1`.
+- **A. Drop `NOT NULL` from the six columns — REJECTED, and it is the worst
+  of the three.** SQLite cannot relax a column constraint in place: `ALTER
+  TABLE … ALTER COLUMN` and `MODIFY` are both syntax errors, and the only
+  supported forms are ADD / DROP / RENAME COLUMN and RENAME TABLE (verified
+  against 3.47.2). Relaxing `NOT NULL` therefore means the 12-step rebuild —
+  create a new table, **copy every row**, drop, rename. On an append-only hash
+  chain that is exactly what 005 was designed never to do; its own header says
+  "THIS MIGRATION REWRITES ZERO EXISTING ROWS". Rewriting the whole chain to
+  loosen a constraint trades the integrity property for the convenience.
+- **B. Override the six fields in `sqlc.yaml`** to a named type whose
+  `driver.Valuer` renders nil as `x''`. No SQL change, no row rewrite, and it
+  fixes every caller at once — including ones that do not exist yet. Source
+  stays compatible for the callers that are broken today, precisely because
+  they never assign these fields; tamper's own `Log` path takes a one-token
+  conversion at each of the six `nonNilBytes` sites. `COALESCE(?, x'')` is
+  **not** available — §5 records that it degrades the params to
+  `Column20 interface{}`.
+- **C. Move `audit/sqlitestore` under `internal/`.** Honest about intent, but
+  it is a breaking change for anyone already importing it (Barista does), it
+  forces consumer edits rather than fixing the defect, and it does not help
+  before `7l-1`.
+
+**B is the recommendation.** A is disqualified by the rebuild; C relabels the
+problem instead of solving it.
 
 Whatever is chosen, the regression test belongs in tamper: construct
 `InsertEventParams` as a bare struct literal, insert, and require success.

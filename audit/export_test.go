@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Slice 7i-1 — the tenant-scoped export.
@@ -42,7 +44,7 @@ func TestExport_ContainsNoOtherTenantsRows(t *testing.T) {
 	ctx := context.Background()
 	l := seedThreeTenants(t)
 
-	exp, err := l.ExportForTenant(ctx, "acme")
+	exp, err := l.ExportForTenant(ctx, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("ExportForTenant: %v", err)
 	}
@@ -76,7 +78,7 @@ func TestExport_ContainsNoOtherTenantsRows(t *testing.T) {
 func TestExport_ExcludesTheChainAnchor(t *testing.T) {
 	ctx := context.Background()
 	l := seedThreeTenants(t)
-	exp, err := l.ExportForTenant(ctx, "acme")
+	exp, err := l.ExportForTenant(ctx, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("ExportForTenant: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestExport_FiltersOnEventTenantNotActorTenant(t *testing.T) {
 		t.Fatalf("Log: %v", err)
 	}
 
-	exp, err := l.ExportForTenant(ctx, "acme")
+	exp, err := l.ExportForTenant(ctx, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("ExportForTenant: %v", err)
 	}
@@ -139,7 +141,7 @@ func TestExport_FiltersOnEventTenantNotActorTenant(t *testing.T) {
 
 	// The converse: the vendor's own export must not pick up the row
 	// just because their engineer performed it.
-	vendorExp, err := l.ExportForTenant(ctx, "vendor")
+	vendorExp, err := l.ExportForTenant(ctx, tenant.New("vendor"))
 	if err != nil {
 		t.Fatalf("ExportForTenant(vendor): %v", err)
 	}
@@ -165,7 +167,7 @@ func TestExport_DoesNotRenumberOrRehash(t *testing.T) {
 		stored[r.ID] = r.Hash
 	}
 
-	exp, err := l.ExportForTenant(ctx, "acme")
+	exp, err := l.ExportForTenant(ctx, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("ExportForTenant: %v", err)
 	}
@@ -188,7 +190,7 @@ func TestExport_DoesNotRenumberOrRehash(t *testing.T) {
 func TestExport_AdmitsWhatItCannotProve(t *testing.T) {
 	ctx := context.Background()
 	l := seedThreeTenants(t)
-	exp, err := l.ExportForTenant(ctx, "acme")
+	exp, err := l.ExportForTenant(ctx, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("ExportForTenant: %v", err)
 	}
@@ -227,20 +229,38 @@ func TestExport_AdmitsWhatItCannotProve(t *testing.T) {
 	}
 }
 
-// TestExport_EmptyTenantExportsNothing: deny by default extends here.
-// "" is the single-tenant scope, and an unscoped export is a different
-// operation that should be spelled differently rather than reached by
-// forgetting an argument.
-func TestExport_EmptyTenantExportsNothing(t *testing.T) {
+// TestExport_UnsetTenantIsAnError: deny by default extends here. Before
+// v0.4.0 this took a string, "" was ambiguous between "the single-tenant
+// scope" and "the caller forgot", and the ambiguity was resolved by
+// returning nothing. tenant.ID splits the two cases, so each gets the
+// answer it always deserved: the zero value ERRORS instead of silently
+// exporting an empty file that looks like a quiet audit log.
+func TestExport_UnsetTenantIsAnError(t *testing.T) {
 	ctx := context.Background()
 	l := seedThreeTenants(t)
-	exp, err := l.ExportForTenant(ctx, "")
-	if err != nil {
-		t.Fatalf("ExportForTenant(\"\"): %v", err)
+	var unset tenant.ID
+	if _, err := l.ExportForTenant(ctx, unset); err == nil {
+		t.Fatal("an unset tenant exported without error; a forgotten argument " +
+			"must fail loudly, not produce an empty export that reads as a quiet log")
 	}
-	if len(exp.Events) != 0 {
-		t.Errorf("an empty tenant exported %d rows; a forgotten argument dumps "+
-			"the pool", len(exp.Events))
+}
+
+// TestExport_SingleIsAScopeNotAWildcard: the other half. tenant.Single is
+// a legal, explicit scope — it exports exactly the rows STAMPED with the
+// single-tenant value ("") and never another tenant's. In this pooled
+// seed that means no acme/globex/initech row may appear, however many
+// system rows carry "".
+func TestExport_SingleIsAScopeNotAWildcard(t *testing.T) {
+	ctx := context.Background()
+	l := seedThreeTenants(t)
+	exp, err := l.ExportForTenant(ctx, tenant.Single)
+	if err != nil {
+		t.Fatalf("ExportForTenant(Single): %v", err)
+	}
+	for _, e := range exp.Events {
+		if e.TenantID != "" {
+			t.Errorf("Single export leaked a row scoped to %q (event %s)", e.TenantID, e.ID)
+		}
 	}
 }
 
@@ -250,7 +270,7 @@ func TestExport_EmptyTenantExportsNothing(t *testing.T) {
 func TestExport_UnknownTenantIsEmptyNotError(t *testing.T) {
 	ctx := context.Background()
 	l := seedThreeTenants(t)
-	exp, err := l.ExportForTenant(ctx, "never-heard-of")
+	exp, err := l.ExportForTenant(ctx, tenant.New("never-heard-of"))
 	if err != nil {
 		t.Fatalf("ExportForTenant: %v", err)
 	}
@@ -269,7 +289,7 @@ func TestExport_UnknownTenantIsEmptyNotError(t *testing.T) {
 func TestExport_RedactedRowsStillExport(t *testing.T) {
 	ctx := context.Background()
 	l := seedThreeTenants(t)
-	exp, err := l.ExportForTenant(ctx, "acme")
+	exp, err := l.ExportForTenant(ctx, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("ExportForTenant: %v", err)
 	}
@@ -278,7 +298,7 @@ func TestExport_RedactedRowsStillExport(t *testing.T) {
 		t.Fatalf("RedactEvent: %v", err)
 	}
 
-	after, err := l.ExportForTenant(ctx, "acme")
+	after, err := l.ExportForTenant(ctx, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("ExportForTenant post-redaction: %v", err)
 	}

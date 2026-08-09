@@ -6,7 +6,7 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
-## [0.4.0] — unreleased
+## [0.4.0] — 2026-08-09
 
 Phase 7: tamper serves N tenants from one process. **One process, N tenants,
 pooled — not silo.**
@@ -85,6 +85,8 @@ Now `VerifyAccess` checks the tenant and skipping the check requires saying
 | `Manager.PinRegistry(reg)` · `PinRegistryForTenant(tid, reg)` | `PinRegistry(tenant.ID, reg)` |
 | `Manager.InvalidateTenant(string)` | `InvalidateTenant(tenant.ID)` |
 | `ProviderStore.ListEnabledProviders(ctx)` | `ListEnabledProviders(ctx, tenant.ID)` |
+| `WithRedirectURLForTenant(func(tid, providerID string) string)` | callback takes `(tenant.ID, string)` |
+| `WithSPMetadataURLForTenant(func(tid, id, acsURL string) string)` | callback takes `(tenant.ID, string, string)` |
 | `type TenantScopedProviderStore` | **removed** — folded into `ProviderStore` |
 
 #### espresso
@@ -108,6 +110,7 @@ one on an authenticated route has to be deliberate.
 | Removed / changed | Now |
 |---|---|
 | `ActorService(saID, saName)` · `ActorServiceInTenant(…)` | `ActorService(saID, saName, tenant.ID)` |
+| `ExportForTenant(ctx, tenantID string)` | `ExportForTenant(ctx, tenant.ID)` — an **unset** tenant now errors instead of silently exporting an empty file; `tenant.Single` is a real scope (rows stamped `""`), never a wildcard |
 | `tenant.EntitlementStore.ForTenant(ctx, string)` | `ForTenant(ctx, tenant.ID)` |
 | **`audit/sqlitestore`** | **`audit/internal/sqlitestore`** |
 | `sqlitestore.IsUniqueViolation(err)` | `audit.IsUniqueViolation(err)` |

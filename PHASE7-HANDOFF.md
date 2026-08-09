@@ -409,9 +409,11 @@ bodies list them.
 
 ## 4. Open decisions — do not start these without a human
 
-1. **`7l-1` — the M6 default flip (v0.4.0).** Folds `TenantScopedStore` into
-   `Store`, deletes the fallback and the boot assertion, and makes `TenantID`
-   required. This is the deliberate breaking change and a release decision.
+1. **`7l-1` — the M6 default flip (v0.4.0). DONE 2026-08-09**, on human
+   instruction. It went further than the block specified: the tenant is a
+   TYPE (`tenant.ID`, zero value invalid — sketch §8 item 7), because a bare
+   string could not hold "explicit single-tenant" and "forgot" apart. Barista
+   migrated in the same cycle, CI green.
 2. **The audit-chain revisit condition.** Answered against ISO/IEC 27001 and
    found **not triggered** (sketch §8 item 1). It stays recorded because ISO
    27001 A.5.34 defers to applicable PII law: selling into a GDPR-covered

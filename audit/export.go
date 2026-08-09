@@ -3,6 +3,8 @@ package audit
 import (
 	"context"
 	"fmt"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Tenant-scoped export.
@@ -86,13 +88,20 @@ type TenantExport struct {
 // slice into a self-consistent chain would be manufacturing evidence
 // that the original never contained.
 //
-// An empty tenantID returns no rows rather than every row. Deny by
-// default extends here too: "" is the single-tenant scope, and an
-// unscoped export is a different operation that should be spelled
-// differently.
-func (l *SQLiteLogger) ExportForTenant(ctx context.Context, tenantID string) (TenantExport, error) {
+// An UNSET tenant is an error, not an empty export. Before v0.4.0 this
+// took a string and "" returned no rows, because "" was ambiguous between
+// "the single-tenant scope" and "the caller forgot" and deny-by-default
+// won. tenant.ID resolves the ambiguity: the zero value errors, and
+// tenant.Single is a real scope — it exports exactly the rows STAMPED
+// with the single-tenant value, which in a pooled DB is the pre-tenancy
+// legacy segment and in a single-tenant DB is the whole log. A scope,
+// not a wildcard: it never returns another tenant's rows.
+func (l *SQLiteLogger) ExportForTenant(ctx context.Context, tenantID tenant.ID) (TenantExport, error) {
+	if !tenantID.Valid() {
+		return TenantExport{}, fmt.Errorf("audit: export: tenant is required (unset tenant.ID)")
+	}
 	out := TenantExport{
-		TenantID:     tenantID,
+		TenantID:     tenantID.String(),
 		Events:       []Event{},
 		IsChain:      false,
 		Completeness: CompletenessIssuerAttested,
@@ -100,11 +109,7 @@ func (l *SQLiteLogger) ExportForTenant(ctx context.Context, tenantID string) (Te
 	if l == nil || l.store == nil {
 		return out, nil
 	}
-	if tenantID == "" {
-		return out, nil
-	}
-
-	rows, err := l.store.Queries.ListEventsByTenant(ctx, tenantID)
+	rows, err := l.store.Queries.ListEventsByTenant(ctx, tenantID.String())
 	if err != nil {
 		return TenantExport{}, fmt.Errorf("audit: export for tenant: %w", err)
 	}
@@ -114,7 +119,7 @@ func (l *SQLiteLogger) ExportForTenant(ctx context.Context, tenantID string) (Te
 		// assertion that it did what it says, because a leak here is a
 		// cross-customer disclosure and the cost of one comparison is
 		// nothing against that.
-		if e.TenantID != tenantID {
+		if e.TenantID != tenantID.String() {
 			return TenantExport{}, fmt.Errorf(
 				"audit: export for tenant %q returned a row scoped to %q (event %s)",
 				tenantID, e.TenantID, e.ID)

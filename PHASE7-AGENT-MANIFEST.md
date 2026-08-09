@@ -6,11 +6,12 @@
 >
 > Baseline: `20fa206` (2026-07-25). Module `github.com/suryakencana007/tamper`.
 
-## Status — 2026-08-09
+## Status — 2026-08-09 (phase COMPLETE)
 
-**M1-M5 complete.** Every slice through `7k-1` has landed, one branch per
-slice, in manifest order. Only **M6 (`7l-1`, the v0.4.0 default flip)**
-remains, and it is a release decision rather than a queued slice.
+**M1-M6 complete.** Every slice has landed, one branch per slice, in manifest
+order; `7l-1` shipped as the v0.4.0 flip with `tenant.ID` threading (sketch
+§8 item 7 — the manifest block implied a string, which could not express the
+"" invariant; the amendment is recorded there).
 
 | Milestone | Slices | State |
 |---|---|---|
@@ -18,19 +19,14 @@ remains, and it is a release decision rather than a queued slice.
 | M2 | 7c-1, 7c-2, 7d-1 | done |
 | M3 | 7e-1, 7e-2, 7f-1, 7f-2 | done |
 | M4 | 7g-1, 7g-2, 7h-1 | done |
-| M5 | 7i-1, 7j-1, 7k-1 | done — **two `7i-1` DoD lines outstanding**, see below |
-| M6 | 7l-1 | not started (breaking; v0.4.0) |
+| M5 | 7i-1, 7j-1, 7k-1 | done — the two deferred `7i-1` DoD lines verified 2026-08-09 |
+| M6 | 7l-1 | done (breaking; v0.4.0) |
 
-**Outstanding, and NOT marked done anywhere:**
-
-1. `7i-1` — *"Boot verify green on a real Barista DB post-migration"* and
-   *"Docker deploy-artifact walk boots with chain self-test OK"*. Neither is
-   runnable on the development machine (Barista is a separate repository; the
-   Docker artifact needs the deploy pipeline). Local proxies were run and are
-   named in the slice's PR body. See `PHASE7-HANDOFF.md`.
-2. Barista CI has been **deferred throughout Phase 7**, with a hand-written
-   legacy adapter plus a golden port-call trace (`7b-2`) standing in for it.
-   That substitution is a proxy, not a pass.
+**Nothing outstanding.** The three deferred verifications were closed on a
+machine with Barista and Docker on 2026-08-09 (`PHASE7-HANDOFF.md` §0). The
+Barista CI deferral ended the way deferrals should: the first real run was
+RED and found an invariant-1 regression the local proxy was structurally
+blind to (#20 — migration 005 vs external `sqlitestore` callers).
 
 **Decisions taken since the freeze**, all recorded in sketch §8 item 1:
 one audit chain at `canonical_version=4` with commitment redaction; the

@@ -78,7 +78,7 @@ type Manager struct {
 	// redirectURLForTenant is the tenant-aware form. When set it wins
 	// over redirectURL, because a pooled deployment's callback URL
 	// usually varies by tenant (a subdomain, a path segment).
-	redirectURLForTenant func(tenantID, providerID string) string
+	redirectURLForTenant func(tenantID tenant.ID, providerID string) string
 
 	// mu guards registries. STILL an RWMutex, and still for the same
 	// reason: the read path (GetRegistry on every federated-auth call)
@@ -137,7 +137,7 @@ type ManagerOption func(*Manager)
 //
 // Single-tenant deployments keep using WithRedirectURL and are entirely
 // unaffected.
-func WithRedirectURLForTenant(fn func(tenantID, providerID string) string) ManagerOption {
+func WithRedirectURLForTenant(fn func(tenantID tenant.ID, providerID string) string) ManagerOption {
 	return func(m *Manager) {
 		if fn != nil {
 			m.redirectURLForTenant = fn
@@ -486,7 +486,7 @@ func (m *Manager) rebuildLocked(ctx context.Context, tenantID tenant.ID) (*Provi
 			IssuerURL:    def.IssuerURL,
 			ClientID:     def.ClientID,
 			ClientSecret: def.ClientSecret,
-			RedirectURL:  m.redirectFor(tenantID.String(), def.ID),
+			RedirectURL:  m.redirectFor(tenantID, def.ID),
 			DisplayName:  def.DisplayName,
 			Scopes:       def.Scopes,
 			GroupsClaim:  def.GroupsClaim,
@@ -517,7 +517,7 @@ func (m *Manager) listEnabled(ctx context.Context, tenantID tenant.ID) ([]Provid
 // redirectFor maps a provider to its callback URL. The tenant-aware
 // mapping wins when configured; otherwise the original per-id one is
 // used exactly as before.
-func (m *Manager) redirectFor(tenantID, providerID string) string {
+func (m *Manager) redirectFor(tenantID tenant.ID, providerID string) string {
 	if m.redirectURLForTenant != nil {
 		return m.redirectURLForTenant(tenantID, providerID)
 	}

@@ -82,8 +82,8 @@ func tenantManager(t *testing.T, s ProviderStore, ttl time.Duration) *Manager {
 	return NewManager(s, nil,
 		WithTTL(ttl),
 		WithAssertionReplayStore(NoReplayDefence{}),
-		WithSPMetadataURLForTenant(func(tenantID, id, _ string) string {
-			return "https://" + tenantID + ".example.test/sp/" + id
+		WithSPMetadataURLForTenant(func(tenantID tenant.ID, id, _ string) string {
+			return "https://" + tenantID.String() + ".example.test/sp/" + id
 		}),
 	)
 }

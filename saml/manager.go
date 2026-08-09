@@ -92,7 +92,7 @@ type Manager struct {
 	// spMetadataURLForTenant is the tenant-aware form of spMetadataURL.
 	// When set it wins, because a pooled deployment's ACS/metadata URLs
 	// usually vary by tenant. Mirrors oidc.WithRedirectURLForTenant.
-	spMetadataURLForTenant func(tenantID, id, acsURL string) string
+	spMetadataURLForTenant func(tenantID tenant.ID, id, acsURL string) string
 
 	// mu guards registries. STILL an RWMutex, for the reason the OIDC
 	// Manager records: the read path dominates. Per-tenant keying turns a
@@ -135,7 +135,7 @@ type ManagerOption func(*Manager)
 // The SAML analogue of oidc.WithRedirectURLForTenant, carrying the extra
 // acsURL argument the single-tenant form already had — the one shape
 // difference between the two packages, and it is SAML's, not tenancy's.
-func WithSPMetadataURLForTenant(fn func(tenantID, id, acsURL string) string) ManagerOption {
+func WithSPMetadataURLForTenant(fn func(tenantID tenant.ID, id, acsURL string) string) ManagerOption {
 	return func(m *Manager) {
 		if fn != nil {
 			m.spMetadataURLForTenant = fn
@@ -514,7 +514,7 @@ func (m *Manager) rebuildLocked(ctx context.Context, tenantID tenant.ID) (*Provi
 			IdPMetadataURL:         def.IdPMetadataURL,
 			EntityID:               def.EntityID,
 			ACSURL:                 def.ACSURL,
-			MetadataURL:            m.spMetadataFor(tenantID.String(), def.ID, def.ACSURL),
+			MetadataURL:            m.spMetadataFor(tenantID, def.ID, def.ACSURL),
 			SPCert:                 cert,
 			SPKey:                  signer,
 			DisplayName:            def.DisplayName,
@@ -556,7 +556,7 @@ func (m *Manager) listEnabled(ctx context.Context, tenantID tenant.ID) ([]Provid
 // spMetadataFor maps a provider to its SP-metadata URL. The
 // tenant-aware mapping wins when configured. Mirrors
 // oidc.Manager.redirectFor, plus SAML's acsURL argument.
-func (m *Manager) spMetadataFor(tenantID, providerID, acsURL string) string {
+func (m *Manager) spMetadataFor(tenantID tenant.ID, providerID, acsURL string) string {
 	if m.spMetadataURLForTenant != nil {
 		return m.spMetadataURLForTenant(tenantID, providerID, acsURL)
 	}

@@ -227,6 +227,8 @@ Reload(ctx) / ReloadForTenant(ctx, tid)          -> Reload(ctx, tenant.ID)
 PinRegistry(reg) / PinRegistryForTenant(tid,reg) -> PinRegistry(tenant.ID, reg)
 InvalidateTenant(tid string)                     -> InvalidateTenant(tenant.ID)
 ProviderStore.ListEnabledProviders(ctx)          -> ListEnabledProviders(ctx, tenant.ID)
+WithRedirectURLForTenant / WithSPMetadataURLForTenant
+                                                 -> callbacks now receive tenant.ID
 type TenantScopedProviderStore                   -> folded into ProviderStore
 ```
 
@@ -247,6 +249,9 @@ SAMLHooks.Registry                               -> func(ctx, tenant.ID) (*saml.
 ActorService(saID, saName)                       -> ActorService(saID, saName, tenant.ID)
 ActorServiceInTenant(saID, saName, tid)          -> ActorService(saID, saName, tenant.ID)
 EntitlementStore.ForTenant(ctx, tid string)      -> ForTenant(ctx, tenant.ID)
+ExportForTenant(ctx, tid string)                 -> ExportForTenant(ctx, tenant.ID)
+                                                    // unset ERRORS (was: "" exported nothing);
+                                                    // tenant.Single exports rows stamped "", never the pool
 
 // audit/sqlitestore is now audit/internal/sqlitestore — see §7
 sqlitestore.IsUniqueViolation(err)               -> audit.IsUniqueViolation(err)

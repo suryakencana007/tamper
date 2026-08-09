@@ -86,8 +86,8 @@ func tenantManager(t *testing.T, s ProviderStore, ttl time.Duration) *Manager {
 	t.Helper()
 	m := NewManager(s, nil,
 		WithTTL(ttl),
-		WithRedirectURLForTenant(func(tenantID, id string) string {
-			return "https://" + tenantID + ".example.test/cb/" + id
+		WithRedirectURLForTenant(func(tenantID tenant.ID, id string) string {
+			return "https://" + tenantID.String() + ".example.test/cb/" + id
 		}),
 	)
 	return m

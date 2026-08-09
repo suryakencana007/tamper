@@ -1,17 +1,22 @@
 # CLAUDE.md
 
 <!-- PHASE7:BEGIN -->
-## Phase 7 — pooled multi-tenancy (M1-M5 complete)
+## Phase 7 — pooled multi-tenancy (COMPLETE, 2026-08-09)
 
-Phase 7 makes tamper serve N tenants from one process. **M1-M5 have landed**;
-only M6 (`7l-1`, the v0.4.0 default flip) remains, and it is a release
-decision rather than a queued slice.
+Phase 7 made tamper serve N tenants from one process. **All six milestones
+are done**, including M6 — the v0.4.0 default flip (`7l-1`). The tenant is a
+type (`tenant.ID`, zero value invalid; sketch §8 item 7), the *InTenant
+surface is folded into the base ports, and Barista is migrated with CI green.
 
-Two DoD lines are still open and are **not** to be marked done from this
-machine: `7i-1`'s boot-verify on a real Barista audit DB, and the Docker
-deploy-artifact walk. Barista CI has been deferred for the whole phase with a
-documented local proxy. All three, with the exact commands, are in
-**`PHASE7-HANDOFF.md`** — read it before claiming any of them.
+The three deferred verifications were all closed on a machine with Barista
+and Docker (`PHASE7-HANDOFF.md` §0): boot-verify on the real audit DB, the
+Docker deploy-artifact walk, and Barista CI — which was RED on first contact
+and caught a real invariant-1 regression (#20, fixed at the shared boundary
+with `sqltypes.Blob`, then made structurally impossible by moving the
+generated layer under `audit/internal/`).
+
+Releases: `MIGRATION-v0.4.md` + `CHANGELOG.md` govern the upgrade. v0.3.0
+tags the last additive commit; v0.4.0 is the flip.
 
 Three documents govern the phase. Read them before touching `identity`,
 `crypto/jwt.go`, `oidc`, `saml`, `scim`, `espresso` or `audit`:

@@ -36,3 +36,22 @@ sql:
         emit_prepared_queries: false
         emit_exact_table_names: false
         emit_empty_slices: true
+        # The v4 BLOB columns are NOT NULL with a DEFAULT that can never fire,
+        # because sqlc names every column in the INSERT. Left as plain []byte,
+        # a caller's zero-valued struct literal sends NULL and the insert
+        # fails — and InsertEventParams is public API, so that caller is not
+        # necessarily in this repo. Blob's driver.Valuer renders nil as x''.
+        # See audit/sqlitestore/sqltypes/blob.go for the full reasoning.
+        overrides:
+          - column: "events.row_salt"
+            go_type: "github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes.Blob"
+          - column: "events.c_actor_email"
+            go_type: "github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes.Blob"
+          - column: "events.c_actor_name"
+            go_type: "github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes.Blob"
+          - column: "events.c_actor_ip"
+            go_type: "github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes.Blob"
+          - column: "events.c_before"
+            go_type: "github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes.Blob"
+          - column: "events.c_after"
+            go_type: "github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes.Blob"

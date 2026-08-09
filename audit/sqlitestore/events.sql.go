@@ -8,6 +8,8 @@ package sqlitestore
 import (
 	"context"
 	"time"
+
+	"github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes"
 )
 
 const countAuditEventsByActionSince = `-- name: CountAuditEventsByActionSince :many
@@ -364,12 +366,12 @@ type InsertEventParams struct {
 	CanonicalVersion int64
 	TenantID         string
 	ActorTenantID    string
-	RowSalt          []byte
-	CActorEmail      []byte
-	CActorName       []byte
-	CActorIp         []byte
-	CBefore          []byte
-	CAfter           []byte
+	RowSalt          sqltypes.Blob
+	CActorEmail      sqltypes.Blob
+	CActorName       sqltypes.Blob
+	CActorIp         sqltypes.Blob
+	CBefore          sqltypes.Blob
+	CAfter           sqltypes.Blob
 }
 
 func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error {

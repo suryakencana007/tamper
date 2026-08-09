@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/sqlitestore/sqltypes"
 )
 
 // SQLiteLogger is the production audit.Logger backed by a dedicated
@@ -322,12 +323,12 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 		CanonicalVersion: int64(e.CanonicalVersion),
 		TenantID:         e.TenantID,
 		ActorTenantID:    e.Actor.TenantID,
-		RowSalt:          nonNilBytes(e.RowSalt),
-		CActorEmail:      nonNilBytes(e.Commitments.ActorEmail),
-		CActorName:       nonNilBytes(e.Commitments.ActorName),
-		CActorIp:         nonNilBytes(e.Commitments.ActorIP),
-		CBefore:          nonNilBytes(e.Commitments.Before),
-		CAfter:           nonNilBytes(e.Commitments.After),
+		RowSalt:          sqltypes.Blob(e.RowSalt),
+		CActorEmail:      sqltypes.Blob(e.Commitments.ActorEmail),
+		CActorName:       sqltypes.Blob(e.Commitments.ActorName),
+		CActorIp:         sqltypes.Blob(e.Commitments.ActorIP),
+		CBefore:          sqltypes.Blob(e.Commitments.Before),
+		CAfter:           sqltypes.Blob(e.Commitments.After),
 	}); err != nil {
 		return Event{}, fmt.Errorf("audit: insert: %w", err)
 	}
@@ -954,13 +955,13 @@ func fromRow(r sqlitestore.Event) Event {
 		Hash:             r.Hash,
 		CanonicalVersion: int(r.CanonicalVersion),
 		TenantID:         r.TenantID,
-		RowSalt:          r.RowSalt,
+		RowSalt:          []byte(r.RowSalt),
 		Commitments: Commitments{
-			ActorEmail: r.CActorEmail,
-			ActorName:  r.CActorName,
-			ActorIP:    r.CActorIp,
-			Before:     r.CBefore,
-			After:      r.CAfter,
+			ActorEmail: []byte(r.CActorEmail),
+			ActorName:  []byte(r.CActorName),
+			ActorIP:    []byte(r.CActorIp),
+			Before:     []byte(r.CBefore),
+			After:      []byte(r.CAfter),
 		},
 	}
 	e.Actor.TenantID = r.ActorTenantID
@@ -1012,17 +1013,16 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-// nonNilBytes coerces a nil slice to an empty one.
+// nonNilBytes was here. It coerced a nil slice to an empty one so the v4
+// NOT NULL columns would accept a tenancy-disabled write, and its comment
+// named the stakes exactly right: "the \"\" path breaking on the very
+// migration that was supposed to leave it alone."
 //
-// The v4 columns are NOT NULL DEFAULT x”, but a DEFAULT only applies
-// when the column is OMITTED from the INSERT — driver-marshalled nil
-// arrives as an explicit SQL NULL and trips the constraint. Every v3
-// emission carries nil for all six, so without this a tenancy-disabled
-// logger cannot write a row at all: the "" path breaking on the very
-// migration that was supposed to leave it alone.
-func nonNilBytes(b []byte) []byte {
-	if b == nil {
-		return []byte{}
-	}
-	return b
-}
+// It was not wrong, it was in the wrong place. Coercing here protected only
+// this file's INSERT, while sqlitestore.InsertEventParams is public API that
+// any consumer builds as a struct literal — and one written before v4 existed
+// cannot set fields that did not exist. Barista's audit tests broke exactly
+// that way, invisibly, until its CI was finally run against Phase 7.
+//
+// The coercion now lives at the boundary every caller shares, in
+// sqlitestore/sqltypes.Blob.

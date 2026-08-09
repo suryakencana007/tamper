@@ -246,16 +246,12 @@ func insertEventDirect(t *testing.T, l *SQLiteLogger, e Event) error {
 		PrevHash:         e.PrevHash,
 		Hash:             e.Hash,
 		CanonicalVersion: int64(e.CanonicalVersion),
-		// The v4 columns are NOT NULL; a nil slice marshals to an
-		// explicit NULL and the column DEFAULT does not apply because
-		// the generated INSERT names every column. A pre-v4 row carries
-		// them empty, which is exactly what these are.
-		RowSalt:     []byte{},
-		CActorEmail: []byte{},
-		CActorName:  []byte{},
-		CActorIp:    []byte{},
-		CBefore:     []byte{},
-		CAfter:      []byte{},
+		// The v4 columns are deliberately NOT set here. They used to be
+		// hand-stubbed to []byte{} because a nil slice marshalled to an
+		// explicit NULL; sqltypes.Blob now coerces that at the boundary,
+		// so a pre-v4 struct literal writes correctly with no help. Do
+		// not re-add the stubs — their absence is what keeps this
+		// helper honest about what an outside caller can express.
 	})
 }
 

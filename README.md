@@ -9,15 +9,17 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.2.0 — API not frozen.** Tamper was extracted from the Barista
-> monorepo into this standalone repository; the import path below is the real,
-> current one. (An earlier `v0.1.0` shipped from the monorepo at the nested path
-> `…/barista/packages/tamper`; `v0.2.0` marks the move to this clean path.)
+> **Status: v0.4.0 — pooled multi-tenancy.** One process, N tenants, deny by
+> default. v0.4.0 is Phase 7's single deliberate breaking release: the tenant
+> became a type (`tenant.ID`) and entered the base ports. Coming from v0.2.x?
+> Step through **v0.3.0** (drop-in, zero code changes) and then follow
+> [`MIGRATION-v0.4.md`](./MIGRATION-v0.4.md) — for a single-tenant deployment
+> the whole upgrade is mechanical.
 
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.2.0
+go get github.com/suryakencana007/tamper@v0.4.0
 ```
 
 ## What's shipped
@@ -25,12 +27,13 @@ go get github.com/suryakencana007/tamper@v0.2.0
 | Subpackage | What it is |
 |---|---|
 | `crypto` | JWT issue/verify, bcrypt passwords, refresh-token hashing, TOTP, and the KEK keyset + secretbox envelope that seals at-rest secrets |
-| `audit` | tamper-evident hash-chain logging (per-row canonical-version dispatch, boot-time verify) + the `audit/sqlitestore` persistence layer |
+| `audit` | tamper-evident hash-chain logging (per-row canonical-version dispatch, boot-time verify, per-tenant export, GDPR-style commitment redaction) over an internal SQLite persistence layer |
 | `authz` | the `Authorizer` PDP (`Check` + reverse queries) over two interchangeable engines — the rank `RBAC` and the set-based `PermissionSet` — plus a converter that makes them decide identically |
+| `tenant` | the tenancy vocabulary: `tenant.ID` (zero value denies), `Descriptor` + `Store`/`Resolver` ports, home-realm domain discovery, per-tenant entitlements |
 | `identity` | credentials + session core (register / login / refresh / logout, TOTP enrollment, multi-IdP linking) behind one `identity.Store` port |
 | `oidc` / `saml` | OIDC relying-party + SAML service-provider substrates and store-backed provider managers with KEK-sealed secrets |
 | `scim` | SCIM 2.0 substrate — filter engine, RFC 7644 PATCH applier, group-cycle detection — over app-supplied ports |
-| `espresso` | the first-class transport adapter: mountable auth / OIDC / SAML / SCIM route surfaces + `RequireAuth` / `RequireServiceAccount` / `RequireDecision` / `RequireFreshAuth` middleware |
+| `espresso` | the first-class transport adapter: mountable auth / OIDC / SAML / SCIM route surfaces + `RequireAuth` / `RequireServiceAccount` / `RequireDecision` / `RequireFreshAuth` / `PinTenant` / `RequireTenant` middleware |
 
 The framework roadmap, extraction playbook, and design rationale live in
 [`TAMPER-DESIGN.md`](./TAMPER-DESIGN.md).
@@ -174,39 +177,45 @@ SAML SSO follows the same shape via the `SAML` engine + `SAML` route bundle.
 
 ## Multi-tenancy — one process, many tenants
 
-Tamper is single-tenant by default, and that costs nothing: leave
-`Config.Tenancy` unset and every code path behaves exactly as it always has.
-
-For a **pooled** deployment — one process serving many tenants — set
-`Tenancy.Enabled` and supply a store that implements
-`identity.TenantScopedStore` (the base `identity.Store` plus four
-tenant-constrained methods):
+Since v0.4.0 every tenant-touching call names its tenant as a **`tenant.ID`**
+— a type whose zero value is invalid, so "I am single-tenant" and "I forgot
+to pass the tenant" are different values and only the second one denies:
 
 ```go
-provider, err := tamper.New(tamper.Config{
-    JWT:      crypto.JWTConfig{Secret: secret, TTL: 15 * time.Minute, Issuer: "myapp"},
-    Identity: &tamper.IdentityConfig{Store: myTenantScopedStore},
-    Tenancy:  &tamper.TenancyConfig{Enabled: true},
-})
+tenant.Single         // "this deployment has one tenant" — said on purpose
+tenant.New("acme")    // a real tenant from untrusted input (claims, headers, paths)
+tenant.FromStored(s)  // a value read back out of your own database ("" == Single)
+tenant.ID{}           // forgot? -> ErrTenantRequired. Nothing leaks.
 ```
 
-A store that cannot serve tenants fails at `New`, naming the offending type —
-never as a per-request denial. With tenancy on, the core resolves users and
-counts **within a tenant**, so an email is unique per tenant rather than
-globally, and the first-user bootstrap signal fires once per tenant instead of
-once ever.
+The underlying identifier stays an opaque, app-defined string — a UUID, a
+slug, a `realm/sub-realm` path are all fine; Tamper never parses it. A
+single-tenant deployment passes `tenant.Single` everywhere and pins it once
+on the router:
 
-A `TenantID` is an opaque, app-defined string. Tamper never validates, parses
-or canonicalizes it — a UUID, a slug, a `realm/sub-realm` path are all fine.
-The empty string means the single-tenant deployment.
+```go
+// Single-tenant: one line. Pooled: resolve from subdomain, path or header —
+// this resolver is the only line that changes when you go pooled.
+r.Use(tamperespresso.PinTenant(func(*http.Request) string { return "" }))
+```
 
-**Implementing `TenantScopedStore` comes with a proof obligation.** Tamper
-cannot enforce isolation — the query lives in your adapter — so it ships the
+(`PinTenant` is for routes *before* login; `RequireTenant` additionally
+cross-checks the authenticated token's `tid` against the routed tenant, so it
+runs *inside* `RequireAuth`. Two names on purpose.)
+
+`identity.Store`'s lookups take the tenant directly — an email is unique per
+tenant rather than globally, `bob@acme.com` and `bob@globex.com` are separate
+people, and the first-user bootstrap signal fires once per tenant instead of
+once ever. A store that cannot scope by tenant **fails to compile**, which is
+strictly earlier than the boot-time error it replaced.
+
+**Implementing the store comes with a proof obligation.** Tamper cannot
+enforce isolation — the query lives in your adapter — so it ships the
 instrument that checks it. Run the conformance harness against your own store:
 
 ```go
 func TestMyStoreIsolation(t *testing.T) {
-    tenanttest.RunLeakSuite(t, func() identity.TenantScopedStore {
+    tenanttest.RunLeakSuite(t, func() identity.Store {
         return newMyStore(t) // fresh and empty on every call
     })
 }
@@ -228,6 +237,8 @@ Tamper composes; your app provides the leaves:
 
 - the `Store` implementations (identity / authz / oidc / saml / scim);
 - the Espresso router and every route path (`Routes` returns surfaces, not a handler);
+- the tenant resolver behind `PinTenant`/`RequireTenant` — subdomain, path
+  segment or header; Tamper pins what you resolve and never guesses;
 - policy hooks — `ProjectUser`, `OnFederatedExchange`, `SanitizeRedirect`, the `DecisionGate` deny-writers;
 - audit **emission** at your port implementations (the transport threads the facts down; the port writes the row);
 - an `IdentityService` adapter over `identity.Core` (see the quickstart).

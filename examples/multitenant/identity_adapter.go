@@ -7,6 +7,7 @@ import (
 	"github.com/suryakencana007/tamper/crypto"
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // tenantIdentity adapts *identity.Core to the transport's
@@ -34,7 +35,7 @@ type tenantIdentity struct {
 var _ tamperespresso.IdentityService = tenantIdentity{}
 
 func (t tenantIdentity) Register(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
-	u, tok, err := t.core.RegisterInTenant(ctx, t.tenantID, email, password)
+	u, tok, err := t.core.Register(ctx, tenant.New(t.tenantID), email, password)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
@@ -42,7 +43,7 @@ func (t tenantIdentity) Register(ctx context.Context, email, password string) (t
 }
 
 func (t tenantIdentity) Login(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
-	u, tok, err := t.core.LoginInTenant(ctx, t.tenantID, email, password)
+	u, tok, err := t.core.Login(ctx, tenant.New(t.tenantID), email, password)
 	if err != nil {
 		if errors.Is(err, identity.ErrTOTPRequired) {
 			return tamperespresso.AuthResult{User: &u}, err

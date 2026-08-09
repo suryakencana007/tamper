@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Invitation is a pending (or spent) invitation to join a tenant.
@@ -166,7 +167,7 @@ const DefaultInvitationTTL = 7 * 24 * time.Hour
 //
 // The returned Invitation carries only the hash, so logging the record —
 // which is what an audit path will do — cannot leak the credential.
-func (c *Core) Invite(ctx context.Context, tenantID, email, invitedBy string, ttl time.Duration) (Invitation, string, error) {
+func (c *Core) Invite(ctx context.Context, tenantID tenant.ID, email, invitedBy string, ttl time.Duration) (Invitation, string, error) {
 	if c.invitations == nil {
 		return Invitation{}, "", ErrNoInvitationStore
 	}
@@ -197,7 +198,7 @@ func (c *Core) Invite(ctx context.Context, tenantID, email, invitedBy string, tt
 	now := c.now()
 	inv := Invitation{
 		ID:        c.newID(),
-		TenantID:  tenantID,
+		TenantID:  tenantID.String(),
 		Email:     normalised,
 		TokenHash: hash,
 		ExpiresAt: now.Add(ttl),
@@ -226,7 +227,7 @@ func (c *Core) Invite(ctx context.Context, tenantID, email, invitedBy string, tt
 // and distinguishing wrong-tenant from unknown would confirm that a
 // token belongs to SOME tenant — the same 404-not-403 discipline the
 // rest of the phase applies (§6.3).
-func (c *Core) AcceptInvitation(ctx context.Context, tenantID, token, password string) (User, Tokens, error) {
+func (c *Core) AcceptInvitation(ctx context.Context, tenantID tenant.ID, token, password string) (User, Tokens, error) {
 	if c.invitations == nil {
 		return User{}, Tokens{}, ErrNoInvitationStore
 	}
@@ -254,7 +255,7 @@ func (c *Core) AcceptInvitation(ctx context.Context, tenantID, token, password s
 		return User{}, Tokens{}, fmt.Errorf("identity: lookup invitation: %w", err)
 	}
 	// Wrong tenant is a miss, not a permission error.
-	if inv.TenantID != tenantID {
+	if inv.TenantID != tenantID.String() {
 		return User{}, Tokens{}, ErrInvitationInvalid
 	}
 	if !inv.Usable(c.now()) {
@@ -282,7 +283,7 @@ func (c *Core) AcceptInvitation(ctx context.Context, tenantID, token, password s
 		return User{}, Tokens{}, fmt.Errorf("identity: consume invitation: %w", err)
 	}
 
-	user, tokens, err := c.RegisterInTenant(ctx, inv.TenantID, inv.Email, password)
+	user, tokens, err := c.Register(ctx, tenant.FromStored(inv.TenantID), inv.Email, password)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}

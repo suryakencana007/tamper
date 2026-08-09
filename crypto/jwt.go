@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // ErrInvalidToken collapses every JWT failure mode (bad signature,
@@ -263,7 +264,7 @@ type AccessClaims struct {
 	// empty tid must REJECT, because there "" is not a tenant but the
 	// absence of one, and treating absence as a match is the wildcard
 	// deny-by-default forbids. That rejection lands with
-	// VerifyAccessInTenant in 7c-2; VerifyAccess is unchanged here.
+	// VerifyAccess in 7c-2; VerifyAccess is unchanged here.
 	//
 	// omitempty is load-bearing, not cosmetic: it is what makes a
 	// no-tenant token byte-identical to a pre-tenancy one, so this claim
@@ -318,21 +319,10 @@ const (
 //
 // Empty userID is rejected with ErrInvalidToken.
 func (j *JWTService) Issue(userID string) (string, error) {
-	return j.IssueAccess(userID, j.now().Unix(), ACRLocalPassword)
+	return j.IssueAccess(userID, tenant.Single, j.now().Unix(), ACRLocalPassword)
 }
 
-// IssueAccess mints a v1.14-shape access JWT with auth_time + acr
-// claims. Refresh rotation MUST pass through the previous JWT's
-// auth_time (NOT j.now()) — see Sprint 1 Task 01 contract.
-//
-// Empty userID, zero/negative authTime, or empty acr all reject with
-// ErrInvalidToken so the caller can't accidentally mint a JWT that
-// would always trip the step-up gate.
-func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (string, error) {
-	return j.IssueAccessForTenant(userID, "", authTime, acr)
-}
-
-// IssueAccessForTenant mints an access JWT carrying a `tid` claim naming
+// IssueAccess mints an access JWT carrying a `tid` claim naming
 // the tenant, for pooled multi-tenant deployments.
 //
 // An empty tenantID is legal and means the single-tenant deployment:
@@ -348,7 +338,7 @@ func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (str
 //
 // Same rejections as IssueAccess otherwise: empty userID, non-positive
 // authTime, empty acr.
-func (j *JWTService) IssueAccessForTenant(userID, tenantID string, authTime int64, acr string) (string, error) {
+func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int64, acr string) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
 	}
@@ -363,7 +353,7 @@ func (j *JWTService) IssueAccessForTenant(userID, tenantID string, authTime int6
 		AuthTime: authTime,
 		ACR:      acr,
 		Purpose:  purposeAccess,
-		TenantID: tenantID,
+		TenantID: tenantID.String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
@@ -386,55 +376,14 @@ func (j *JWTService) IssueAccessForTenant(userID, tenantID string, authTime int6
 // VerifyAccess instead so the typed claims can be stashed for
 // RequireFreshAuth downstream.
 func (j *JWTService) Verify(tokenStr string) (string, error) {
-	claims, err := j.VerifyAccess(tokenStr)
+	claims, err := j.VerifyAccess(tokenStr, tenant.Single)
 	if err != nil {
 		return "", err
 	}
 	return claims.Subject, nil
 }
 
-// VerifyAccess parses tokenStr as a v1.14-shape AccessClaims JWT.
-// Returns the typed claims on success so middleware can inspect
-// auth_time + acr without a re-parse. ErrInvalidToken wraps every
-// failure mode.
-//
-// Legacy-tolerant: pre-v1.14 JWTs carry no auth_time + no acr; those
-// fields parse as zero values. The middleware downstream treats
-// AuthTime=0 as "older than any maxAge" and ACR="" as "matches no
-// acrValues" — both trip the step-up gate, which is the intended
-// migration path (operators get a forced re-auth on sensitive
-// endpoints once, then their refreshed JWTs carry the new claims).
-//
-// The `tid` claim is READ but not enforced here, and that is deliberate
-// for this slice: a missing tid parses as "" and a present one is handed
-// to the caller untouched. VerifyAccess has no way to know which tenant
-// the request was routed to, so it cannot decide whether a tid matches —
-// that comparison needs the routed tenant and lands in
-// VerifyAccessInTenant (7c-2). Until then, reading tid from these claims
-// and comparing it yourself is the app's job.
-//
-// Rejects any token whose `purpose` claim names a different token
-// shape. This is the other half of the discrimination VerifyTOTPPending
-// already performed: both Verify* entry points now refuse the other's
-// token, so a totp-pending session token handed out after a
-// password-only login cannot be replayed as a bearer credential to
-// skip the second factor. An absent purpose is accepted as a legacy
-// access JWT — see AccessClaims.Purpose for why that is safe.
-func (j *JWTService) VerifyAccess(tokenStr string) (*AccessClaims, error) {
-	claims := &AccessClaims{}
-	if err := j.parseClaims(tokenStr, claims); err != nil {
-		return nil, err
-	}
-	if claims.Purpose != "" && claims.Purpose != purposeAccess {
-		return nil, fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
-	}
-	if claims.Subject == "" {
-		return nil, fmt.Errorf("%w: sub is missing", ErrInvalidToken)
-	}
-	return claims, nil
-}
-
-// VerifyAccessInTenant is VerifyAccess plus the tenant pin: the token's
+// VerifyAccess is VerifyAccess plus the tenant pin: the token's
 // `tid` claim must equal tenantID EXACTLY, and every other outcome is a
 // rejection.
 //
@@ -462,12 +411,12 @@ func (j *JWTService) VerifyAccess(tokenStr string) (*AccessClaims, error) {
 // which is a tenant-existence oracle. One status, one message, no
 // signal — the discipline this package already applies to every other
 // JWT failure mode (§6.3).
-func (j *JWTService) VerifyAccessInTenant(tokenStr, tenantID string) (*AccessClaims, error) {
-	claims, err := j.VerifyAccess(tokenStr)
+func (j *JWTService) VerifyAccess(tokenStr string, tenantID tenant.ID) (*AccessClaims, error) {
+	claims, err := j.verifyAccessUnpinned(tokenStr)
 	if err != nil {
 		return nil, err
 	}
-	if claims.TenantID != tenantID {
+	if claims.TenantID != tenantID.String() {
 		// Deliberately the SAME message the generic invalid branch uses.
 		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
 	}
@@ -536,4 +485,27 @@ func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
 		return "", fmt.Errorf("%w: sub is missing", ErrInvalidToken)
 	}
 	return claims.Subject, nil
+}
+
+// verifyAccessUnpinned is VerifyAccess without the tenant comparison —
+// the parse, purpose and subject checks only.
+//
+// It is unexported deliberately. Before v0.4.0 this was the public
+// VerifyAccess and the tenant-pinning form sat beside it, which meant a
+// caller could reach the unpinned path by accident simply by calling the
+// shorter name. Folding the two made the pinned form the only way in, and
+// this helper exists so the pinned form has something to delegate to
+// rather than recursing.
+func (j *JWTService) verifyAccessUnpinned(tokenStr string) (*AccessClaims, error) {
+	claims := &AccessClaims{}
+	if err := j.parseClaims(tokenStr, claims); err != nil {
+		return nil, err
+	}
+	if claims.Purpose != "" && claims.Purpose != purposeAccess {
+		return nil, fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
+	}
+	if claims.Subject == "" {
+		return nil, fmt.Errorf("%w: sub is missing", ErrInvalidToken)
+	}
+	return claims, nil
 }

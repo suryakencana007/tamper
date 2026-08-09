@@ -40,6 +40,8 @@ package espresso
 import (
 	"context"
 	"net/http"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // tenantCtxKey carries the routed tenant. Unexported type, per the
@@ -50,12 +52,12 @@ type tenantCtxKey struct{}
 // TenantFromContext returns the tenant RequireTenant pinned for this
 // request, and whether one was pinned at all.
 //
-// (“”, false) means RequireTenant did not run. It is NOT "the
+// (the zero ID, false) means RequireTenant did not run. It is NOT "the
 // single-tenant deployment" — a handler that treats it as one turns a
 // forgotten middleware into an unscoped query. Handlers in a pooled
 // deployment should treat !ok as a programmer error and fail closed.
-func TenantFromContext(ctx context.Context) (string, bool) {
-	id, ok := ctx.Value(tenantCtxKey{}).(string)
+func TenantFromContext(ctx context.Context) (tenant.ID, bool) {
+	id, ok := ctx.Value(tenantCtxKey{}).(tenant.ID)
 	return id, ok
 }
 
@@ -111,7 +113,7 @@ func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.H
 				writeUnauthenticated(w, "invalid token")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tenantCtxKey{}, routed)))
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))))
 		})
 	}
 }

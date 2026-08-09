@@ -1,5 +1,5 @@
 // Package tenanttest is the cross-tenant leak conformance harness for
-// identity.TenantScopedStore.
+// identity.Store.
 //
 // tamper cannot enforce tenant isolation: the query lives in the
 // application's adapter. What it can do is state the obligation on the
@@ -11,7 +11,7 @@
 // Adapter authors run it against their own store:
 //
 //	func TestMyStoreIsolation(t *testing.T) {
-//	    tenanttest.RunLeakSuite(t, func() identity.TenantScopedStore {
+//	    tenanttest.RunLeakSuite(t, func() identity.Store {
 //	        return newMyStore(t) // fresh and EMPTY on every call
 //	    })
 //	}
@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // The two tenants every case is built from. They are opaque values, as
@@ -73,7 +74,7 @@ var fixedTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // The suite also asserts the positive direction, because isolation that
 // works by returning nothing to everyone is not isolation: each tenant
 // must still see its OWN rows.
-func RunLeakSuite(t *testing.T, newStore func() identity.TenantScopedStore) {
+func RunLeakSuite(t *testing.T, newStore func() identity.Store) {
 	t.Helper()
 	runLeakSuite(realT{t}, newStore)
 }
@@ -100,11 +101,11 @@ func (r realT) Run(name string, f func(harnessT)) bool {
 	return r.T.Run(name, func(sub *testing.T) { f(realT{sub}) })
 }
 
-func runLeakSuite(t harnessT, newStore func() identity.TenantScopedStore) {
+func runLeakSuite(t harnessT, newStore func() identity.Store) {
 	t.Helper()
-	t.Run("UserByEmailInTenant", func(t harnessT) { userByEmailInTenant(t, newStore()) })
-	t.Run("IdentityByProviderSubjectInTenant", func(t harnessT) { identityByProviderSubjectInTenant(t, newStore()) })
-	t.Run("CountUsersInTenant", func(t harnessT) { countUsersInTenant(t, newStore()) })
+	t.Run("UserByEmail", func(t harnessT) { userByEmailInTenant(t, newStore()) })
+	t.Run("IdentityByProviderSubject", func(t harnessT) { identityByProviderSubjectInTenant(t, newStore()) })
+	t.Run("CountUsers", func(t harnessT) { countUsersInTenant(t, newStore()) })
 	t.Run("RefreshSessionByHash", func(t harnessT) { refreshSessionByHash(t, newStore()) })
 	t.Run("RevokeAllRefreshSessionsForTenant", func(t harnessT) { revokeAllRefreshSessionsForTenant(t, newStore()) })
 }
@@ -126,7 +127,7 @@ func requireNotFound(t harnessT, what string, found bool, err error) {
 	}
 }
 
-func seedUser(t harnessT, s identity.TenantScopedStore, id, tenantID, email string) {
+func seedUser(t harnessT, s identity.Store, id, tenantID, email string) {
 	t.Helper()
 	err := s.CreateUser(context.Background(), identity.NewUser{
 		ID: id, TenantID: tenantID, Email: email, PasswordHash: "x", CreatedAt: fixedTime,
@@ -142,7 +143,7 @@ func seedUser(t harnessT, s identity.TenantScopedStore, id, tenantID, email stri
 	}
 }
 
-func userByEmailInTenant(t harnessT, s identity.TenantScopedStore) {
+func userByEmailInTenant(t harnessT, s identity.Store) {
 	t.Helper()
 	ctx := context.Background()
 	const shared = "bob@example.com"
@@ -153,25 +154,25 @@ func userByEmailInTenant(t harnessT, s identity.TenantScopedStore) {
 	// An address that exists ONLY in B, for the cross-tenant probe.
 	seedUser(t, s, "b-only", tenantB, "onlyinb@example.com")
 
-	got, err := s.UserByEmailInTenant(ctx, tenantA, shared)
+	got, err := s.UserByEmail(ctx, tenant.New(tenantA), shared)
 	if err != nil {
 		t.Errorf("tenant A cannot see its OWN user by email: %v", err)
 	} else if got.ID != "a-bob" {
 		t.Errorf("tenant A resolved %q for %s, want %q — the shared email crossed tenants",
 			got.ID, shared, "a-bob")
 	}
-	got, err = s.UserByEmailInTenant(ctx, tenantB, shared)
+	got, err = s.UserByEmail(ctx, tenant.New(tenantB), shared)
 	if err != nil {
 		t.Errorf("tenant B cannot see its OWN user by email: %v", err)
 	} else if got.ID != "b-bob" {
 		t.Errorf("tenant B resolved %q for %s, want %q", got.ID, shared, "b-bob")
 	}
 
-	leaked, err := s.UserByEmailInTenant(ctx, tenantA, "onlyinb@example.com")
-	requireNotFound(t, "UserByEmailInTenant(A, an email only tenant B has)", leaked.ID != "", err)
+	leaked, err := s.UserByEmail(ctx, tenant.New(tenantA), "onlyinb@example.com")
+	requireNotFound(t, "UserByEmail(A, an email only tenant B has)", leaked.ID != "", err)
 }
 
-func identityByProviderSubjectInTenant(t harnessT, s identity.TenantScopedStore) {
+func identityByProviderSubjectInTenant(t harnessT, s identity.Store) {
 	t.Helper()
 	ctx := context.Background()
 	const provider, subject = "google", "sub-shared"
@@ -195,18 +196,18 @@ func identityByProviderSubjectInTenant(t harnessT, s identity.TenantScopedStore)
 		}
 	}
 
-	got, err := s.IdentityByProviderSubjectInTenant(ctx, tenantA, provider, subject)
+	got, err := s.IdentityByProviderSubject(ctx, tenant.New(tenantA), provider, subject)
 	if err != nil {
 		t.Errorf("tenant A cannot see its OWN identity: %v", err)
 	} else if got.ID != "a-ident" {
 		t.Errorf("tenant A resolved %q, want %q — the shared (provider, subject) crossed tenants", got.ID, "a-ident")
 	}
 
-	leaked, err := s.IdentityByProviderSubjectInTenant(ctx, tenantA, provider, "sub-only-b")
-	requireNotFound(t, "IdentityByProviderSubjectInTenant(A, a subject only tenant B has)", leaked.ID != "", err)
+	leaked, err := s.IdentityByProviderSubject(ctx, tenant.New(tenantA), provider, "sub-only-b")
+	requireNotFound(t, "IdentityByProviderSubject(A, a subject only tenant B has)", leaked.ID != "", err)
 }
 
-func countUsersInTenant(t harnessT, s identity.TenantScopedStore) {
+func countUsersInTenant(t harnessT, s identity.Store) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -216,32 +217,32 @@ func countUsersInTenant(t harnessT, s identity.TenantScopedStore) {
 	seedUser(t, s, "b-2", tenantB, "b2@example.com")
 	seedUser(t, s, "b-3", tenantB, "b3@example.com")
 
-	if n, err := s.CountUsersInTenant(ctx, tenantA); err != nil {
-		t.Errorf("CountUsersInTenant(A): %v", err)
+	if n, err := s.CountUsers(ctx, tenant.New(tenantA)); err != nil {
+		t.Errorf("CountUsers(A): %v", err)
 	} else if n != 2 {
-		t.Errorf("CountUsersInTenant(A) = %d, want 2 — the count includes another tenant's users. "+
+		t.Errorf("CountUsers(A) = %d, want 2 — the count includes another tenant's users. "+
 			"This drives the firstUser bootstrap signal, so a global count means tenant B's first "+
 			"admin silently gets firstUser=false and no permissions (blocker B2)", n)
 	}
-	if n, err := s.CountUsersInTenant(ctx, tenantB); err != nil {
-		t.Errorf("CountUsersInTenant(B): %v", err)
+	if n, err := s.CountUsers(ctx, tenant.New(tenantB)); err != nil {
+		t.Errorf("CountUsers(B): %v", err)
 	} else if n != 3 {
-		t.Errorf("CountUsersInTenant(B) = %d, want 3", n)
+		t.Errorf("CountUsers(B) = %d, want 3", n)
 	}
 
 	// An unknown tenant is empty, not everything. A count is not a
 	// lookup, so there is no row to withhold — but answering "all users"
 	// for a tenant that does not exist is the wildcard reading that
 	// deny-by-default forbids (sketch §6.2).
-	if n, err := s.CountUsersInTenant(ctx, "tenanttest-nonexistent"); err != nil {
-		t.Errorf("CountUsersInTenant(unknown tenant): %v", err)
+	if n, err := s.CountUsers(ctx, tenant.New("tenanttest-nonexistent")); err != nil {
+		t.Errorf("CountUsers(unknown tenant): %v", err)
 	} else if n != 0 {
-		t.Errorf("CountUsersInTenant(unknown tenant) = %d, want 0 — an unknown tenant "+
+		t.Errorf("CountUsers(unknown tenant) = %d, want 0 — an unknown tenant "+
 			"resolved to every tenant's users", n)
 	}
 }
 
-func refreshSessionByHash(t harnessT, s identity.TenantScopedStore) {
+func refreshSessionByHash(t harnessT, s identity.Store) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -270,7 +271,7 @@ func refreshSessionByHash(t harnessT, s identity.TenantScopedStore) {
 	}
 }
 
-func revokeAllRefreshSessionsForTenant(t harnessT, s identity.TenantScopedStore) {
+func revokeAllRefreshSessionsForTenant(t harnessT, s identity.Store) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -285,7 +286,7 @@ func revokeAllRefreshSessionsForTenant(t harnessT, s identity.TenantScopedStore)
 		}
 	}
 
-	if err := s.RevokeAllRefreshSessionsForTenant(ctx, tenantA, fixedTime.Add(time.Minute)); err != nil {
+	if err := s.RevokeAllRefreshSessionsForTenant(ctx, tenant.New(tenantA), fixedTime.Add(time.Minute)); err != nil {
 		t.Fatalf("RevokeAllRefreshSessionsForTenant(A): %v", err)
 	}
 
@@ -294,7 +295,7 @@ func revokeAllRefreshSessionsForTenant(t harnessT, s identity.TenantScopedStore)
 		t.Fatalf("re-reading tenant A's session: %v", err)
 	}
 	if !a.Revoked() {
-		t.Errorf("tenant A's session survived RevokeAllRefreshSessionsForTenant(A) — the revoke "+
+		t.Errorf("tenant A's session survived RevokeAllRefreshSessionsForTenant(A) — the revoke " +
 			"did not reach its own tenant")
 	}
 

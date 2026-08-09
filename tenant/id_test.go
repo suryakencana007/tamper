@@ -97,3 +97,22 @@ func TestID_IsComparableForMapKeys(t *testing.T) {
 		t.Fatal("the zero ID collided with a real key")
 	}
 }
+
+// TestID_FromStoredTreatsEmptyAsSingle pins the deliberate asymmetry with
+// New. A value coming back out of storage was written by a call that already
+// passed the gate, so its emptiness is recorded rather than missing.
+func TestID_FromStoredTreatsEmptyAsSingle(t *testing.T) {
+	t.Parallel()
+
+	if got := tenant.FromStored(""); got != tenant.Single {
+		t.Fatalf(`FromStored("") = %#v, want Single — a persisted row's tenant must round-trip`, got)
+	}
+	if got := tenant.FromStored("acme"); got != tenant.New("acme") {
+		t.Fatal("FromStored must round-trip a named tenant")
+	}
+	// The asymmetry is the point: the same "" means different things
+	// depending on where it came from, and the two conversions say which.
+	if tenant.New("") == tenant.FromStored("") {
+		t.Fatal(`New("") and FromStored("") agree; untrusted empty would launder into Single`)
+	}
+}

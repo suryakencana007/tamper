@@ -32,6 +32,7 @@ import (
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/oidc"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // demoKEKHex is an insecure, all-zeros-but-one 32-byte KEK (64 hex chars) used
@@ -212,10 +213,10 @@ func projectUser(_ context.Context, u *identity.User) json.RawMessage {
 func federationLoginHook(core *identity.Core, project func(context.Context, *identity.User) json.RawMessage) func(context.Context, *oidc.Provider, tamperespresso.OIDCVerified) (tamperespresso.FederationOutcome, error) {
 	return func(ctx context.Context, p *oidc.Provider, v tamperespresso.OIDCVerified) (tamperespresso.FederationOutcome, error) {
 		providerID := p.Config.ID // the RESOLVED provider tamper hands in
-		subject := v.Claims.Sub    // the verified id_token subject
+		subject := v.Claims.Sub   // the verified id_token subject
 
 		// Repeat sign-in: resolve the existing (provider, subject) identity.
-		user, _, found, err := core.ResolveByIdentity(ctx, providerID, subject)
+		user, _, found, err := core.ResolveByIdentity(ctx, tenant.Single, providerID, subject)
 		if err != nil {
 			return tamperespresso.FederationOutcome{}, mapFederationError(err)
 		}
@@ -225,7 +226,7 @@ func federationLoginHook(core *identity.Core, project func(context.Context, *ide
 			if nerr != nil {
 				return tamperespresso.FederationOutcome{}, mapFederationError(nerr)
 			}
-			user, _, err = core.ProvisionUserWithIdentity(ctx, email, providerID, subject)
+			user, _, err = core.ProvisionUserWithIdentity(ctx, tenant.Single, email, providerID, subject)
 			if err != nil {
 				return tamperespresso.FederationOutcome{}, mapFederationError(err)
 			}
@@ -243,7 +244,7 @@ func federationLoginHook(core *identity.Core, project func(context.Context, *ide
 			Tokens:   tokens,
 			User:     project(ctx, &user),
 			Redirect: v.State.RedirectAfterLogin, // already sanitized at Start; trusted verbatim
-			Linked:   false,                       // login leg (not link)
+			Linked:   false,                      // login leg (not link)
 		}, nil
 	}
 }

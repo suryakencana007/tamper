@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/suryakencana007/tamper/tenant"
 	"time"
 )
 
@@ -164,14 +165,6 @@ func ActorFromContext(ctx context.Context) Actor {
 	return Actor{Type: ActorTypeUser}
 }
 
-// ActorService constructs an Actor for a service-account-driven
-// request. Used by RequireServiceAccount. The SA's human-readable
-// name lands in Name (v1.1 — TD-AUDIT-03); Email stays empty (SAs
-// don't have email addresses).
-func ActorService(saID, saName string) Actor {
-	return ActorServiceInTenant(saID, saName, "")
-}
-
 // ActorServiceInTenant is ActorService for a pooled deployment: the same
 // actor, plus the tenant the service account was acting in.
 //
@@ -179,8 +172,8 @@ func ActorService(saID, saName string) Actor {
 // service account's id, Name still its human-readable name. The tenant
 // is additional context, not a redefinition, so an emitter that ignores
 // it produces the row it always did.
-func ActorServiceInTenant(saID, saName, tenantID string) Actor {
-	return Actor{Type: ActorTypeServiceAccount, UserID: saID, Name: saName, TenantID: tenantID}
+func ActorService(saID, saName string, tenantID tenant.ID) Actor {
+	return Actor{Type: ActorTypeServiceAccount, UserID: saID, Name: saName, TenantID: tenantID.String()}
 }
 
 // clusterIDCaptureKey is the context key used by WithClusterIDCapture

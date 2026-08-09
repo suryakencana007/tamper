@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Slice 7k-1 — rate limiting on the credential surfaces.
@@ -98,11 +99,11 @@ func WithThrottling(t Throttling) Option {
 // endpoint would answer a question the collapsed ErrInvalidCredentials
 // spends effort refusing to answer. The key is composed from the ARGUMENT
 // the caller supplied, which is attacker-known by definition.
-func (c *Core) allowLogin(ctx context.Context, tenantID, email string) (time.Duration, bool) {
+func (c *Core) allowLogin(ctx context.Context, tenantID tenant.ID, email string) (time.Duration, bool) {
 	if c.throttling.Throttle == nil {
 		return 0, true
 	}
-	ok, retryAfter := c.throttling.Throttle.Allow(ctx, c.throttling.LoginKey(tenantID, email))
+	ok, retryAfter := c.throttling.Throttle.Allow(ctx, c.throttling.LoginKey(tenantID.String(), email))
 	if ok {
 		return 0, true
 	}

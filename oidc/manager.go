@@ -11,6 +11,7 @@ import (
 	coreoidc "github.com/coreos/go-oidc/v3/oidc"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // ErrNoKeySet surfaces from Manager mutations that need to seal or
@@ -99,7 +100,7 @@ type Manager struct {
 	// tenant onto the uncached path. Eviction means junk ages out as real
 	// traffic flows. A pinned registry carries a far-future timestamp and
 	// is therefore evicted last, so the test seam survives pressure.
-	registries map[string]*cachedRegistry
+	registries map[tenant.ID]*cachedRegistry
 	// ttl bounds how long the cached registry stays fresh before the
 	// next GetRegistry rebuilds from the store. Zero means "rebuild
 	// on every call" — useful for testing, prohibitively expensive in
@@ -168,7 +169,7 @@ func NewManager(store ProviderStore, keys *crypto.KeySet, opts ...ManagerOption)
 	m := &Manager{
 		store:                store,
 		keys:                 keys,
-		registries:           make(map[string]*cachedRegistry),
+		registries:           make(map[tenant.ID]*cachedRegistry),
 		now:                  time.Now,
 		newDiscoveryProvider: coreoidc.NewProvider,
 	}
@@ -198,20 +199,9 @@ func (m *Manager) SetDiscovery(fn func(ctx context.Context, issuerURL string) (*
 	}
 }
 
-// PinRegistry installs a pre-built registry that stays cached until
-// the next mutation, regardless of ttl — the cachedAt timestamp is
-// set to a far-future sentinel the freshness check recognises.
-// Passing nil clears the cache. Test-seam only: it lets handler-level
-// tests exercise the federated-auth surface without store rows or
-// discovery round-trips. Production code only ever writes time.Now()
-// into cachedAt, so the sentinel can't collide.
-func (m *Manager) PinRegistry(reg *ProviderRegistry) {
-	m.PinRegistryForTenant("", reg)
-}
-
-// PinRegistryForTenant is PinRegistry for one tenant's key, so a pooled
+// PinRegistry is PinRegistry for one tenant's key, so a pooled
 // deployment's handler tests can pin each tenant independently.
-func (m *Manager) PinRegistryForTenant(tenantID string, reg *ProviderRegistry) {
+func (m *Manager) PinRegistry(tenantID tenant.ID, reg *ProviderRegistry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if reg == nil {
@@ -349,24 +339,7 @@ func (m *Manager) TestDiscovery(ctx context.Context, issuerURL string) (*Discove
 	}, nil
 }
 
-// GetRegistry returns the cached live registry, rebuilding from the
-// store on a cache miss OR when the cached value is older than ttl.
-// Thread-safe via double-checked locking — the read-side fast path
-// takes only RLock; the slow path takes Lock and re-checks the
-// freshness predicate so concurrent stampedes serialise into a
-// single store read.
-//
-// The freshness check keys on cachedAt (not registry != nil) so a
-// genuinely empty store caches the nil sentinel for ttl just like a
-// populated registry does — that symmetry is what makes multi-replica
-// convergence predictable in both directions.
-//
-// Returns (nil, nil) when no enabled providers exist.
-func (m *Manager) GetRegistry(ctx context.Context) (*ProviderRegistry, error) {
-	return m.GetRegistryForTenant(ctx, "")
-}
-
-// GetRegistryForTenant is GetRegistry scoped to one tenant: the cached
+// GetRegistry is GetRegistry scoped to one tenant: the cached
 // live registry for tenantID, rebuilt from the store on a miss or once
 // the entry is older than ttl.
 //
@@ -390,7 +363,7 @@ func (m *Manager) GetRegistry(ctx context.Context) (*ProviderRegistry, error) {
 // the second line for a Manager constructed directly.
 //
 // Returns (nil, nil) when the tenant has no enabled providers.
-func (m *Manager) GetRegistryForTenant(ctx context.Context, tenantID string) (*ProviderRegistry, error) {
+func (m *Manager) GetRegistry(ctx context.Context, tenantID tenant.ID) (*ProviderRegistry, error) {
 	m.mu.RLock()
 	entry := m.registries[tenantID]
 	m.mu.RUnlock()
@@ -406,19 +379,10 @@ func (m *Manager) GetRegistryForTenant(ctx context.Context, tenantID string) (*P
 	return m.rebuildLocked(ctx, tenantID)
 }
 
-// Reload clears the cache + eagerly rebuilds from the store. Called
-// by admin CRUD handlers after each write so same-process federated
-// flows see the change immediately; the eager rebuild fronts the
-// discovery cost on the operator's request instead of serialising
-// user logins behind it.
-func (m *Manager) Reload(ctx context.Context) error {
-	return m.ReloadForTenant(ctx, "")
-}
-
-// ReloadForTenant is Reload for one tenant's key. It touches no other
+// Reload is Reload for one tenant's key. It touches no other
 // tenant's entry: an admin editing acme's IdP must not cost globex a
 // discovery round-trip on its next login.
-func (m *Manager) ReloadForTenant(ctx context.Context, tenantID string) error {
+func (m *Manager) Reload(ctx context.Context, tenantID tenant.ID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.registries, tenantID)
@@ -493,7 +457,7 @@ const pinnedCacheTimestampYear = 9999
 // mu.Lock. Opens each enabled record's secret, maps the app-supplied
 // redirect URL, and builds with partialOK=true so a single
 // unreachable IdP logs + is omitted instead of failing the tick.
-func (m *Manager) rebuildLocked(ctx context.Context, tenantID string) (*ProviderRegistry, error) {
+func (m *Manager) rebuildLocked(ctx context.Context, tenantID tenant.ID) (*ProviderRegistry, error) {
 	recs, err := m.listEnabled(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -522,7 +486,7 @@ func (m *Manager) rebuildLocked(ctx context.Context, tenantID string) (*Provider
 			IssuerURL:    def.IssuerURL,
 			ClientID:     def.ClientID,
 			ClientSecret: def.ClientSecret,
-			RedirectURL:  m.redirectFor(tenantID, def.ID),
+			RedirectURL:  m.redirectFor(tenantID.String(), def.ID),
 			DisplayName:  def.DisplayName,
 			Scopes:       def.Scopes,
 			GroupsClaim:  def.GroupsClaim,
@@ -537,27 +501,15 @@ func (m *Manager) rebuildLocked(ctx context.Context, tenantID string) (*Provider
 }
 
 // listEnabled reads the tenant's enabled providers. The untenanted key
-// uses the original call, unchanged, so the single-tenant path is
-// byte-identical. A named tenant REQUIRES the scoped store: falling back
-// to ListEnabledProviders would hand one tenant every tenant's IdPs,
-// which is the leak this slice exists to prevent.
-func (m *Manager) listEnabled(ctx context.Context, tenantID string) ([]ProviderRecord, error) {
-	if tenantID == "" {
-		recs, err := m.store.ListEnabledProviders(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("oidc: list enabled providers: %w", err)
-		}
-		return recs, nil
-	}
-	scoped, ok := m.store.(TenantScopedProviderStore)
-	if !ok {
-		return nil, fmt.Errorf(
-			"oidc: tenant-scoped registry requires a ProviderStore implementing "+
-				"oidc.TenantScopedProviderStore; %T does not", m.store)
-	}
-	recs, err := scoped.ListEnabledProvidersForTenant(ctx, tenantID)
+// There is one call now. Before v0.4.0 this branched: an empty tenant
+// took the unscoped store call and a named tenant required the optional
+// scoped upgrade. Folding the interfaces removed the branch, and with it
+// the possibility of the unscoped call ever running for a named tenant —
+// which was the leak the branch existed to prevent.
+func (m *Manager) listEnabled(ctx context.Context, tenantID tenant.ID) ([]ProviderRecord, error) {
+	recs, err := m.store.ListEnabledProviders(ctx, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("oidc: list enabled providers for tenant: %w", err)
+		return nil, fmt.Errorf("oidc: list enabled providers: %w", err)
 	}
 	return recs, nil
 }
@@ -578,9 +530,9 @@ func (m *Manager) redirectFor(tenantID, providerID string) string {
 // Eviction is least-recently-rebuilt. It only runs when inserting a NEW
 // key at the cap, so a steady-state deployment never evicts, and a
 // pinned registry's far-future timestamp puts it last in line.
-func (m *Manager) storeLocked(tenantID string, reg *ProviderRegistry) {
+func (m *Manager) storeLocked(tenantID tenant.ID, reg *ProviderRegistry) {
 	if _, exists := m.registries[tenantID]; !exists && len(m.registries) >= maxCachedTenants {
-		var oldestKey string
+		var oldestKey tenant.ID
 		var oldest time.Time
 		for k, e := range m.registries {
 			if oldest.IsZero() || e.cachedAt.Before(oldest) {
@@ -597,11 +549,11 @@ func (m *Manager) storeLocked(tenantID string, reg *ProviderRegistry) {
 // operations carry no tenant — they are the single-tenant CRUD surface
 // and they invalidate the single-tenant key.
 func (m *Manager) invalidateCache() {
-	m.InvalidateTenant("")
+	m.InvalidateTenant(tenant.Single)
 }
 
 // InvalidateTenant drops one tenant's cached registry so its next
-// GetRegistryForTenant rebuilds from the store. ONE key: another
+// GetRegistry rebuilds from the store. ONE key: another
 // tenant's cache is never touched, because an admin editing acme's
 // providers is not a reason to make globex pay for a rebuild — and in a
 // pooled deployment that cost is paid by a customer who did nothing.
@@ -610,7 +562,7 @@ func (m *Manager) invalidateCache() {
 // It is the seam that exists because tamper names no tenant column:
 // Create/Update/Delete take a provider id and cannot know which tenant a
 // row belongs to, so the application — which owns that column — says so.
-func (m *Manager) InvalidateTenant(tenantID string) {
+func (m *Manager) InvalidateTenant(tenantID tenant.ID) {
 	m.mu.Lock()
 	delete(m.registries, tenantID)
 	m.mu.Unlock()

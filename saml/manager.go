@@ -12,6 +12,7 @@ import (
 	crewjamsaml "github.com/crewjam/saml"
 
 	tampercrypto "github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // ErrNoKeySet surfaces from Manager mutations that need to seal or
@@ -106,7 +107,7 @@ type Manager struct {
 	// maxCachedTenants an insert evicts the least-recently-rebuilt entry.
 	// Refusing to cache past the cap would let an attacker fill it with
 	// junk and force every real tenant onto the uncached path.
-	registries map[string]*cachedRegistry
+	registries map[tenant.ID]*cachedRegistry
 	ttl        time.Duration
 
 	now func() time.Time
@@ -201,7 +202,7 @@ func NewManager(store ProviderStore, keys *tampercrypto.KeySet, opts ...ManagerO
 		store:      store,
 		keys:       keys,
 		fetcher:    DefaultMetadataFetcher,
-		registries: make(map[string]*cachedRegistry),
+		registries: make(map[tenant.ID]*cachedRegistry),
 		now:        time.Now,
 	}
 	for _, o := range opts {
@@ -231,16 +232,9 @@ func (m *Manager) SetMetadataFetcher(fn MetadataFetcher) {
 	}
 }
 
-// PinRegistry installs a pre-built registry that stays cached until
-// the next mutation regardless of ttl (Year-9999 cachedAt sentinel).
-// Passing nil clears the cache. Test-seam only.
-func (m *Manager) PinRegistry(reg *ProviderRegistry) {
-	m.PinRegistryForTenant("", reg)
-}
-
-// PinRegistryForTenant is PinRegistry for one tenant's key. Mirrors
-// oidc.Manager.PinRegistryForTenant.
-func (m *Manager) PinRegistryForTenant(tenantID string, reg *ProviderRegistry) {
+// PinRegistry is PinRegistry for one tenant's key. Mirrors
+// oidc.Manager.PinRegistry.
+func (m *Manager) PinRegistry(tenantID tenant.ID, reg *ProviderRegistry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if reg == nil {
@@ -382,21 +376,13 @@ func (m *Manager) TestMetadata(ctx context.Context, idpMetadataURL string) (*Met
 	return res, nil
 }
 
-// GetRegistry returns the cached live registry, rebuilding from the
-// store on a cache miss or TTL expiry. Same caching contract as the
-// OIDC Manager. Returns (nil, nil) when no usable enabled providers
-// exist.
-func (m *Manager) GetRegistry(ctx context.Context) (*ProviderRegistry, error) {
-	return m.GetRegistryForTenant(ctx, "")
-}
-
-// GetRegistryForTenant is GetRegistry scoped to one tenant. Mirrors
-// oidc.Manager.GetRegistryForTenant exactly: same double-checked
+// GetRegistry is GetRegistry scoped to one tenant. Mirrors
+// oidc.Manager.GetRegistry exactly: same double-checked
 // locking, same per-key nil-sentinel symmetry, same fail-closed on a
 // store that cannot scope.
 //
 // Returns (nil, nil) when the tenant has no usable enabled providers.
-func (m *Manager) GetRegistryForTenant(ctx context.Context, tenantID string) (*ProviderRegistry, error) {
+func (m *Manager) GetRegistry(ctx context.Context, tenantID tenant.ID) (*ProviderRegistry, error) {
 	m.mu.RLock()
 	entry := m.registries[tenantID]
 	m.mu.RUnlock()
@@ -411,14 +397,9 @@ func (m *Manager) GetRegistryForTenant(ctx context.Context, tenantID string) (*P
 	return m.rebuildLocked(ctx, tenantID)
 }
 
-// Reload clears the cache + eagerly rebuilds from the store.
-func (m *Manager) Reload(ctx context.Context) error {
-	return m.ReloadForTenant(ctx, "")
-}
-
-// ReloadForTenant is Reload for one tenant's key, touching no other
-// tenant's entry. Mirrors oidc.Manager.ReloadForTenant.
-func (m *Manager) ReloadForTenant(ctx context.Context, tenantID string) error {
+// Reload is Reload for one tenant's key, touching no other
+// tenant's entry. Mirrors oidc.Manager.Reload.
+func (m *Manager) Reload(ctx context.Context, tenantID tenant.ID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.registries, tenantID)
@@ -481,7 +462,7 @@ func (m *Manager) cacheFresh(cachedAt time.Time) bool {
 // PEM material (a bad cert/key logs + omits that provider — one
 // mis-provisioned IdP must not take the rest down), and builds the
 // registry with partialOK=true. Caller MUST hold mu.Lock.
-func (m *Manager) rebuildLocked(ctx context.Context, tenantID string) (*ProviderRegistry, error) {
+func (m *Manager) rebuildLocked(ctx context.Context, tenantID tenant.ID) (*ProviderRegistry, error) {
 	recs, err := m.listEnabled(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -533,7 +514,7 @@ func (m *Manager) rebuildLocked(ctx context.Context, tenantID string) (*Provider
 			IdPMetadataURL:         def.IdPMetadataURL,
 			EntityID:               def.EntityID,
 			ACSURL:                 def.ACSURL,
-			MetadataURL:            m.spMetadataFor(tenantID, def.ID, def.ACSURL),
+			MetadataURL:            m.spMetadataFor(tenantID.String(), def.ID, def.ACSURL),
 			SPCert:                 cert,
 			SPKey:                  signer,
 			DisplayName:            def.DisplayName,
@@ -564,23 +545,10 @@ func (m *Manager) rebuildLocked(ctx context.Context, tenantID string) (*Provider
 // uses the original call, unchanged. A named tenant REQUIRES the scoped
 // store; falling back to ListEnabledProviders would hand one tenant
 // every tenant's IdPs. Mirrors oidc.Manager.listEnabled.
-func (m *Manager) listEnabled(ctx context.Context, tenantID string) ([]ProviderRecord, error) {
-	if tenantID == "" {
-		recs, err := m.store.ListEnabledProviders(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("saml: list enabled providers: %w", err)
-		}
-		return recs, nil
-	}
-	scoped, ok := m.store.(TenantScopedProviderStore)
-	if !ok {
-		return nil, fmt.Errorf(
-			"saml: tenant-scoped registry requires a ProviderStore implementing "+
-				"saml.TenantScopedProviderStore; %T does not", m.store)
-	}
-	recs, err := scoped.ListEnabledProvidersForTenant(ctx, tenantID)
+func (m *Manager) listEnabled(ctx context.Context, tenantID tenant.ID) ([]ProviderRecord, error) {
+	recs, err := m.store.ListEnabledProviders(ctx, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("saml: list enabled providers for tenant: %w", err)
+		return nil, fmt.Errorf("saml: list enabled providers: %w", err)
 	}
 	return recs, nil
 }
@@ -597,9 +565,9 @@ func (m *Manager) spMetadataFor(tenantID, providerID, acsURL string) string {
 
 // storeLocked caches one tenant's result and enforces the map bound.
 // Caller MUST hold mu.Lock. Mirrors oidc.Manager.storeLocked.
-func (m *Manager) storeLocked(tenantID string, reg *ProviderRegistry) {
+func (m *Manager) storeLocked(tenantID tenant.ID, reg *ProviderRegistry) {
 	if _, exists := m.registries[tenantID]; !exists && len(m.registries) >= maxCachedTenants {
-		var oldestKey string
+		var oldestKey tenant.ID
 		var oldest time.Time
 		for k, e := range m.registries {
 			if oldest.IsZero() || e.cachedAt.Before(oldest) {
@@ -614,7 +582,7 @@ func (m *Manager) storeLocked(tenantID string, reg *ProviderRegistry) {
 // invalidateCache clears the untenanted entry. Called by
 // Create/Update/Delete, whose store operations carry no tenant.
 func (m *Manager) invalidateCache() {
-	m.InvalidateTenant("")
+	m.InvalidateTenant(tenant.Single)
 }
 
 // InvalidateTenant drops one tenant's cached registry. ONE key: another
@@ -622,7 +590,7 @@ func (m *Manager) invalidateCache() {
 // and exists for the same reason — tamper names no tenant column, so
 // Create/Update/Delete cannot know which tenant a provider row belongs
 // to and the application says so.
-func (m *Manager) InvalidateTenant(tenantID string) {
+func (m *Manager) InvalidateTenant(tenantID tenant.ID) {
 	m.mu.Lock()
 	delete(m.registries, tenantID)
 	m.mu.Unlock()

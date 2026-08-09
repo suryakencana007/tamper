@@ -213,7 +213,7 @@ func (c Capability) allowed(e tenant.Entitlements) bool {
 
 // TenantFromRoutedContext resolves the tenant RequireTenant pinned.
 // The resolver to use on authenticated routes behind that gate.
-func TenantFromRoutedContext(r *http.Request) (string, bool) {
+func TenantFromRoutedContext(r *http.Request) (tenant.ID, bool) {
 	return TenantFromContext(r.Context())
 }
 

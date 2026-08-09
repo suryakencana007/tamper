@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // MemStore is an in-memory Store — the reference implementation and
@@ -32,9 +34,8 @@ type MemStore struct {
 }
 
 var (
-	_ Store             = (*MemStore)(nil)
-	_ TenantScopedStore = (*MemStore)(nil)
-	_ InvitationStore   = (*MemStore)(nil)
+	_ Store           = (*MemStore)(nil)
+	_ InvitationStore = (*MemStore)(nil)
 )
 
 // tenantKey composes a per-tenant index key. NUL cannot appear in an
@@ -106,33 +107,14 @@ func (m *MemStore) UserByID(_ context.Context, id string) (User, error) {
 	return u, nil
 }
 
-// UserByEmail implements Store — the single-tenant lookup, which is the
-// (tenant "", email) key.
-func (m *MemStore) UserByEmail(_ context.Context, email string) (User, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	id, ok := m.emailToID[tenantKey("", email)]
-	if !ok {
-		return User{}, fmt.Errorf("%w: email %s", ErrNotFound, email)
-	}
-	return m.usersByID[id], nil
-}
-
-// CountUsers implements Store.
-func (m *MemStore) CountUsers(_ context.Context) (int64, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return int64(len(m.usersByID)), nil
-}
-
 // --- TenantScopedStore (Phase 7). The isolation contract is on the
 // interface; these are the reference implementation of it. ---
 
-// UserByEmailInTenant implements TenantScopedStore.
-func (m *MemStore) UserByEmailInTenant(_ context.Context, tenantID, email string) (User, error) {
+// UserByEmail implements Store.
+func (m *MemStore) UserByEmail(_ context.Context, tenantID tenant.ID, email string) (User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	id, ok := m.emailToID[tenantKey(tenantID, email)]
+	id, ok := m.emailToID[tenantKey(tenantID.String(), email)]
 	if !ok {
 		// ErrNotFound, never a permission error: a miss and a
 		// wrong-tenant hit must be indistinguishable (§6.3).
@@ -141,39 +123,39 @@ func (m *MemStore) UserByEmailInTenant(_ context.Context, tenantID, email string
 	return m.usersByID[id], nil
 }
 
-// IdentityByProviderSubjectInTenant implements TenantScopedStore.
-func (m *MemStore) IdentityByProviderSubjectInTenant(_ context.Context, tenantID, provider, subject string) (Identity, error) {
+// IdentityByProviderSubject implements Store.
+func (m *MemStore) IdentityByProviderSubject(_ context.Context, tenantID tenant.ID, provider, subject string) (Identity, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, id := range m.identities {
-		if id.TenantID == tenantID && id.Provider == provider && id.Subject == subject {
+		if id.TenantID == tenantID.String() && id.Provider == provider && id.Subject == subject {
 			return id, nil
 		}
 	}
 	return Identity{}, fmt.Errorf("%w: identity %s/%s", ErrNotFound, provider, subject)
 }
 
-// CountUsersInTenant implements TenantScopedStore. This is the count the
+// CountUsers implements Store. This is the count the
 // firstUser bootstrap signal reads, so it must exclude other tenants or
 // tenant #2's first admin silently gets firstUser=false (blocker B2).
-func (m *MemStore) CountUsersInTenant(_ context.Context, tenantID string) (int64, error) {
+func (m *MemStore) CountUsers(_ context.Context, tenantID tenant.ID) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var n int64
 	for _, u := range m.usersByID {
-		if u.TenantID == tenantID {
+		if u.TenantID == tenantID.String() {
 			n++
 		}
 	}
 	return n, nil
 }
 
-// RevokeAllRefreshSessionsForTenant implements TenantScopedStore.
-func (m *MemStore) RevokeAllRefreshSessionsForTenant(_ context.Context, tenantID string, at time.Time) error {
+// RevokeAllRefreshSessionsForTenant implements Store.
+func (m *MemStore) RevokeAllRefreshSessionsForTenant(_ context.Context, tenantID tenant.ID, at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, s := range m.sessions {
-		if s.TenantID == tenantID && !s.Revoked() {
+		if s.TenantID == tenantID.String() && !s.Revoked() {
 			s.RevokedAt = at
 			m.sessions[id] = s
 		}
@@ -292,18 +274,6 @@ func (m *MemStore) ClearTOTP(_ context.Context, userID string) error {
 }
 
 // --- identity linking (Phase 2d) ---
-
-// IdentityByProviderSubject implements Store.
-func (m *MemStore) IdentityByProviderSubject(_ context.Context, provider, subject string) (Identity, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, id := range m.identities {
-		if id.Provider == provider && id.Subject == subject {
-			return id, nil
-		}
-	}
-	return Identity{}, fmt.Errorf("%w: identity %s/%s", ErrNotFound, provider, subject)
-}
 
 // IdentityByID implements Store.
 func (m *MemStore) IdentityByID(_ context.Context, id string) (Identity, error) {

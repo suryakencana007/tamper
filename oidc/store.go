@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // ErrProviderNotFound surfaces from ProviderStore reads when no row
@@ -48,7 +50,14 @@ type ProviderStore interface {
 	// ListProviders returns every record, enabled or not.
 	ListProviders(ctx context.Context) ([]ProviderRecord, error)
 	// ListEnabledProviders returns only records with Enabled=true.
-	ListEnabledProviders(ctx context.Context) ([]ProviderRecord, error)
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. tenant.Single selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ListEnabledProviders(ctx context.Context, tenantID tenant.ID) ([]ProviderRecord, error)
 	// UpdateProvider rewrites every mutable column of the record with
 	// rec.ID. ErrProviderNotFound when no row matches.
 	UpdateProvider(ctx context.Context, rec ProviderRecord) error
@@ -59,40 +68,7 @@ type ProviderStore interface {
 	DeleteProvider(ctx context.Context, id string) error
 }
 
-// TenantScopedProviderStore is the pooled-multi-tenancy upgrade of
-// ProviderStore: the same surface, plus the one read the live registry
-// must constrain to a tenant. A store that also satisfies this interface
-// can back a deployment where each tenant federates with its own IdPs.
-//
-// It is an OPTIONAL interface, the same mechanism identity.Store uses.
-// Implementing it is additive: existing ProviderStores keep compiling
-// and keep their behavior, and a "" tenantID selects exactly the
-// single-tenant shape they already have.
-//
-// Note what is NOT here: no tenant column on ProviderRecord, and no
-// tenant-scoped insert or update. tamper names no column. The tenant is
-// the application's, expressed as an argument to this one read; how a
-// row is filed under a tenant — a column, a schema, a separate database
-// — never enters the framework.
-//
-// Implementations MUST be safe for concurrent use.
-type TenantScopedProviderStore interface {
-	ProviderStore
-
-	// ListEnabledProvidersForTenant returns the tenant's enabled
-	// providers, sorted by display name ascending like its untenanted
-	// sibling.
-	//
-	// Isolation contract. The implementation MUST constrain the query to
-	// tenantID and MUST return ErrNotFound — never a permission error and
-	// never another tenant's row — when the addressed object belongs to a
-	// different tenant. A "" tenantID selects the single-tenant table
-	// shape. tamper cannot verify this; the cross-tenant leak suite
-	// (§3.3) is the proof obligation that comes with implementing this
-	// interface.
-	//
-	// A tenant with no enabled providers returns an empty slice and a nil
-	// error — NOT an error. The Manager caches that emptiness for the
-	// full TTL, exactly as it caches a populated result.
-	ListEnabledProvidersForTenant(ctx context.Context, tenantID string) ([]ProviderRecord, error)
-}
+// TenantScopedProviderStore was here — the optional upgrade that added
+// ListEnabledProvidersForTenant while the additive phase was open. v0.4.0
+// folded it into ProviderStore, so there is no second interface and no
+// boot-time assertion: a store that cannot scope by tenant fails to compile.

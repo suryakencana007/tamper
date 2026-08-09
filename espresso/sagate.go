@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // ErrInvalidCredential is the sentinel a ServiceAccountValidator
@@ -112,7 +113,7 @@ func RequireServiceAccount(v ServiceAccountValidator) func(http.Handler) http.Ha
 				return
 			}
 			ctx := context.WithValue(r.Context(), principalKey{}, principal)
-			ctx = audit.WithActor(ctx, audit.ActorServiceInTenant(principal.ID, principal.Name, principal.TenantID))
+			ctx = audit.WithActor(ctx, audit.ActorService(principal.ID, principal.Name, tenant.FromStored(principal.TenantID)))
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

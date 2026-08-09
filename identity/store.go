@@ -3,6 +3,8 @@ package identity
 import (
 	"context"
 	"time"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Store is the persistence port for the identity core. Applications
@@ -31,8 +33,47 @@ type Store interface {
 	CreateUser(ctx context.Context, u NewUser, firstUser bool) error
 
 	UserByID(ctx context.Context, id string) (User, error)
-	UserByEmail(ctx context.Context, email string) (User, error)
-	CountUsers(ctx context.Context) (int64, error)
+
+	// UserByEmail resolves an email WITHIN one tenant. This is the method
+	// that makes an email unique per tenant instead of globally, so two
+	// customers can both have bob@acme.com.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. tenant.Single selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	UserByEmail(ctx context.Context, tenantID tenant.ID, email string) (User, error)
+
+	// CountUsers counts the users in one tenant. It drives the firstUser
+	// bootstrap signal, so a global count here is blocker B2: it compiles,
+	// passes, ships, and surfaces months later as "the new customer's
+	// admin has no permissions".
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. tenant.Single selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	CountUsers(ctx context.Context, tenantID tenant.ID) (int64, error)
+
+	// RevokeAllRefreshSessionsForTenant marks every live session in one
+	// tenant revoked. Distinct from RevokeAllRefreshSessionsForUser: this
+	// is the tenant-wide surface (offboarding, breach response), not
+	// "sign out everywhere" for one person.
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. tenant.Single selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	RevokeAllRefreshSessionsForTenant(ctx context.Context, tenantID tenant.ID, at time.Time) error
 
 	CreateRefreshSession(ctx context.Context, s RefreshSession) error
 	RefreshSessionByHash(ctx context.Context, tokenHash string) (RefreshSession, error)
@@ -75,7 +116,15 @@ type Store interface {
 	// IdentityByProviderSubject returns the identity for an exact
 	// (provider, subject); ErrNotFound when unlinked — the JIT-vs-repeat
 	// decision signal.
-	IdentityByProviderSubject(ctx context.Context, provider, subject string) (Identity, error)
+	//
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. tenant.Single selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	IdentityByProviderSubject(ctx context.Context, tenantID tenant.ID, provider, subject string) (Identity, error)
 	// IdentityByID returns one identity by its own id; ErrNotFound when
 	// absent (feeds the unlink ownership check).
 	IdentityByID(ctx context.Context, id string) (Identity, error)
@@ -102,86 +151,11 @@ type Store interface {
 	ProvisionUserWithIdentity(ctx context.Context, u NewUser, ni NewIdentity, firstUser bool) (User, Identity, error)
 }
 
-// TenantScopedStore is the pooled-multi-tenancy upgrade of Store: the
-// same surface, plus the reads and the revoke that must be constrained
-// to one tenant. A Store that also satisfies this interface can back a
-// deployment serving many tenants from one process; one that does not
-// is single-tenant, and tamper fails at New rather than per request
-// (sketch §4.2).
-//
-// It is an OPTIONAL interface. Implementing it is additive — existing
-// Store implementations keep compiling and keep their behavior, and a
-// "" tenantID selects exactly the single-tenant shape they already
-// have.
-//
-// Declared here in slice 7a-2 so the conformance harness in
-// identity/tenanttest has a contract to be written against; 7b-2
-// implements it on MemStore, routes Core through it, and adds the boot
-// guard. Nothing in tamper implements it yet.
-//
-// Implementations MUST be safe for concurrent use.
-//
-// PROOF OBLIGATION: run tenanttest.RunLeakSuite against your
-// implementation. tamper cannot verify the isolation contract below —
-// the query lives in your adapter — so the suite is the instrument that
-// checks it, and it is not optional (sketch §3.3).
-type TenantScopedStore interface {
-	Store
-
-	// UserByEmailInTenant resolves an email WITHIN one tenant. This is
-	// the method that makes an email unique per tenant instead of
-	// globally, so two customers can both have bob@acme.com.
-	//
-	// Isolation contract. The implementation MUST constrain the query to
-	// tenantID and MUST return ErrNotFound — never a permission error and
-	// never another tenant's row — when the addressed object belongs to a
-	// different tenant. A "" tenantID selects the single-tenant table
-	// shape. tamper cannot verify this; the cross-tenant leak suite
-	// (§3.3) is the proof obligation that comes with implementing this
-	// interface.
-	UserByEmailInTenant(ctx context.Context, tenantID, email string) (User, error)
-
-	// IdentityByProviderSubjectInTenant resolves a (provider, subject)
-	// WITHIN one tenant, making that pair unique per tenant rather than
-	// globally — two tenants may federate with the same IdP.
-	//
-	// Isolation contract. The implementation MUST constrain the query to
-	// tenantID and MUST return ErrNotFound — never a permission error and
-	// never another tenant's row — when the addressed object belongs to a
-	// different tenant. A "" tenantID selects the single-tenant table
-	// shape. tamper cannot verify this; the cross-tenant leak suite
-	// (§3.3) is the proof obligation that comes with implementing this
-	// interface.
-	IdentityByProviderSubjectInTenant(ctx context.Context, tenantID, provider, subject string) (Identity, error)
-
-	// CountUsersInTenant counts users WITHIN one tenant. It drives the
-	// firstUser bootstrap signal, which is therefore PER TENANT: tenant
-	// #2's first admin must receive firstUser=true even though tenant #1
-	// is full of users. This is blocker B2, and it is the one that fails
-	// silently — a global count compiles, passes, ships, and surfaces
-	// months later as "the new customer's admin has no permissions".
-	//
-	// Isolation contract. The implementation MUST constrain the query to
-	// tenantID and MUST return ErrNotFound — never a permission error and
-	// never another tenant's row — when the addressed object belongs to a
-	// different tenant. A "" tenantID selects the single-tenant table
-	// shape. tamper cannot verify this; the cross-tenant leak suite
-	// (§3.3) is the proof obligation that comes with implementing this
-	// interface.
-	CountUsersInTenant(ctx context.Context, tenantID string) (int64, error)
-
-	// RevokeAllRefreshSessionsForTenant is "sign out this tenant" —
-	// every live session belonging to tenantID, and no other tenant's.
-	//
-	// Isolation contract. The implementation MUST constrain the query to
-	// tenantID and MUST return ErrNotFound — never a permission error and
-	// never another tenant's row — when the addressed object belongs to a
-	// different tenant. A "" tenantID selects the single-tenant table
-	// shape. tamper cannot verify this; the cross-tenant leak suite
-	// (§3.3) is the proof obligation that comes with implementing this
-	// interface.
-	RevokeAllRefreshSessionsForTenant(ctx context.Context, tenantID string, at time.Time) error
-}
+// TenantScopedStore was here. It was the optional upgrade a Store could
+// implement to gain the *InTenant methods while the additive phase was open.
+// v0.4.0 folded those methods into Store itself, so the two-interface dance
+// and its boot-time type assertion are gone: every Store is tenant-scoped,
+// and a single-tenant deployment says so with tenant.Single.
 
 // TOTPState is the store's projection of a user's second-factor state.
 type TOTPState struct {

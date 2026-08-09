@@ -37,6 +37,7 @@ import (
 
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/saml"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // samlStateCookieSlotName is the context slot the ACS reads the state
@@ -93,7 +94,7 @@ type SAMLVerified struct {
 type SAMLHooks struct {
 	// Registry resolves the provider registry for this request.
 	// (nil, nil) means "SAML is not configured" => 404. Required.
-	Registry func(ctx context.Context) (*saml.ProviderRegistry, error)
+	Registry func(ctx context.Context, tenantID tenant.ID) (*saml.ProviderRegistry, error)
 
 	// OnFederatedAssertion runs the whole post-assertion tail: the
 	// IdP-initiated policy gate, attribute extraction, link-vs-login,
@@ -236,7 +237,11 @@ func (s *SAMLRoutes) StateCookieName() string { return s.cfg.StateCookie.Name() 
 
 // provider resolves a provider id, producing the two 404 shapes.
 func (s *SAMLRoutes) provider(ctx context.Context, id string) (*saml.Provider, error) {
-	reg, err := s.hooks.Registry(ctx)
+	tid, ok := TenantFromContext(ctx)
+	if !ok {
+		return nil, espressofw.ErrNotFound("provider not found").WithCode("SAML_PROVIDER_NOT_FOUND")
+	}
+	reg, err := s.hooks.Registry(ctx, tid)
 	if err != nil {
 		return nil, espressofw.ErrInternal("saml registry").Wrap(err)
 	}

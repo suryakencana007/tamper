@@ -113,7 +113,6 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 			Store:   store,
 			Options: []identity.Option{identity.WithRefreshTTL(30 * 24 * time.Hour)},
 		},
-		Tenancy: &tamper.TenancyConfig{Enabled: true},
 	})
 	if err != nil {
 		return nil, nil, err

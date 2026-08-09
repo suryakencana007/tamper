@@ -12,7 +12,6 @@ import (
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/oidc"
 	"github.com/suryakencana007/tamper/saml"
-	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Config is the single boot input for New. It bundles the engine
@@ -59,29 +58,6 @@ type Config struct {
 	// KeySet. Nil leaves the corresponding Provider field nil.
 	OIDC *OIDCConfig
 	SAML *SAMLConfig
-
-	// Tenancy, when non-nil and Enabled, puts the Provider into pooled
-	// multi-tenant mode. Nil (the default) is single-tenant and every
-	// call path stays byte-identical to a pre-tenancy build.
-	Tenancy *TenancyConfig
-}
-
-// TenancyConfig turns on pooled multi-tenancy — one process, N tenants.
-//
-// Enabling it requires Identity.Store to implement
-// identity.TenantScopedStore; New returns an error naming the concrete
-// type when it does not. That check is here, at boot, and never as a
-// per-request denial: a store that cannot scope by tenant is a
-// misconfiguration, and discovering it on the first cross-tenant read
-// would mean discovering it in production (sketch §4.2, §6.4).
-type TenancyConfig struct {
-	// Enabled turns tenancy on. False is identical to leaving Tenancy nil.
-	Enabled bool
-
-	// Store resolves tenant descriptors. OPTIONAL — nil means the
-	// application resolves tenants itself and only needs the identity
-	// core to scope its reads. tamper does not require a tenant table.
-	Store tenant.Store
 }
 
 // AuditConfig configures the audit logger. An empty DBPath selects the
@@ -175,38 +151,6 @@ func New(cfg Config) (*Provider, error) {
 	}
 	// Tenancy boot guard. The optional-interface upgrade is checked once,
 	// here, and the message names the concrete type that failed it —
-	// Phase 0c is why: a type assertion that quietly does not hold
-	// compiles fine and disables the guard it was supposed to be. Without
-	// naming %T, "tenancy doesn't work" is a debugging session; with it,
-	// it is one line.
-	if cfg.Tenancy != nil && cfg.Tenancy.Enabled {
-		if cfg.Identity == nil {
-			return nil, errors.New("tamper: Config.Tenancy.Enabled requires Config.Identity")
-		}
-		if _, ok := cfg.Identity.Store.(identity.TenantScopedStore); !ok {
-			return nil, fmt.Errorf(
-				"tamper: Tenancy.Enabled requires an identity.Store that implements "+
-					"identity.TenantScopedStore; %T does not", cfg.Identity.Store)
-		}
-		// Same guard for the OIDC provider store. Without it a pooled
-		// deployment boots happily and fails on the first tenant-scoped
-		// registry build — a per-request failure for a misconfiguration,
-		// which is what §6.4 exists to prevent.
-		if cfg.OIDC != nil {
-			if _, ok := cfg.OIDC.Store.(oidc.TenantScopedProviderStore); !ok {
-				return nil, fmt.Errorf(
-					"tamper: Tenancy.Enabled requires an oidc.ProviderStore that implements "+
-						"oidc.TenantScopedProviderStore; %T does not", cfg.OIDC.Store)
-			}
-		}
-		if cfg.SAML != nil {
-			if _, ok := cfg.SAML.Store.(saml.TenantScopedProviderStore); !ok {
-				return nil, fmt.Errorf(
-					"tamper: Tenancy.Enabled requires a saml.ProviderStore that implements "+
-						"saml.TenantScopedProviderStore; %T does not", cfg.SAML.Store)
-			}
-		}
-	}
 
 	// --- keyset (validates the KEK entries) ---
 	keySet, err := crypto.NewKeySet(cfg.KEKs, cfg.WriteKeyID)
@@ -240,11 +184,6 @@ func New(cfg Config) (*Provider, error) {
 	// --- identity core (fallible; close audit on failure) ---
 	if cfg.Identity != nil {
 		opts := cfg.Identity.Options
-		if cfg.Tenancy != nil && cfg.Tenancy.Enabled {
-			// Prepended, like the KeySet below, so an explicit
-			// identity.WithTenancy in Options still wins (last setter wins).
-			opts = append([]identity.Option{identity.WithTenancy(true)}, opts...)
-		}
 		if keySet != nil {
 			// Thread the KeySet ahead of the app's options so an explicit
 			// identity.WithKeySet in Options still wins (last setter wins).

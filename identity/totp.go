@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // WithKeySet attaches the KEK keyset that seals/opens the TOTP secret
@@ -97,7 +98,7 @@ func (c *Core) CompleteTOTPEnrollment(ctx context.Context, userID, code string) 
 	if err := c.store.EnableTOTP(ctx, userID, state.Envelope, state.RecoveryCodeHashes, enrolledAt); err != nil {
 		return User{}, Tokens{}, fmt.Errorf("identity: promote totp enrollment: %w", err)
 	}
-	tokens, err := c.issueTokens(ctx, userID, user.TenantID, enrolledAt.Unix(), c.defaultACR)
+	tokens, err := c.issueTokens(ctx, userID, tenant.FromStored(user.TenantID), enrolledAt.Unix(), c.defaultACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}

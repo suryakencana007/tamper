@@ -35,6 +35,7 @@ import (
 
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/oidc"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // oidcStateCookieSlotName is the context slot the exchange route reads
@@ -72,7 +73,7 @@ type FederationHooks struct {
 	// Registry resolves the provider registry for this request.
 	// Returning (nil, nil) means "OIDC is not configured" => 404.
 	// Required.
-	Registry func(ctx context.Context) (*oidc.ProviderRegistry, error)
+	Registry func(ctx context.Context, tenantID tenant.ID) (*oidc.ProviderRegistry, error)
 
 	// OnFederatedExchange runs the entire post-verify tail: upsert ->
 	// reconcile -> mint -> audit -> project -> redirect. It receives the
@@ -236,7 +237,14 @@ func (f *FederationRoutes) StateCookieName() string { return f.cfg.StateCookie.N
 
 // provider resolves a provider id, producing the two 404 shapes.
 func (f *FederationRoutes) provider(ctx context.Context, id string) (*oidc.Provider, error) {
-	registry, err := f.hooks.Registry(ctx)
+	tid, ok := TenantFromContext(ctx)
+	if !ok {
+		// RequireTenant did not run. Fail closed and 404: a missing tenant
+		// must be indistinguishable from a miss, never a distinct error that
+		// tells a caller a tenant axis exists.
+		return nil, espressofw.ErrNotFound("provider not found").WithCode("OIDC_PROVIDER_NOT_FOUND")
+	}
+	registry, err := f.hooks.Registry(ctx, tid)
 	if err != nil {
 		return nil, err
 	}

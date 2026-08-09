@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // tenantStore is the app-side adapter for a POOLED deployment: one
@@ -17,7 +18,7 @@ import (
 // bootstrap signal at insert, exactly as Barista assigns its
 // cluster-admin role AT INSERT.
 //
-// It implements identity.TenantScopedStore, so tamper.New accepts it
+// It implements identity.Store, so tamper.New accepts it
 // with Tenancy.Enabled. The isolation contract on that interface is the
 // obligation this type is signing up to; examples/multitenant's test
 // runs tenanttest.RunLeakSuite against it as the proof.
@@ -40,7 +41,7 @@ type tenantStore struct {
 	bootstrapped map[string]bool
 }
 
-var _ identity.TenantScopedStore = (*tenantStore)(nil)
+var _ identity.Store = (*tenantStore)(nil)
 
 func newTenantStore() *tenantStore {
 	return &tenantStore{
@@ -65,11 +66,11 @@ func (s *tenantStore) wasBootstrapped(userID string) bool {
 
 // --- tenant-scoped surface ---
 
-func (s *tenantStore) UserByEmailInTenant(_ context.Context, tenantID, email string) (identity.User, error) {
+func (s *tenantStore) UserByEmail(_ context.Context, tenantID tenant.ID, email string) (identity.User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, u := range s.users {
-		if u.TenantID == tenantID && u.Email == email {
+		if u.TenantID == tenantID.String() && u.Email == email {
 			return u, nil
 		}
 	}
@@ -78,34 +79,34 @@ func (s *tenantStore) UserByEmailInTenant(_ context.Context, tenantID, email str
 	return identity.User{}, fmt.Errorf("%w: email %s", identity.ErrNotFound, email)
 }
 
-func (s *tenantStore) IdentityByProviderSubjectInTenant(_ context.Context, tenantID, provider, subject string) (identity.Identity, error) {
+func (s *tenantStore) IdentityByProviderSubject(_ context.Context, tenantID tenant.ID, provider, subject string) (identity.Identity, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, i := range s.idents {
-		if i.TenantID == tenantID && i.Provider == provider && i.Subject == subject {
+		if i.TenantID == tenantID.String() && i.Provider == provider && i.Subject == subject {
 			return i, nil
 		}
 	}
 	return identity.Identity{}, fmt.Errorf("%w: identity %s/%s", identity.ErrNotFound, provider, subject)
 }
 
-func (s *tenantStore) CountUsersInTenant(_ context.Context, tenantID string) (int64, error) {
+func (s *tenantStore) CountUsers(_ context.Context, tenantID tenant.ID) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var n int64
 	for _, u := range s.users {
-		if u.TenantID == tenantID {
+		if u.TenantID == tenantID.String() {
 			n++
 		}
 	}
 	return n, nil
 }
 
-func (s *tenantStore) RevokeAllRefreshSessionsForTenant(_ context.Context, tenantID string, at time.Time) error {
+func (s *tenantStore) RevokeAllRefreshSessionsForTenant(_ context.Context, tenantID tenant.ID, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, x := range s.sessions {
-		if x.TenantID == tenantID && !x.Revoked() {
+		if x.TenantID == tenantID.String() && !x.Revoked() {
 			x.RevokedAt = at
 			s.sessions[id] = x
 		}
@@ -150,17 +151,6 @@ func (s *tenantStore) UserByID(_ context.Context, id string) (identity.User, err
 	return u, nil
 }
 
-// UserByEmail is the SINGLE-TENANT lookup — the "" tenant. A pooled
-// deployment never reaches it (the Core routes to the scoped method
-// whenever tenancy is on); it stays correct rather than convenient.
-func (s *tenantStore) UserByEmail(ctx context.Context, email string) (identity.User, error) {
-	return s.UserByEmailInTenant(ctx, "", email)
-}
-
-func (s *tenantStore) CountUsers(ctx context.Context) (int64, error) {
-	return s.CountUsersInTenant(ctx, "")
-}
-
 func (s *tenantStore) CreateRefreshSession(_ context.Context, x identity.RefreshSession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -199,10 +189,6 @@ func (s *tenantStore) RevokeAllRefreshSessionsForUser(_ context.Context, uid str
 		}
 	}
 	return nil
-}
-
-func (s *tenantStore) IdentityByProviderSubject(ctx context.Context, p, sub string) (identity.Identity, error) {
-	return s.IdentityByProviderSubjectInTenant(ctx, "", p, sub)
 }
 
 func (s *tenantStore) IdentityByID(_ context.Context, id string) (identity.Identity, error) {

@@ -68,3 +68,21 @@ func (i ID) IsSingle() bool { return i.set && i.v == "" }
 // one place the old ambiguity still exists, and it is confined to a display
 // and storage helper rather than sitting in every signature.
 func (i ID) String() string { return i.v }
+
+// FromStored converts a tenant identifier read back OUT of storage into an ID.
+//
+// A stored "" is [Single], not unset — the row could only have been written
+// by a call that already passed the tenant gate, so the emptiness is a
+// recorded fact rather than a missing one.
+//
+// NEVER call this on untrusted input: a `tid` claim, a routing header, a
+// query parameter, a config lookup. Those go through [New], where "" denies.
+// This function exists precisely because those two cases must not share a
+// conversion, and naming it after where the value came from is what keeps
+// them apart at the call site.
+func FromStored(s string) ID {
+	if s == "" {
+		return Single
+	}
+	return New(s)
+}

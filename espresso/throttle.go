@@ -135,10 +135,12 @@ func ThrottleKeyByServiceAccount(r *http.Request) string {
 // the resolver for gated pre-auth routes.
 func ThrottleKeyByRoutedTenant(r *http.Request) string {
 	tenantID, ok := TenantFromContext(r.Context())
-	if !ok || tenantID == "" {
+	if !ok || !tenantID.Valid() {
 		return "tenant:unresolved"
 	}
-	return "tenant:" + tenantID
+	// Single is a real bucket, not an absent one: a single-tenant
+	// deployment throttles under one key rather than "unresolved".
+	return "tenant:" + tenantID.String()
 }
 
 // ThrottleKeyByRemoteAddr keys on r.RemoteAddr.

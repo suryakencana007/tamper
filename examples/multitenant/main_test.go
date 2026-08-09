@@ -13,6 +13,7 @@ import (
 	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/identity/tenanttest"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // This example registers a lot of users, and every registration is a
@@ -258,10 +259,10 @@ func TestSecondTenantGetsTheBootstrapSignal(t *testing.T) {
 
 // TestStoreSatisfiesTheLeakSuite runs the exported conformance harness
 // against this example's own adapter. It is the proof obligation that
-// comes with implementing identity.TenantScopedStore, and running it here
+// comes with implementing identity.Store, and running it here
 // is the example demonstrating what every adapter author should do.
 func TestStoreSatisfiesTheLeakSuite(t *testing.T) {
-	tenanttest.RunLeakSuite(t, func() identity.TenantScopedStore { return newTenantStore() })
+	tenanttest.RunLeakSuite(t, func() identity.Store { return newTenantStore() })
 }
 
 // --- the federated path is tenant-scoped too --------------------------
@@ -285,11 +286,11 @@ func TestFederatedProvisionIsPerTenant(t *testing.T) {
 
 	// The SAME (provider, subject) federates into both tenants — two
 	// different people, exactly as with the shared email.
-	a, _, err := core.ProvisionUserWithIdentityInTenant(ctx, tenantAcme, "dev@shared.example", provider0, subject)
+	a, _, err := core.ProvisionUserWithIdentity(ctx, tenant.New(tenantAcme), "dev@shared.example", provider0, subject)
 	if err != nil {
 		t.Fatalf("provision into %s: %v", tenantAcme, err)
 	}
-	b, _, err := core.ProvisionUserWithIdentityInTenant(ctx, tenantGlobex, "dev@shared.example", provider0, subject)
+	b, _, err := core.ProvisionUserWithIdentity(ctx, tenant.New(tenantGlobex), "dev@shared.example", provider0, subject)
 	if err != nil {
 		t.Fatalf("provision the same identity into %s: %v — (provider, subject) is still unique "+
 			"globally, so two tenants cannot federate with one IdP", tenantGlobex, err)
@@ -299,7 +300,7 @@ func TestFederatedProvisionIsPerTenant(t *testing.T) {
 	}
 
 	// Repeat sign-in resolves within the tenant, never across it.
-	got, _, found, err := core.ResolveByIdentityInTenant(ctx, tenantAcme, provider0, subject)
+	got, _, found, err := core.ResolveByIdentity(ctx, tenant.New(tenantAcme), provider0, subject)
 	if err != nil || !found {
 		t.Fatalf("resolve in %s: (%v, %v)", tenantAcme, found, err)
 	}
@@ -308,7 +309,7 @@ func TestFederatedProvisionIsPerTenant(t *testing.T) {
 	}
 
 	// And an unknown tenant resolves to nothing — not to someone else's.
-	if _, _, found, err := core.ResolveByIdentityInTenant(ctx, "stranger", provider0, subject); err != nil || found {
+	if _, _, found, err := core.ResolveByIdentity(ctx, tenant.New("stranger"), provider0, subject); err != nil || found {
 		t.Errorf("resolve in an unknown tenant = (%v, %v), want (false, nil)", found, err)
 	}
 }

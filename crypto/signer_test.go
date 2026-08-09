@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
+	"github.com/suryakencana007/tamper/tenant"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,9 @@ func (s ed25519Signer) Verify(signingString string, sig []byte) error {
 
 var _ Signer = ed25519Signer{}
 
-func pinnedClock(s *JWTService) { s.Testing().SetNow(func() time.Time { return time.Unix(pinnedNow, 0).UTC() }) }
+func pinnedClock(s *JWTService) {
+	s.Testing().SetNow(func() time.Time { return time.Unix(pinnedNow, 0).UTC() })
+}
 
 // --- byte identity ---------------------------------------------------
 
@@ -62,7 +65,7 @@ func pinnedClock(s *JWTService) { s.Testing().SetNow(func() time.Time { return t
 func TestSignerSeam_DefaultHS256DidNotMove(t *testing.T) {
 	s := pinnedService(t)
 
-	tok, err := s.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	tok, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}
@@ -86,18 +89,18 @@ func TestSignerSeam_HS256SignerMatchesDefault(t *testing.T) {
 	)
 	pinnedClock(viaSeam)
 
-	a, err := def.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	a, err := def.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("default: %v", err)
 	}
-	b, err := viaSeam.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	b, err := viaSeam.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("via seam: %v", err)
 	}
 	if a != b {
 		t.Errorf("HS256 through the seam differs from the default path:\n  %s\n  %s", a, b)
 	}
-	if _, err := viaSeam.VerifyAccess(b); err != nil {
+	if _, err := viaSeam.VerifyAccess(b, tenant.Single); err != nil {
 		t.Errorf("seam-signed token failed seam verification: %v", err)
 	}
 }
@@ -110,11 +113,11 @@ func TestSignerSeam_AsymmetricRoundTrip(t *testing.T) {
 	s := NewJWTService(JWTConfig{TTL: time.Hour, Issuer: pinnedIssuer}, WithSigner(sig))
 	pinnedClock(s)
 
-	tok, err := s.IssueAccessForTenant(pinnedSubject, "acme", pinnedAuthAt, ACRLocalPassword)
+	tok, err := s.IssueAccess(pinnedSubject, tenant.New("acme"), pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("IssueAccessForTenant: %v", err)
 	}
-	claims, err := s.VerifyAccess(tok)
+	claims, err := s.VerifyAccess(tok, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("VerifyAccess: %v", err)
 	}
@@ -170,11 +173,11 @@ func TestSignerSeam_UnknownKidFailsClosed(t *testing.T) {
 	)
 	pinnedClock(s)
 
-	good, err := s.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	good, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	if _, err := s.VerifyAccess(good); err != nil {
+	if _, err := s.VerifyAccess(good, tenant.Single); err != nil {
 		t.Fatalf("a token signed by the live key did not verify: %v", err)
 	}
 
@@ -183,11 +186,11 @@ func TestSignerSeam_UnknownKidFailsClosed(t *testing.T) {
 	// fallback to the signing key would also fail, on the signature.
 	other := NewJWTService(JWTConfig{TTL: time.Hour, Issuer: pinnedIssuer}, WithSigner(retired))
 	pinnedClock(other)
-	foreign, err := other.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	foreign, err := other.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue foreign: %v", err)
 	}
-	if _, err := s.VerifyAccess(foreign); !errors.Is(err, ErrInvalidToken) {
+	if _, err := s.VerifyAccess(foreign, tenant.Single); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("unknown kid with a foreign key was accepted: err = %v, want ErrInvalidToken", err)
 	}
 
@@ -203,11 +206,11 @@ func TestSignerSeam_UnknownKidFailsClosed(t *testing.T) {
 	mintedUnderOldKid := NewJWTService(JWTConfig{TTL: time.Hour, Issuer: pinnedIssuer},
 		WithSigner(rotatedOut))
 	pinnedClock(mintedUnderOldKid)
-	stale, err := mintedUnderOldKid.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	stale, err := mintedUnderOldKid.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue under the rotated-out kid: %v", err)
 	}
-	if _, err := s.VerifyAccess(stale); !errors.Is(err, ErrInvalidToken) {
+	if _, err := s.VerifyAccess(stale, tenant.Single); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("a token naming an UNREGISTERED kid was accepted because its signature "+
 			"happened to check out against the signing key: err = %v, want ErrInvalidToken", err)
 	}
@@ -223,7 +226,7 @@ func TestSignerSeam_AlgConfusionRejected(t *testing.T) {
 
 	signer := NewJWTService(JWTConfig{TTL: time.Hour, Issuer: pinnedIssuer}, WithSigner(liar))
 	pinnedClock(signer)
-	tok, err := signer.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	tok, err := signer.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -232,7 +235,7 @@ func TestSignerSeam_AlgConfusionRejected(t *testing.T) {
 		WithSigner(honest), WithVerifiers(map[string]Signer{"k1": honest}))
 	pinnedClock(verifier)
 
-	if _, err := verifier.VerifyAccess(tok); !errors.Is(err, ErrInvalidToken) {
+	if _, err := verifier.VerifyAccess(tok, tenant.Single); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("a token whose alg header disagreed with its key was accepted: %v", err)
 	}
 }
@@ -280,11 +283,11 @@ func TestWithVerifiers_MapIsCopied(t *testing.T) {
 
 	delete(m, "k-live") // the caller reuses its map for something else
 
-	tok, err := s.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	tok, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	if _, err := s.VerifyAccess(tok); err != nil {
+	if _, err := s.VerifyAccess(tok, tenant.Single); err != nil {
 		t.Errorf("verification broke when the caller mutated its map: %v", err)
 	}
 }
@@ -298,20 +301,20 @@ func TestSignerSeam_ExpiryStillEnforcedOnTheDelegatedPath(t *testing.T) {
 	s := NewJWTService(JWTConfig{TTL: time.Hour, Issuer: pinnedIssuer}, WithSigner(sig))
 	pinnedClock(s)
 
-	tok, err := s.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	tok, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 	// Move the clock past expiry.
 	s.Testing().SetNow(func() time.Time { return time.Unix(pinnedNow, 0).UTC().Add(2 * time.Hour) })
-	if _, err := s.VerifyAccess(tok); !errors.Is(err, ErrInvalidToken) {
+	if _, err := s.VerifyAccess(tok, tenant.Single); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("expired token accepted on the delegated path: %v", err)
 	}
 
 	// And a wrong issuer is still refused.
 	other := NewJWTService(JWTConfig{TTL: time.Hour, Issuer: "someone-else"}, WithSigner(sig))
 	pinnedClock(other)
-	if _, err := other.VerifyAccess(tok); !errors.Is(err, ErrInvalidToken) {
+	if _, err := other.VerifyAccess(tok, tenant.Single); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("token from another issuer accepted: %v", err)
 	}
 }

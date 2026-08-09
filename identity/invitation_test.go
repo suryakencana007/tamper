@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Slice 7j-1 — invitations.
@@ -27,7 +28,6 @@ func invCore(t *testing.T, opts ...Option) (*Core, *MemStore) {
 	base := []Option{
 		WithRefreshTTL(30 * 24 * time.Hour),
 		WithDefaultACR(testACR),
-		WithTenancy(true),
 		WithInvitations(store),
 	}
 	c, err := New(store, testJWT(), append(base, opts...)...)
@@ -44,7 +44,7 @@ func freshToken() (string, error) { return crypto.NewRefreshToken() }
 // mustInvite issues an invitation and returns the plaintext token.
 func mustInvite(t *testing.T, c *Core, tenantID, email string) (Invitation, string) {
 	t.Helper()
-	inv, token, err := c.Invite(context.Background(), tenantID, email, "admin-1", time.Hour)
+	inv, token, err := c.Invite(context.Background(), tenant.New(tenantID), email, "admin-1", time.Hour)
 	if err != nil {
 		t.Fatalf("Invite: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestInvitation_AcceptCreatesTheInvitedAccount(t *testing.T) {
 	c, _ := invCore(t)
 	_, token := mustInvite(t, c, "acme", "bob@acme.example")
 
-	user, tokens, err := c.AcceptInvitation(ctx, "acme", token, "correct-horse-battery")
+	user, tokens, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "correct-horse-battery")
 	if err != nil {
 		t.Fatalf("AcceptInvitation: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestInvitation_AcceptCreatesTheInvitedAccount(t *testing.T) {
 	}
 
 	// The account works.
-	if _, _, err := c.LoginInTenant(ctx, "acme", "bob@acme.example", "correct-horse-battery"); err != nil {
+	if _, _, err := c.Login(ctx, tenant.New("acme"), "bob@acme.example", "correct-horse-battery"); err != nil {
 		t.Errorf("login as the accepted user: %v", err)
 	}
 }
@@ -89,7 +89,7 @@ func TestInvitation_EmailIsNormalisedAndCarried(t *testing.T) {
 	if inv.Email != "bob@acme.example" {
 		t.Errorf("stored email = %q, want normalised", inv.Email)
 	}
-	user, _, err := c.AcceptInvitation(ctx, "acme", token, "correct-horse-battery")
+	user, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "correct-horse-battery")
 	if err != nil {
 		t.Fatalf("AcceptInvitation: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestInvitation_ConcurrentAcceptExactlyOneWins(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start // release them together
-			_, _, err := c.AcceptInvitation(ctx, "acme", token, "correct-horse-battery")
+			_, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "correct-horse-battery")
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -216,10 +216,10 @@ func TestInvitation_SequentialReuseFails(t *testing.T) {
 	c, _ := invCore(t)
 	_, token := mustInvite(t, c, "acme", "bob@acme.example")
 
-	if _, _, err := c.AcceptInvitation(ctx, "acme", token, "correct-horse-battery"); err != nil {
+	if _, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "correct-horse-battery"); err != nil {
 		t.Fatalf("first accept: %v", err)
 	}
-	_, _, err := c.AcceptInvitation(ctx, "acme", token, "another-password-x")
+	_, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "another-password-x")
 	if !errors.Is(err, ErrInvitationInvalid) {
 		t.Errorf("second accept err = %v, want ErrInvitationInvalid", err)
 	}
@@ -236,7 +236,7 @@ func TestInvitation_ExpiredIsRejected(t *testing.T) {
 	_, token := mustInvite(t, c, "acme", "bob@acme.example") // ttl 1h
 
 	c.now = func() time.Time { return now.Add(time.Hour + time.Second) }
-	if _, _, err := c.AcceptInvitation(ctx, "acme", token, "correct-horse-battery"); !errors.Is(err, ErrInvitationInvalid) {
+	if _, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "correct-horse-battery"); !errors.Is(err, ErrInvitationInvalid) {
 		t.Errorf("expired accept err = %v, want ErrInvitationInvalid", err)
 	}
 }
@@ -290,13 +290,13 @@ func TestInvitation_ExpiredAndAcceptedAreIndistinguishable(t *testing.T) {
 	_, acceptedTok := mustInvite(t, c, "acme", "accepted@acme.example")
 	_, expiredTok := mustInvite(t, c, "acme", "expired@acme.example")
 
-	if _, _, err := c.AcceptInvitation(ctx, "acme", acceptedTok, "correct-horse-battery"); err != nil {
+	if _, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), acceptedTok, "correct-horse-battery"); err != nil {
 		t.Fatalf("priming accept: %v", err)
 	}
 	c.now = func() time.Time { return now.Add(2 * time.Hour) } // both are now dead
 
-	accUser, accTokens, accErr := c.AcceptInvitation(ctx, "acme", acceptedTok, "correct-horse-battery")
-	expUser, expTokens, expErr := c.AcceptInvitation(ctx, "acme", expiredTok, "correct-horse-battery")
+	accUser, accTokens, accErr := c.AcceptInvitation(ctx, tenant.New("acme"), acceptedTok, "correct-horse-battery")
+	expUser, expTokens, expErr := c.AcceptInvitation(ctx, tenant.New("acme"), expiredTok, "correct-horse-battery")
 
 	if !reflect.DeepEqual(accUser, expUser) {
 		t.Errorf("User differs: accepted %+v expired %+v", accUser, expUser)
@@ -318,14 +318,14 @@ func TestInvitation_ExpiredAndAcceptedAreIndistinguishable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("freshToken: %v", err)
 	}
-	_, _, unkErr := c.AcceptInvitation(ctx, "acme", unknownTok, "correct-horse-battery")
+	_, _, unkErr := c.AcceptInvitation(ctx, tenant.New("acme"), unknownTok, "correct-horse-battery")
 	if unkErr == nil || unkErr.Error() != accErr.Error() {
 		t.Errorf("an unknown token answers %v, differing from a spent one (%v)",
 			unkErr, accErr)
 	}
 
 	// A malformed token too — "wrong shape" must not be its own answer.
-	_, _, badErr := c.AcceptInvitation(ctx, "acme", "not-a-valid-token!!", "correct-horse-battery")
+	_, _, badErr := c.AcceptInvitation(ctx, tenant.New("acme"), "not-a-valid-token!!", "correct-horse-battery")
 	if badErr == nil || badErr.Error() != accErr.Error() {
 		t.Errorf("a malformed token answers %v, differing from a spent one (%v)",
 			badErr, accErr)
@@ -343,7 +343,7 @@ func TestInvitation_WrongTenantIsAMiss(t *testing.T) {
 	c, _ := invCore(t)
 	_, token := mustInvite(t, c, "acme", "bob@acme.example")
 
-	_, _, wrongErr := c.AcceptInvitation(ctx, "globex", token, "correct-horse-battery")
+	_, _, wrongErr := c.AcceptInvitation(ctx, tenant.New("globex"), token, "correct-horse-battery")
 	if !errors.Is(wrongErr, ErrInvitationInvalid) {
 		t.Fatalf("cross-tenant accept err = %v, want ErrInvitationInvalid", wrongErr)
 	}
@@ -352,14 +352,14 @@ func TestInvitation_WrongTenantIsAMiss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("freshToken: %v", err)
 	}
-	_, _, unkErr := c.AcceptInvitation(ctx, "globex", unknownTok, "correct-horse-battery")
+	_, _, unkErr := c.AcceptInvitation(ctx, tenant.New("globex"), unknownTok, "correct-horse-battery")
 	if unkErr.Error() != wrongErr.Error() {
 		t.Errorf("a wrong-tenant token (%v) is distinguishable from an unknown one (%v); "+
 			"holding a token confirms which tenant it belongs to", wrongErr, unkErr)
 	}
 
 	// And nothing was consumed: the real tenant can still redeem it.
-	if _, _, err := c.AcceptInvitation(ctx, "acme", token, "correct-horse-battery"); err != nil {
+	if _, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "correct-horse-battery"); err != nil {
 		t.Errorf("a failed cross-tenant accept burned the invitation: %v", err)
 	}
 }
@@ -368,49 +368,21 @@ func TestInvitation_WrongTenantIsAMiss(t *testing.T) {
 // the same gate as every other tenant-aware call, so a tenancy-enabled
 // Core cannot invite into the wildcard and a single-tenant Core cannot
 // be handed a tenant it has no column for.
-func TestInvitation_TenantGateApplies(t *testing.T) {
+func TestInvitation_UnsetTenantIsAnError(t *testing.T) {
 	ctx := context.Background()
+	c, _ := invCore(t)
 
-	t.Run("tenancy on, empty tenant", func(t *testing.T) {
-		c, _ := invCore(t)
-		if _, _, err := c.Invite(ctx, "", "bob@acme.example", "admin-1", time.Hour); !errors.Is(err, ErrTenantRequired) {
-			t.Errorf("Invite err = %v, want ErrTenantRequired", err)
-		}
-		if _, _, err := c.AcceptInvitation(ctx, "", "tok", "correct-horse-battery"); !errors.Is(err, ErrTenantRequired) {
-			t.Errorf("Accept err = %v, want ErrTenantRequired", err)
-		}
-	})
-
-	t.Run("tenancy off, tenant supplied", func(t *testing.T) {
-		store := NewMemStore()
-		c, err := New(store, testJWT(), WithDefaultACR(testACR), WithInvitations(store))
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
-		if _, _, err := c.Invite(ctx, "acme", "bob@acme.example", "admin-1", time.Hour); !errors.Is(err, ErrTenancyDisabled) {
-			t.Errorf("Invite err = %v, want ErrTenancyDisabled", err)
-		}
-	})
-
-	t.Run("single-tenant core round-trips the empty tenant", func(t *testing.T) {
-		store := NewMemStore()
-		c, err := New(store, testJWT(), WithRefreshTTL(time.Hour), WithDefaultACR(testACR),
-			WithInvitations(store))
-		if err != nil {
-			t.Fatalf("New: %v", err)
-		}
-		_, token, err := c.Invite(ctx, "", "bob@example.com", "admin-1", time.Hour)
-		if err != nil {
-			t.Fatalf("Invite: %v", err)
-		}
-		user, _, err := c.AcceptInvitation(ctx, "", token, "correct-horse-battery")
-		if err != nil {
-			t.Fatalf("AcceptInvitation: %v", err)
-		}
-		if user.TenantID != "" {
-			t.Errorf("tenant = %q, want the empty single-tenant value", user.TenantID)
-		}
-	})
+	// The zero ID — a caller who forgot to thread the tenant — denies.
+	// This used to assert on "" and on ErrTenancyDisabled; after the flip
+	// "" is tenant.Single and legal, and there is no disabled mode, so
+	// both of those arms would have tested the opposite of the property.
+	var unset tenant.ID
+	if _, _, err := c.Invite(ctx, unset, "x@example.com", "admin-1", time.Hour); !errors.Is(err, ErrTenantRequired) {
+		t.Errorf("Invite with an unset tenant: err = %v, want ErrTenantRequired", err)
+	}
+	if _, _, err := c.AcceptInvitation(ctx, unset, "tok", "correct-horse"); !errors.Is(err, ErrTenantRequired) {
+		t.Errorf("AcceptInvitation with an unset tenant: err = %v, want ErrTenantRequired", err)
+	}
 }
 
 // --- construction and configuration ------------------------------------
@@ -433,10 +405,10 @@ func TestInvitation_NilStorePanics(t *testing.T) {
 func TestInvitation_UnconfiguredCoreErrorsLoudly(t *testing.T) {
 	ctx := context.Background()
 	c, _ := testCore(t) // no WithInvitations
-	if _, _, err := c.Invite(ctx, "", "bob@example.com", "admin-1", time.Hour); !errors.Is(err, ErrNoInvitationStore) {
+	if _, _, err := c.Invite(ctx, tenant.Single, "bob@example.com", "admin-1", time.Hour); !errors.Is(err, ErrNoInvitationStore) {
 		t.Errorf("Invite err = %v, want ErrNoInvitationStore", err)
 	}
-	if _, _, err := c.AcceptInvitation(ctx, "", "tok", "correct-horse-battery"); !errors.Is(err, ErrNoInvitationStore) {
+	if _, _, err := c.AcceptInvitation(ctx, tenant.Single, "tok", "correct-horse-battery"); !errors.Is(err, ErrNoInvitationStore) {
 		t.Errorf("Accept err = %v, want ErrNoInvitationStore", err)
 	}
 }
@@ -451,7 +423,7 @@ func TestInvitation_NonPositiveTTLGetsTheDefault(t *testing.T) {
 	c.now = func() time.Time { return now }
 
 	for _, ttl := range []time.Duration{0, -time.Hour} {
-		inv, _, err := c.Invite(ctx, "acme", "bob@acme.example", "admin-1", ttl)
+		inv, _, err := c.Invite(ctx, tenant.New("acme"), "bob@acme.example", "admin-1", ttl)
 		if err != nil {
 			t.Fatalf("Invite(ttl=%v): %v", ttl, err)
 		}
@@ -475,11 +447,11 @@ func TestInvitation_WeakPasswordDoesNotBurnTheInvitation(t *testing.T) {
 	c, _ := invCore(t)
 	_, token := mustInvite(t, c, "acme", "bob@acme.example")
 
-	if _, _, err := c.AcceptInvitation(ctx, "acme", token, "x"); !errors.Is(err, ErrPasswordPolicy) {
+	if _, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "x"); !errors.Is(err, ErrPasswordPolicy) {
 		t.Fatalf("weak-password accept err = %v, want ErrPasswordPolicy", err)
 	}
 	// The link still works.
-	if _, _, err := c.AcceptInvitation(ctx, "acme", token, "correct-horse-battery"); err != nil {
+	if _, _, err := c.AcceptInvitation(ctx, tenant.New("acme"), token, "correct-horse-battery"); err != nil {
 		t.Errorf("a rejected password burned the invitation: %v", err)
 	}
 }

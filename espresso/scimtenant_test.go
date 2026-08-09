@@ -27,7 +27,7 @@ const (
 // tenant in the STORE, because tamper names no column — the tenant
 // reaches it only as an argument.
 type tenantSCIMStore struct {
-	users  map[string]map[string]scim.UserRecord  // tenant -> id -> rec
+	users  map[string]map[string]scim.UserRecord // tenant -> id -> rec
 	groups map[string]map[string]scim.GroupRecord
 	// calls records the tenant every scoped method was invoked with, so a
 	// test can prove WHICH tenant the handler passed down.

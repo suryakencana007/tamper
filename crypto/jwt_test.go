@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 func newTestJWT(t *testing.T, secret string) *JWTService {
@@ -200,11 +201,11 @@ func TestNewJWTService_PanicsOnEmptySecret(t *testing.T) {
 func TestIssueAccess_RoundTrip(t *testing.T) {
 	svc := newTestJWT(t, "s3cr3t")
 	want := int64(1733574000) // arbitrary fixed Unix timestamp.
-	tok, err := svc.IssueAccess("u-42", want, ACRIncommonSilver)
+	tok, err := svc.IssueAccess("u-42", tenant.Single, want, ACRIncommonSilver)
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}
-	claims, err := svc.VerifyAccess(tok)
+	claims, err := svc.VerifyAccess(tok, tenant.Single)
 	if err != nil {
 		t.Fatalf("VerifyAccess: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestIssueAccess_RoundTrip(t *testing.T) {
 
 func TestIssueAccess_RejectsEmptySub(t *testing.T) {
 	svc := newTestJWT(t, "s3cr3t")
-	_, err := svc.IssueAccess("", 1733574000, ACRLocalPassword)
+	_, err := svc.IssueAccess("", tenant.Single, 1733574000, ACRLocalPassword)
 	if err == nil || !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("IssueAccess empty sub: err = %v, want ErrInvalidToken", err)
 	}
@@ -230,7 +231,7 @@ func TestIssueAccess_RejectsEmptySub(t *testing.T) {
 func TestIssueAccess_RejectsZeroAuthTime(t *testing.T) {
 	svc := newTestJWT(t, "s3cr3t")
 	for _, at := range []int64{0, -1, -1733574000} {
-		_, err := svc.IssueAccess("u-1", at, ACRLocalPassword)
+		_, err := svc.IssueAccess("u-1", tenant.Single, at, ACRLocalPassword)
 		if err == nil || !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("IssueAccess auth_time=%d: err = %v, want ErrInvalidToken", at, err)
 		}
@@ -239,7 +240,7 @@ func TestIssueAccess_RejectsZeroAuthTime(t *testing.T) {
 
 func TestIssueAccess_RejectsEmptyACR(t *testing.T) {
 	svc := newTestJWT(t, "s3cr3t")
-	_, err := svc.IssueAccess("u-1", 1733574000, "")
+	_, err := svc.IssueAccess("u-1", tenant.Single, 1733574000, "")
 	if err == nil || !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("IssueAccess empty acr: err = %v, want ErrInvalidToken", err)
 	}
@@ -263,7 +264,7 @@ func TestVerifyAccess_LegacyJWT(t *testing.T) {
 		t.Fatalf("sign legacy: %v", err)
 	}
 	svc := newTestJWT(t, "s3cr3t")
-	claims, err := svc.VerifyAccess(tok)
+	claims, err := svc.VerifyAccess(tok, tenant.Single)
 	if err != nil {
 		t.Fatalf("VerifyAccess legacy: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestIssue_ShimDefaultsACRLocalPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	claims, err := svc.VerifyAccess(tok)
+	claims, err := svc.VerifyAccess(tok, tenant.Single)
 	if err != nil {
 		t.Fatalf("VerifyAccess: %v", err)
 	}
@@ -304,17 +305,17 @@ func TestIssue_ShimDefaultsACRLocalPassword(t *testing.T) {
 // gate.
 func TestVerifyAccess_TamperedAuthTime(t *testing.T) {
 	svc := newTestJWT(t, "s3cr3t")
-	tok, err := svc.IssueAccess("u-1", 1733574000, ACRIncommonSilver)
+	tok, err := svc.IssueAccess("u-1", tenant.Single, 1733574000, ACRIncommonSilver)
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}
 	// Re-mint with a different secret so signature mismatches.
 	attacker := newTestJWT(t, "attacker-secret")
-	attackerTok, _ := attacker.IssueAccess("u-1", 9999999999, ACRIncommonSilver)
+	attackerTok, _ := attacker.IssueAccess("u-1", tenant.Single, 9999999999, ACRIncommonSilver)
 	if attackerTok == tok {
 		t.Fatalf("attacker token = legitimate; clock collision somehow?")
 	}
-	if _, err := svc.VerifyAccess(attackerTok); err == nil {
+	if _, err := svc.VerifyAccess(attackerTok, tenant.Single); err == nil {
 		t.Fatalf("VerifyAccess: expected error for foreign-signed token")
 	} else if !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("VerifyAccess err %v: not wrapping ErrInvalidToken", err)
@@ -350,7 +351,7 @@ func TestVerifyAccess_RejectsTOTPPendingToken(t *testing.T) {
 		t.Fatalf("IssueTOTPPending: %v", err)
 	}
 
-	if _, err := svc.VerifyAccess(pending); err == nil {
+	if _, err := svc.VerifyAccess(pending, tenant.Single); err == nil {
 		t.Fatal("VerifyAccess accepted a totp-pending token — 2FA bypass")
 	} else if !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("VerifyAccess err %v: not wrapping ErrInvalidToken", err)
@@ -365,7 +366,7 @@ func TestVerifyAccess_RejectsTOTPPendingToken(t *testing.T) {
 
 func TestVerifyTOTPPending_RejectsAccessToken(t *testing.T) {
 	svc := newTestJWT(t, "s3cr3t")
-	access, err := svc.IssueAccess("u-42", 1733574000, ACRIncommonSilver)
+	access, err := svc.IssueAccess("u-42", tenant.Single, 1733574000, ACRIncommonSilver)
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}
@@ -379,11 +380,11 @@ func TestVerifyTOTPPending_RejectsAccessToken(t *testing.T) {
 
 func TestIssueAccess_StampsPurpose(t *testing.T) {
 	svc := newTestJWT(t, "s3cr3t")
-	tok, err := svc.IssueAccess("u-42", 1733574000, ACRIncommonSilver)
+	tok, err := svc.IssueAccess("u-42", tenant.Single, 1733574000, ACRIncommonSilver)
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}
-	claims, err := svc.VerifyAccess(tok)
+	claims, err := svc.VerifyAccess(tok, tenant.Single)
 	if err != nil {
 		t.Fatalf("VerifyAccess: %v", err)
 	}
@@ -415,7 +416,7 @@ func TestVerifyAccess_RejectsUnknownPurpose(t *testing.T) {
 	}
 
 	svc := newTestJWT(t, "s3cr3t")
-	if _, err := svc.VerifyAccess(tok); err == nil {
+	if _, err := svc.VerifyAccess(tok, tenant.Single); err == nil {
 		t.Fatal("VerifyAccess accepted a token with an unknown purpose")
 	} else if !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("VerifyAccess err %v: not wrapping ErrInvalidToken", err)
@@ -461,7 +462,7 @@ func TestVerifyAccess_AcceptsLegacyTokenWithoutPurpose(t *testing.T) {
 	}
 
 	svc := newTestJWT(t, "s3cr3t")
-	got, err := svc.VerifyAccess(tok)
+	got, err := svc.VerifyAccess(tok, tenant.Single)
 	if err != nil {
 		t.Fatalf("VerifyAccess rejected a legacy no-purpose token: %v", err)
 	}
@@ -510,7 +511,7 @@ func pinnedService(t *testing.T) *JWTService {
 func TestIssueAccess_NoTenantIsByteIdenticalToPre7c(t *testing.T) {
 	s := pinnedService(t)
 
-	tok, err := s.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	tok, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}
@@ -536,11 +537,11 @@ func TestIssueAccess_NoTenantIsByteIdenticalToPre7c(t *testing.T) {
 func TestIssueAccessForTenant_EmptyTenantMatchesIssueAccess(t *testing.T) {
 	s := pinnedService(t)
 
-	plain, err := s.IssueAccess(pinnedSubject, pinnedAuthAt, ACRLocalPassword)
+	plain, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}
-	viaTenant, err := s.IssueAccessForTenant(pinnedSubject, "", pinnedAuthAt, ACRLocalPassword)
+	viaTenant, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("IssueAccessForTenant: %v", err)
 	}
@@ -554,11 +555,11 @@ func TestIssueAccessForTenant_EmptyTenantMatchesIssueAccess(t *testing.T) {
 func TestIssueAccessForTenant_RoundTrip(t *testing.T) {
 	s := pinnedService(t)
 
-	tok, err := s.IssueAccessForTenant(pinnedSubject, "acme", pinnedAuthAt, ACRIncommonSilver)
+	tok, err := s.IssueAccess(pinnedSubject, tenant.New("acme"), pinnedAuthAt, ACRIncommonSilver)
 	if err != nil {
 		t.Fatalf("IssueAccessForTenant: %v", err)
 	}
-	claims, err := s.VerifyAccess(tok)
+	claims, err := s.VerifyAccess(tok, tenant.New("acme"))
 	if err != nil {
 		t.Fatalf("VerifyAccess: %v", err)
 	}
@@ -583,7 +584,7 @@ func TestIssueAccessForTenant_RoundTrip(t *testing.T) {
 func TestVerifyAccess_LegacyTokenReadsEmptyTenant(t *testing.T) {
 	s := pinnedService(t)
 
-	claims, err := s.VerifyAccess(pinnedPre7cToken)
+	claims, err := s.VerifyAccess(pinnedPre7cToken, tenant.Single)
 	if err != nil {
 		t.Fatalf("a pre-7c token no longer verifies: %v — this would log out every existing "+
 			"session on the deploy that adds tenancy", err)
@@ -612,7 +613,7 @@ func TestIssueAccessForTenant_RejectionsUnchanged(t *testing.T) {
 		{"empty acr", pinnedSubject, pinnedAuthAt, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := s.IssueAccessForTenant(tc.subject, "acme", tc.authTime, tc.acr); !errors.Is(err, ErrInvalidToken) {
+			if _, err := s.IssueAccess(tc.subject, tenant.New("acme"), tc.authTime, tc.acr); !errors.Is(err, ErrInvalidToken) {
 				t.Errorf("err = %v, want ErrInvalidToken", err)
 			}
 		})
@@ -656,11 +657,11 @@ func TestVerifyAccessInTenant_Matrix(t *testing.T) {
 		{"cross tenant", "acme", "globex", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tok, err := s.IssueAccessForTenant(pinnedSubject, tc.tokenTenant, pinnedAuthAt, ACRLocalPassword)
+			tok, err := s.IssueAccess(pinnedSubject, tenant.New(tc.tokenTenant), pinnedAuthAt, ACRLocalPassword)
 			if err != nil {
 				t.Fatalf("issue: %v", err)
 			}
-			claims, err := s.VerifyAccessInTenant(tok, tc.routeTenant)
+			claims, err := s.VerifyAccess(tok, tenant.New(tc.routeTenant))
 			if tc.wantOK {
 				if err != nil {
 					t.Fatalf("VerifyAccessInTenant: %v", err)
@@ -691,18 +692,18 @@ func TestVerifyAccessInTenant_Matrix(t *testing.T) {
 func TestVerifyAccessInTenant_MismatchIsIndistinguishable(t *testing.T) {
 	s := pinnedService(t)
 
-	tok, err := s.IssueAccessForTenant(pinnedSubject, "acme", pinnedAuthAt, ACRLocalPassword)
+	tok, err := s.IssueAccess(pinnedSubject, tenant.New("acme"), pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	_, crossErr := s.VerifyAccessInTenant(tok, "globex")
+	_, crossErr := s.VerifyAccess(tok, tenant.New("globex"))
 	if crossErr == nil {
 		t.Fatal("cross-tenant token verified")
 	}
 
 	// The reference: a token whose signature does not check out at all.
 	forged := tok[:len(tok)-4] + "AAAA"
-	_, badErr := s.VerifyAccessInTenant(forged, "globex")
+	_, badErr := s.VerifyAccess(forged, tenant.New("globex"))
 	if badErr == nil {
 		t.Fatal("forged token verified")
 	}
@@ -729,7 +730,7 @@ func TestVerifyAccessInTenant_PreservesVerifyAccessRejections(t *testing.T) {
 		{"empty", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := s.VerifyAccessInTenant(tc.token, ""); !errors.Is(err, ErrInvalidToken) {
+			if _, err := s.VerifyAccess(tc.token, tenant.Single); !errors.Is(err, ErrInvalidToken) {
 				t.Errorf("err = %v, want ErrInvalidToken", err)
 			}
 		})
@@ -739,7 +740,7 @@ func TestVerifyAccessInTenant_PreservesVerifyAccessRejections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueTOTPPending: %v", err)
 	}
-	if _, err := s.VerifyAccessInTenant(pending, ""); !errors.Is(err, ErrInvalidToken) {
+	if _, err := s.VerifyAccess(pending, tenant.Single); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("totp-pending token accepted as an access token: %v", err)
 	}
 }

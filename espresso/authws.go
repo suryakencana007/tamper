@@ -42,24 +42,13 @@ func RequireAuthWS(jwt *crypto.JWTService, subprotocolPrefix string) func(http.H
 				writeUnauthenticated(w, err.Error())
 				return
 			}
-			// The tenant is taken from the request context, never from the
-			// token: a tenant read out of the credential being checked would
-			// be checking the token against itself. An unpinned request is
-			// DENIED rather than defaulted to Single — defaulting is what
-			// turns one forgotten RequireTenant into an unscoped read, and
-			// it is the whole reason tenant.ID has an invalid zero value.
-			// A single-tenant deployment installs RequireTenant returning
-			// tenant.Single and says so.
-			//
-			// The denial is the same 401 as a bad token, deliberately: a
-			// caller must not be able to tell "wrong tenant" from "bad
-			// credential" (§6.3).
-			tid, pinned := TenantFromContext(r.Context())
-			if !pinned {
-				writeUnauthenticated(w, "invalid token")
-				return
-			}
-			claims, err := jwt.VerifyAccess(tok, tid)
+			// ParseAccess, not VerifyAccess: the tenant comparison belongs to
+			// RequireTenant, which runs INSIDE this middleware and checks the
+			// token's tid against the ROUTED tenant. RequireAuth cannot do it
+			// — the route's tenant is not resolved yet at this point, and a
+			// tenant taken from the token would be checking the token against
+			// itself.
+			claims, err := jwt.ParseAccess(tok)
 			if err != nil {
 				writeUnauthenticated(w, "invalid token")
 				return

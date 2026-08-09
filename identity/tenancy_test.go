@@ -3,7 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
-	"strings"
+	"github.com/suryakencana007/tamper/tenant"
 	"testing"
 	"time"
 )
@@ -23,7 +23,6 @@ func tenantCore(t *testing.T, opts ...Option) (*Core, *MemStore) {
 	base := []Option{
 		WithRefreshTTL(30 * 24 * time.Hour),
 		WithDefaultACR(testACR),
-		WithTenancy(true),
 	}
 	c, err := New(store, testJWT(), append(base, opts...)...)
 	if err != nil {
@@ -34,34 +33,6 @@ func tenantCore(t *testing.T, opts ...Option) (*Core, *MemStore) {
 
 // plainStore implements Store and NOT TenantScopedStore — Barista's
 // exact shape, and the store the boot guard must reject.
-type plainStore struct{ *MemStore }
-
-func (plainStore) UserByEmailInTenant() {} // deliberately the wrong signature
-
-// --- the boot guard ---------------------------------------------------
-
-func TestNew_TenancyRequiresTenantScopedStore(t *testing.T) {
-	_, err := New(plainStore{NewMemStore()}, testJWT(), WithDefaultACR(testACR), WithTenancy(true))
-	if err == nil {
-		t.Fatal("New accepted a Store that does not implement TenantScopedStore")
-	}
-	// The message must name the CONCRETE type. Without it, "tenancy
-	// doesn't work" is a debugging session instead of one line.
-	if !strings.Contains(err.Error(), "plainStore") {
-		t.Errorf("error does not name the concrete type: %v", err)
-	}
-	if !strings.Contains(err.Error(), "TenantScopedStore") {
-		t.Errorf("error does not name the interface: %v", err)
-	}
-}
-
-func TestNew_TenancyOffAcceptsPlainStore(t *testing.T) {
-	// The compatibility path: a single-tenant app's store keeps working
-	// untouched. This is the local stand-in for Barista's adapter.
-	if _, err := New(plainStore{NewMemStore()}, testJWT(), WithDefaultACR(testACR)); err != nil {
-		t.Fatalf("tenancy OFF rejected a plain Store: %v", err)
-	}
-}
 
 // --- B1: the same email in two tenants --------------------------------
 
@@ -70,11 +41,11 @@ func TestRegisterInTenant_SameEmailInTwoTenants(t *testing.T) {
 	c, _ := tenantCore(t)
 	const email = "bob@example.com"
 
-	ua, _, err := c.RegisterInTenant(ctx, tenantA, email, "correct-horse")
+	ua, _, err := c.Register(ctx, tenant.New(tenantA), email, "correct-horse")
 	if err != nil {
 		t.Fatalf("register into %s: %v", tenantA, err)
 	}
-	ub, _, err := c.RegisterInTenant(ctx, tenantB, email, "correct-horse")
+	ub, _, err := c.Register(ctx, tenant.New(tenantB), email, "correct-horse")
 	if err != nil {
 		t.Fatalf("register the SAME email into %s: %v — email is still globally unique (B1)", tenantB, err)
 	}
@@ -86,11 +57,11 @@ func TestRegisterInTenant_SameEmailInTwoTenants(t *testing.T) {
 	}
 
 	// Both can log in, and each gets its OWN user.
-	gotA, _, err := c.LoginInTenant(ctx, tenantA, email, "correct-horse")
+	gotA, _, err := c.Login(ctx, tenant.New(tenantA), email, "correct-horse")
 	if err != nil {
 		t.Fatalf("login %s: %v", tenantA, err)
 	}
-	gotB, _, err := c.LoginInTenant(ctx, tenantB, email, "correct-horse")
+	gotB, _, err := c.Login(ctx, tenant.New(tenantB), email, "correct-horse")
 	if err != nil {
 		t.Fatalf("login %s: %v", tenantB, err)
 	}
@@ -115,16 +86,16 @@ func TestRegisterInTenant_SameEmailInTwoTenants(t *testing.T) {
 func TestLoginInTenant_CrossTenantIsRejected(t *testing.T) {
 	ctx := context.Background()
 	store := &globalEmailStore{MemStore: NewMemStore()}
-	c, err := New(store, testJWT(), WithRefreshTTL(time.Hour), WithDefaultACR(testACR), WithTenancy(true))
+	c, err := New(store, testJWT(), WithRefreshTTL(time.Hour), WithDefaultACR(testACR))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	if _, _, err := c.RegisterInTenant(ctx, tenantA, "alice@acme.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.New(tenantA), "alice@acme.com", "correct-horse"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	// Tenant B asks for tenant A's user, with A's correct password.
-	_, _, err = c.LoginInTenant(ctx, tenantB, "alice@acme.com", "correct-horse")
+	_, _, err = c.Login(ctx, tenant.New(tenantB), "alice@acme.com", "correct-horse")
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("cross-tenant login err = %v, want ErrInvalidCredentials — tenant %s reached "+
 			"tenant %s's user", err, tenantB, tenantA)
@@ -133,20 +104,12 @@ func TestLoginInTenant_CrossTenantIsRejected(t *testing.T) {
 
 // globalEmailStore is a MemStore whose UNSCOPED UserByEmail scans every
 // tenant, the way a pre-tenancy SQL adapter's `WHERE email = ?` does.
-// Its scoped method is correct; only the legacy read is global. That is
-// exactly the store against which calling the wrong method leaks.
+// Before v0.4.0 it overrode the UNSCOPED read to model a legacy SQL
+// adapter, so the test could catch a Core that chose the wrong method.
+// The fold removed the wrong method, so the override went with it: what
+// remains guards that the Core passes the CALLER's tenant through, which
+// a mutation pinning it to Single would still break.
 type globalEmailStore struct{ *MemStore }
-
-func (g *globalEmailStore) UserByEmail(_ context.Context, email string) (User, error) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	for _, u := range g.usersByID {
-		if u.Email == email {
-			return u, nil
-		}
-	}
-	return User{}, ErrNotFound
-}
 
 // --- B2: firstUser is per tenant --------------------------------------
 
@@ -171,12 +134,12 @@ func TestRegisterInTenant_FirstUserIsPerTenant(t *testing.T) {
 
 	// Tenant A fills up first.
 	for _, e := range []string{"a1@acme.com", "a2@acme.com"} {
-		if _, _, err := c.RegisterInTenant(ctx, tenantA, e, "correct-horse"); err != nil {
+		if _, _, err := c.Register(ctx, tenant.New(tenantA), e, "correct-horse"); err != nil {
 			t.Fatalf("register %s: %v", e, err)
 		}
 	}
 	// Then tenant B's very first user arrives.
-	if _, _, err := c.RegisterInTenant(ctx, tenantB, "b1@globex.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.New(tenantB), "b1@globex.com", "correct-horse"); err != nil {
 		t.Fatalf("register into %s: %v", tenantB, err)
 	}
 
@@ -205,10 +168,10 @@ func TestProvisionUserWithIdentityInTenant_FirstUserIsPerTenant(t *testing.T) {
 		},
 	}))
 
-	if _, _, err := c.RegisterInTenant(ctx, tenantA, "a1@acme.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.New(tenantA), "a1@acme.com", "correct-horse"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, _, err := c.ProvisionUserWithIdentityInTenant(ctx, tenantB, "b1@globex.com", "google", "sub-b"); err != nil {
+	if _, _, err := c.ProvisionUserWithIdentity(ctx, tenant.New(tenantB), "b1@globex.com", "google", "sub-b"); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
 	if len(provisioned) != 1 || !provisioned[0] {
@@ -219,38 +182,43 @@ func TestProvisionUserWithIdentityInTenant_FirstUserIsPerTenant(t *testing.T) {
 
 // --- deny-by-default on the tenant argument ---------------------------
 
-func TestTenancyOn_EmptyTenantIsAnError(t *testing.T) {
+func TestUnsetTenantIsAnError(t *testing.T) {
 	ctx := context.Background()
 	c, _ := tenantCore(t)
-	if _, _, err := c.RegisterInTenant(ctx, tenantA, "alice@acme.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.New(tenantA), "alice@acme.com", "correct-horse"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// An empty tenant must never behave as a wildcard that matches the
-	// row we just created in tenant A.
-	if _, _, err := c.LoginInTenant(ctx, "", "alice@acme.com", "correct-horse"); !errors.Is(err, ErrTenantRequired) {
-		t.Errorf("LoginInTenant with empty tenant: err = %v, want ErrTenantRequired", err)
+	// The ZERO ID is what a caller who forgot to thread the tenant
+	// produces. It must never behave as a wildcard matching the row we
+	// just created in tenant A.
+	//
+	// This used to assert on "". After the v0.4.0 flip "" is tenant.Single
+	// — a LEGAL, explicit single-tenant value — so asserting on it here
+	// would test the opposite of the intended property and pass for the
+	// wrong reason. The distinction only exists because tenant.ID has an
+	// invalid zero value; a bare string could not express this test.
+	var unset tenant.ID
+	if _, _, err := c.Login(ctx, unset, "alice@acme.com", "correct-horse"); !errors.Is(err, ErrTenantRequired) {
+		t.Errorf("Login with an unset tenant: err = %v, want ErrTenantRequired", err)
 	}
-	if _, _, err := c.RegisterInTenant(ctx, "", "new@acme.com", "correct-horse"); !errors.Is(err, ErrTenantRequired) {
-		t.Errorf("RegisterInTenant with empty tenant: err = %v, want ErrTenantRequired", err)
-	}
-	// The un-suffixed methods delegate with "", so with tenancy ON they
-	// are the same deny — there is no path to an unscoped read.
-	if _, _, err := c.Login(ctx, "alice@acme.com", "correct-horse"); !errors.Is(err, ErrTenantRequired) {
-		t.Errorf("Login (un-suffixed) with tenancy ON: err = %v, want ErrTenantRequired", err)
+	if _, _, err := c.Register(ctx, unset, "new@acme.com", "correct-horse"); !errors.Is(err, ErrTenantRequired) {
+		t.Errorf("Register with an unset tenant: err = %v, want ErrTenantRequired", err)
 	}
 }
 
-func TestTenancyOff_TenantArgumentIsAnError(t *testing.T) {
+// TestSingleTenantIsAccepted is the other half, and the two must be read
+// together: "" stays legal when it is SAID, which is the §5 M6 invariant.
+// Without this, a gate that rejected everything would satisfy the test
+// above and look correct.
+func TestSingleTenantIsAccepted(t *testing.T) {
 	ctx := context.Background()
-	c, _ := testCore(t) // tenancy OFF
-	// Honouring a tenant here would run an UNSCOPED query while the
-	// caller believes it is scoped — fail-open, so it must deny.
-	if _, _, err := c.LoginInTenant(ctx, tenantA, "alice@acme.com", "correct-horse"); !errors.Is(err, ErrTenancyDisabled) {
-		t.Errorf("err = %v, want ErrTenancyDisabled", err)
+	c, _ := tenantCore(t)
+	if _, _, err := c.Register(ctx, tenant.Single, "solo@example.com", "correct-horse"); err != nil {
+		t.Fatalf("Register with tenant.Single must be accepted, got: %v", err)
 	}
-	if err := c.RevokeAllSessionsForTenant(ctx, tenantA); !errors.Is(err, ErrTenancyDisabled) {
-		t.Errorf("RevokeAllSessionsForTenant with tenancy OFF: err = %v, want ErrTenancyDisabled", err)
+	if _, _, err := c.Login(ctx, tenant.Single, "solo@example.com", "correct-horse"); err != nil {
+		t.Fatalf("Login with tenant.Single must be accepted, got: %v", err)
 	}
 }
 
@@ -268,24 +236,19 @@ type callRecorder struct {
 	calls []string
 }
 
-func (r *callRecorder) UserByEmail(ctx context.Context, email string) (User, error) {
+func (r *callRecorder) UserByEmail(ctx context.Context, tenantID tenant.ID, email string) (User, error) {
 	r.calls = append(r.calls, "UserByEmail")
-	return r.MemStore.UserByEmail(ctx, email)
-}
-
-func (r *callRecorder) UserByEmailInTenant(ctx context.Context, tenantID, email string) (User, error) {
-	r.calls = append(r.calls, "UserByEmailInTenant")
-	return r.MemStore.UserByEmailInTenant(ctx, tenantID, email)
+	return r.MemStore.UserByEmail(ctx, tenantID, email)
 }
 
 func TestLoginInTenant_TimingParityIsStructural(t *testing.T) {
 	ctx := context.Background()
 	rec := &callRecorder{MemStore: NewMemStore()}
-	c, err := New(rec, testJWT(), WithRefreshTTL(time.Hour), WithDefaultACR(testACR), WithTenancy(true))
+	c, err := New(rec, testJWT(), WithRefreshTTL(time.Hour), WithDefaultACR(testACR))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, _, err := c.RegisterInTenant(ctx, tenantA, "alice@acme.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.New(tenantA), "alice@acme.com", "correct-horse"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -300,20 +263,17 @@ func TestLoginInTenant_TimingParityIsStructural(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec.calls = nil
-			_, _, err := c.LoginInTenant(ctx, tc.tenant, tc.email, tc.password)
+			_, _, err := c.Login(ctx, tenant.New(tc.tenant), tc.email, tc.password)
 			if !errors.Is(err, ErrInvalidCredentials) {
 				t.Fatalf("err = %v, want ErrInvalidCredentials", err)
 			}
-			// Structural half: the scoped lookup was used, and the
-			// unscoped one was never touched.
-			for _, call := range rec.calls {
-				if call == "UserByEmail" {
-					t.Errorf("Core used the UNSCOPED UserByEmail; a post-hoc TenantID comparison "+
-						"leaks the row and returns before the hash comparison (calls: %v)", rec.calls)
-				}
-			}
-			if len(rec.calls) != 1 || rec.calls[0] != "UserByEmailInTenant" {
-				t.Errorf("lookup calls = %v, want exactly [UserByEmailInTenant]", rec.calls)
+			// Structural half: EXACTLY ONE lookup. Before v0.4.0 this also
+			// asserted the unscoped twin was untouched; the fold deleted that
+			// twin, so what is left to guard is the call COUNT — a second
+			// read here would mean a post-hoc TenantID comparison, which
+			// returns before the hash comparison and leaks timing.
+			if len(rec.calls) != 1 || rec.calls[0] != "UserByEmail" {
+				t.Errorf("lookup calls = %v, want exactly [UserByEmail]", rec.calls)
 			}
 		})
 	}
@@ -331,15 +291,15 @@ func TestRevokeAllSessionsForTenant_IsNotThePerUserRevoke(t *testing.T) {
 	ctx := context.Background()
 	c, store := tenantCore(t)
 
-	alice, _, err := c.RegisterInTenant(ctx, tenantA, "alice@acme.com", "correct-horse")
+	alice, _, err := c.Register(ctx, tenant.New(tenantA), "alice@acme.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("register alice: %v", err)
 	}
-	bob, _, err := c.RegisterInTenant(ctx, tenantA, "bob@acme.com", "correct-horse")
+	bob, _, err := c.Register(ctx, tenant.New(tenantA), "bob@acme.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("register bob: %v", err)
 	}
-	carol, _, err := c.RegisterInTenant(ctx, tenantB, "carol@globex.com", "correct-horse")
+	carol, _, err := c.Register(ctx, tenant.New(tenantB), "carol@globex.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("register carol: %v", err)
 	}
@@ -360,7 +320,7 @@ func TestRevokeAllSessionsForTenant_IsNotThePerUserRevoke(t *testing.T) {
 	}
 
 	// The tenant-wide revoke is the separate, deliberately-named one.
-	if err := c.RevokeAllSessionsForTenant(ctx, tenantA); err != nil {
+	if err := c.RevokeAllSessionsForTenant(ctx, tenant.New(tenantA)); err != nil {
 		t.Fatalf("RevokeAllSessionsForTenant: %v", err)
 	}
 	if n := store.LiveSessionCount(bob.ID); n != 0 {
@@ -373,25 +333,3 @@ func TestRevokeAllSessionsForTenant_IsNotThePerUserRevoke(t *testing.T) {
 }
 
 // --- compatibility ----------------------------------------------------
-
-// TestTenancyOff_UsesUnscopedLookups pins the byte-identical claim at
-// the point it could silently stop being true: with tenancy OFF the Core
-// must call the ORIGINAL Store methods, not the scoped ones.
-func TestTenancyOff_UsesUnscopedLookups(t *testing.T) {
-	ctx := context.Background()
-	rec := &callRecorder{MemStore: NewMemStore()}
-	c, err := New(rec, testJWT(), WithRefreshTTL(time.Hour), WithDefaultACR(testACR))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if _, _, err := c.Register(ctx, "alice@example.com", "correct-horse"); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	rec.calls = nil
-	if _, _, err := c.Login(ctx, "alice@example.com", "correct-horse"); err != nil {
-		t.Fatalf("Login: %v", err)
-	}
-	if len(rec.calls) != 1 || rec.calls[0] != "UserByEmail" {
-		t.Errorf("tenancy OFF lookup calls = %v, want exactly [UserByEmail]", rec.calls)
-	}
-}

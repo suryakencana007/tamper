@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Slice 7k-1 — the HTTP half.
@@ -262,7 +263,7 @@ func TestThrottled_RoutedTenantKeyFallsBackToOneBucket(t *testing.T) {
 	callPath(h, "/api/auth/oidc/start/okta")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/start/okta", nil)
-	req = req.WithContext(context.WithValue(req.Context(), tenantCtxKey{}, "acme"))
+	req = req.WithContext(context.WithValue(req.Context(), tenantCtxKey{}, tenant.New("acme")))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
 	keys := st.seen()

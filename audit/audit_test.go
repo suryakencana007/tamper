@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"github.com/suryakencana007/tamper/tenant"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -470,7 +471,7 @@ func TestActorFromContext_DefaultsToUser(t *testing.T) {
 func TestWithActor_RoundTrip(t *testing.T) {
 	cases := []Actor{
 		{Type: ActorTypeUser, UserID: "u-1", Email: "alice@example.com", IP: "10.0.0.1"},
-		ActorService("sa-1", "scim-provisioner"),
+		ActorService("sa-1", "scim-provisioner", tenant.Single),
 		ActorSystem("retention"),
 	}
 	for _, want := range cases {
@@ -600,7 +601,7 @@ func TestSQLiteLogger_Verify_WalksFromChainRestart(t *testing.T) {
 // TestActorService_NameField confirms TD-AUDIT-03 closure: the SA
 // name lands in Actor.Name, not Actor.Email.
 func TestActorService_NameField(t *testing.T) {
-	a := ActorService("sa-123", "scim-provisioner")
+	a := ActorService("sa-123", "scim-provisioner", tenant.Single)
 	if a.Type != ActorTypeServiceAccount {
 		t.Errorf("Type = %q, want %q", a.Type, ActorTypeServiceAccount)
 	}
@@ -803,7 +804,7 @@ func TestSQLiteLogger_EmailLookup_NoOp(t *testing.T) {
 		},
 		{
 			name:        "service_account actor — no lookup",
-			actor:       ActorService("sa-1", "scim-provisioner"),
+			actor:       ActorService("sa-1", "scim-provisioner", tenant.Single),
 			wantEmail:   "",
 			wantLookups: 0,
 		},

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Slice 7k-1 — rate limiting on the credential surfaces.
@@ -63,11 +64,11 @@ type countingStore struct {
 	reads int
 }
 
-func (s *countingStore) UserByEmail(ctx context.Context, email string) (User, error) {
+func (s *countingStore) UserByEmail(ctx context.Context, tenantID tenant.ID, email string) (User, error) {
 	s.mu.Lock()
 	s.reads++
 	s.mu.Unlock()
-	return s.MemStore.UserByEmail(ctx, email)
+	return s.MemStore.UserByEmail(ctx, tenant.Single, email)
 }
 
 func (s *countingStore) readCount() int {
@@ -96,12 +97,12 @@ func TestThrottle_ResponseIsIdenticalForRealAndUnknownAccounts(t *testing.T) {
 	// One address is real, with a known-good password; the other never
 	// existed. Registration happens before the limiter is consulted for
 	// login, so it is unaffected.
-	if _, _, err := c.Register(ctx, "real@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.Single, "real@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	realUser, realTokens, realErr := c.Login(ctx, "real@example.com", "correct-horse")
-	ghostUser, ghostTokens, ghostErr := c.Login(ctx, "ghost@example.com", "correct-horse")
+	realUser, realTokens, realErr := c.Login(ctx, tenant.Single, "real@example.com", "correct-horse")
+	ghostUser, ghostTokens, ghostErr := c.Login(ctx, tenant.Single, "ghost@example.com", "correct-horse")
 
 	if !reflect.DeepEqual(realUser, ghostUser) {
 		t.Errorf("the returned User differs between a real and an unknown account:\n"+
@@ -147,7 +148,7 @@ func TestThrottle_RefusalDoesNotReachTheStore(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if _, _, err := c.Login(ctx, "someone@example.com", "hunter2"); !errors.Is(err, ErrThrottled) {
+	if _, _, err := c.Login(ctx, tenant.Single, "someone@example.com", "hunter2"); !errors.Is(err, ErrThrottled) {
 		t.Fatalf("Login err = %v, want ErrThrottled", err)
 	}
 	if n := store.readCount(); n != 0 {
@@ -165,7 +166,7 @@ func TestThrottle_ErrorCarriesNoAccountDetail(t *testing.T) {
 	_, cfg := denyAll(time.Minute)
 	c, _ := testCore(t, WithThrottling(cfg))
 
-	_, _, err := c.Login(ctx, "victim@acme.example", "hunter2")
+	_, _, err := c.Login(ctx, tenant.Single, "victim@acme.example", "hunter2")
 	if err == nil {
 		t.Fatal("expected a refusal")
 	}
@@ -191,8 +192,8 @@ func TestThrottle_LoginKeyUsesTheNormalisedEmail(t *testing.T) {
 		SecondFactorKey: func(userID, step string) string { return step + "|" + userID },
 	}))
 
-	_, _, _ = c.Login(ctx, "  Alice@Example.COM ", "whatever")
-	_, _, _ = c.Login(ctx, "alice@example.com", "whatever")
+	_, _, _ = c.Login(ctx, tenant.Single, "  Alice@Example.COM ", "whatever")
+	_, _, _ = c.Login(ctx, tenant.Single, "alice@example.com", "whatever")
 
 	keys := rt.seen()
 	if len(keys) != 2 {
@@ -221,8 +222,8 @@ func TestThrottle_LoginKeyCarriesTheTenant(t *testing.T) {
 		SecondFactorKey: func(userID, step string) string { return step + "|" + userID },
 	}))
 
-	_, _, _ = c.LoginInTenant(ctx, "acme", "a@example.com", "whatever")
-	_, _, _ = c.LoginInTenant(ctx, "globex", "a@example.com", "whatever")
+	_, _, _ = c.Login(ctx, tenant.New("acme"), "a@example.com", "whatever")
+	_, _, _ = c.Login(ctx, tenant.New("globex"), "a@example.com", "whatever")
 
 	keys := rt.seen()
 	if len(keys) != 2 {
@@ -406,16 +407,16 @@ func TestThrottle_NilThrottleNeedsNoKeys(t *testing.T) {
 func TestThrottle_AbsentByDefault(t *testing.T) {
 	ctx := context.Background()
 	c, _ := testCore(t)
-	if _, _, err := c.Register(ctx, "alice@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	for i := range 50 {
-		if _, _, err := c.Login(ctx, "alice@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
+		if _, _, err := c.Login(ctx, tenant.Single, "alice@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("attempt %d: err = %v, want ErrInvalidCredentials — an unthrottled "+
 				"Core started limiting", i+1, err)
 		}
 	}
-	if _, _, err := c.Login(ctx, "alice@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Login(ctx, tenant.Single, "alice@example.com", "correct-horse"); err != nil {
 		t.Errorf("Login after 50 failures: %v — an unconfigured Core locked the user out", err)
 	}
 }
@@ -432,18 +433,18 @@ func TestThrottle_AllowedRequestsPassThroughUnchanged(t *testing.T) {
 		LoginKey:        func(tenantID, email string) string { return tenantID + "|" + email },
 		SecondFactorKey: func(userID, step string) string { return step + "|" + userID },
 	}))
-	if _, _, err := c.Register(ctx, "alice@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	user, tokens, err := c.Login(ctx, "alice@example.com", "correct-horse")
+	user, tokens, err := c.Login(ctx, tenant.Single, "alice@example.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	if user.Email != "alice@example.com" || tokens.Access == "" || tokens.Refresh == "" {
 		t.Errorf("an allowed login returned %+v / %+v", user, tokens)
 	}
-	if _, _, err := c.Login(ctx, "alice@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, _, err := c.Login(ctx, tenant.Single, "alice@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("a wrong password behind an allowing limiter returned %v, "+
 			"want ErrInvalidCredentials", err)
 	}

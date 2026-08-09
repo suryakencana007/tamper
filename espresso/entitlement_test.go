@@ -21,11 +21,11 @@ type entStore struct {
 
 var _ tenant.EntitlementStore = (*entStore)(nil)
 
-func (s *entStore) ForTenant(_ context.Context, tenantID string) (tenant.Entitlements, error) {
+func (s *entStore) ForTenant(_ context.Context, tenantID tenant.ID) (tenant.Entitlements, error) {
 	if s.err != nil {
 		return tenant.Entitlements{}, s.err
 	}
-	return s.byTenant[tenantID], nil
+	return s.byTenant[tenantID.String()], nil
 }
 
 // gatedRoute wraps a handler that records whether it ran.
@@ -42,7 +42,7 @@ func gatedRoute(store tenant.EntitlementStore, c Capability, ran *bool, opts ...
 func callAsTenant(h http.Handler, tenantID string, pinned bool) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/start/okta", nil)
 	if pinned {
-		req = req.WithContext(context.WithValue(req.Context(), tenantCtxKey{}, tenantID))
+		req = req.WithContext(context.WithValue(req.Context(), tenantCtxKey{}, tenant.FromStored(tenantID)))
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

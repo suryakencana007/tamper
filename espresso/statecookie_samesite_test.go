@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/oidc"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // minimalFederationConfig is a valid config except for whatever the
@@ -50,7 +51,7 @@ func minimalFederationConfig() (FederationConfig, FederationHooks) {
 		MountPrefix: "/api/auth",
 	}
 	hooks := FederationHooks{
-		Registry: func(context.Context) (*oidc.ProviderRegistry, error) { return nil, nil },
+		Registry: func(context.Context, tenant.ID) (*oidc.ProviderRegistry, error) { return nil, nil },
 		OnFederatedExchange: func(context.Context, *oidc.Provider, OIDCVerified) (FederationOutcome, error) {
 			return FederationOutcome{}, nil
 		},

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // This file is the local stand-in for `moon run barista:ci`, which
@@ -18,7 +20,7 @@ import (
 // production, examples and every test double — is *MemStore or embeds
 // one. The compatibility path stopped having an independent witness.
 //
-// legacyStore is that witness. Two properties are load-bearing:
+// handwrittenStore is that witness. Two properties are load-bearing:
 //
 //  1. It does NOT embed MemStore. The other single-tenant stand-ins
 //     (plainStore, singleTenantStore) satisfy Store by PROMOTION, so if
@@ -33,9 +35,9 @@ import (
 // It does not replace Barista CI. Consumer-side lint and unkeyed
 // composite literals in a separate repo remain out of reach.
 
-// legacyStore is a hand-written, globally-keyed, single-tenant Store —
+// handwrittenStore is a hand-written, globally-keyed, single-tenant Store —
 // the shape of an adapter written before Phase 7 existed.
-type legacyStore struct {
+type handwrittenStore struct {
 	mu       sync.Mutex
 	users    map[string]User
 	sessions map[string]RefreshSession
@@ -54,28 +56,28 @@ type legacyStore struct {
 }
 
 // Store is satisfied by hand, not by promotion.
-var _ Store = (*legacyStore)(nil)
+var _ Store = (*handwrittenStore)(nil)
 
-func newLegacyStore() *legacyStore {
-	return &legacyStore{
+func newHandwrittenStore() *handwrittenStore {
+	return &handwrittenStore{
 		users: map[string]User{}, sessions: map[string]RefreshSession{},
 		byHash: map[string]string{}, idents: map[string]Identity{}, totp: map[string]TOTPState{},
 	}
 }
 
-func (s *legacyStore) note(method string) { s.calls = append(s.calls, method) }
+func (s *handwrittenStore) note(method string) { s.calls = append(s.calls, method) }
 
-func (s *legacyStore) noteTenant(tenantID string) {
+func (s *handwrittenStore) noteTenant(tenantID string) {
 	if tenantID != "" {
 		s.tenantWrites = append(s.tenantWrites, tenantID)
 	}
 }
 
-func (s *legacyStore) trace() []string { return s.calls }
+func (s *handwrittenStore) trace() []string { return s.calls }
 
-func (s *legacyStore) reset() { s.calls = nil }
+func (s *handwrittenStore) reset() { s.calls = nil }
 
-func (s *legacyStore) CreateUser(_ context.Context, u NewUser, _ bool) error {
+func (s *handwrittenStore) CreateUser(_ context.Context, u NewUser, _ bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("CreateUser")
@@ -91,7 +93,7 @@ func (s *legacyStore) CreateUser(_ context.Context, u NewUser, _ bool) error {
 	return nil
 }
 
-func (s *legacyStore) UserByID(_ context.Context, id string) (User, error) {
+func (s *handwrittenStore) UserByID(_ context.Context, id string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("UserByID")
@@ -104,7 +106,7 @@ func (s *legacyStore) UserByID(_ context.Context, id string) (User, error) {
 
 // UserByEmail is `WHERE email = ?` across every row — no tenant filter,
 // because there is no tenant column.
-func (s *legacyStore) UserByEmail(_ context.Context, email string) (User, error) {
+func (s *handwrittenStore) UserByEmail(_ context.Context, tenantID tenant.ID, email string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("UserByEmail")
@@ -116,14 +118,14 @@ func (s *legacyStore) UserByEmail(_ context.Context, email string) (User, error)
 	return User{}, fmt.Errorf("%w: email %s", ErrNotFound, email)
 }
 
-func (s *legacyStore) CountUsers(context.Context) (int64, error) {
+func (s *handwrittenStore) CountUsers(_ context.Context, tenantID tenant.ID) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("CountUsers")
 	return int64(len(s.users)), nil
 }
 
-func (s *legacyStore) CreateRefreshSession(_ context.Context, x RefreshSession) error {
+func (s *handwrittenStore) CreateRefreshSession(_ context.Context, x RefreshSession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("CreateRefreshSession")
@@ -134,7 +136,7 @@ func (s *legacyStore) CreateRefreshSession(_ context.Context, x RefreshSession) 
 	return nil
 }
 
-func (s *legacyStore) RefreshSessionByHash(_ context.Context, h string) (RefreshSession, error) {
+func (s *handwrittenStore) RefreshSessionByHash(_ context.Context, h string) (RefreshSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("RefreshSessionByHash")
@@ -145,7 +147,7 @@ func (s *legacyStore) RefreshSessionByHash(_ context.Context, h string) (Refresh
 	return s.sessions[id], nil
 }
 
-func (s *legacyStore) RevokeRefreshSession(_ context.Context, id string, at time.Time) error {
+func (s *handwrittenStore) RevokeRefreshSession(_ context.Context, id string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("RevokeRefreshSession")
@@ -156,7 +158,7 @@ func (s *legacyStore) RevokeRefreshSession(_ context.Context, id string, at time
 	return nil
 }
 
-func (s *legacyStore) RevokeAllRefreshSessionsForUser(_ context.Context, uid string, at time.Time) error {
+func (s *handwrittenStore) RevokeAllRefreshSessionsForUser(_ context.Context, uid string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("RevokeAllRefreshSessionsForUser")
@@ -169,7 +171,7 @@ func (s *legacyStore) RevokeAllRefreshSessionsForUser(_ context.Context, uid str
 	return nil
 }
 
-func (s *legacyStore) IdentityByProviderSubject(_ context.Context, p, sub string) (Identity, error) {
+func (s *handwrittenStore) IdentityByProviderSubject(_ context.Context, tenantID tenant.ID, p, sub string) (Identity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("IdentityByProviderSubject")
@@ -181,7 +183,7 @@ func (s *legacyStore) IdentityByProviderSubject(_ context.Context, p, sub string
 	return Identity{}, fmt.Errorf("%w: identity %s/%s", ErrNotFound, p, sub)
 }
 
-func (s *legacyStore) IdentityByID(_ context.Context, id string) (Identity, error) {
+func (s *handwrittenStore) IdentityByID(_ context.Context, id string) (Identity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("IdentityByID")
@@ -192,7 +194,7 @@ func (s *legacyStore) IdentityByID(_ context.Context, id string) (Identity, erro
 	return i, nil
 }
 
-func (s *legacyStore) IdentitiesByUserID(_ context.Context, uid string) ([]Identity, error) {
+func (s *handwrittenStore) IdentitiesByUserID(_ context.Context, uid string) ([]Identity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("IdentitiesByUserID")
@@ -205,7 +207,7 @@ func (s *legacyStore) IdentitiesByUserID(_ context.Context, uid string) ([]Ident
 	return out, nil
 }
 
-func (s *legacyStore) InsertIdentity(_ context.Context, ni NewIdentity) error {
+func (s *handwrittenStore) InsertIdentity(_ context.Context, ni NewIdentity) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("InsertIdentity")
@@ -219,7 +221,7 @@ func (s *legacyStore) InsertIdentity(_ context.Context, ni NewIdentity) error {
 	return nil
 }
 
-func (s *legacyStore) TouchIdentityLastLogin(_ context.Context, id string, at time.Time) error {
+func (s *handwrittenStore) TouchIdentityLastLogin(_ context.Context, id string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("TouchIdentityLastLogin")
@@ -233,7 +235,7 @@ func (s *legacyStore) TouchIdentityLastLogin(_ context.Context, id string, at ti
 	return nil
 }
 
-func (s *legacyStore) DeleteIdentity(_ context.Context, id string) error {
+func (s *handwrittenStore) DeleteIdentity(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("DeleteIdentity")
@@ -241,7 +243,7 @@ func (s *legacyStore) DeleteIdentity(_ context.Context, id string) error {
 	return nil
 }
 
-func (s *legacyStore) CountIdentitiesByUserID(_ context.Context, uid string) (int64, error) {
+func (s *handwrittenStore) CountIdentitiesByUserID(_ context.Context, uid string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("CountIdentitiesByUserID")
@@ -254,7 +256,7 @@ func (s *legacyStore) CountIdentitiesByUserID(_ context.Context, uid string) (in
 	return n, nil
 }
 
-func (s *legacyStore) ProvisionUserWithIdentity(_ context.Context, u NewUser, ni NewIdentity, _ bool) (User, Identity, error) {
+func (s *handwrittenStore) ProvisionUserWithIdentity(_ context.Context, u NewUser, ni NewIdentity, _ bool) (User, Identity, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("ProvisionUserWithIdentity")
@@ -277,7 +279,7 @@ func (s *legacyStore) ProvisionUserWithIdentity(_ context.Context, u NewUser, ni
 	return user, ident, nil
 }
 
-func (s *legacyStore) TOTPState(_ context.Context, uid string) (TOTPState, error) {
+func (s *handwrittenStore) TOTPState(_ context.Context, uid string) (TOTPState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("TOTPState")
@@ -287,7 +289,7 @@ func (s *legacyStore) TOTPState(_ context.Context, uid string) (TOTPState, error
 	return s.totp[uid], nil
 }
 
-func (s *legacyStore) SetTOTPPending(_ context.Context, uid string, env []byte, hashes []string) error {
+func (s *handwrittenStore) SetTOTPPending(_ context.Context, uid string, env []byte, hashes []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("SetTOTPPending")
@@ -295,7 +297,7 @@ func (s *legacyStore) SetTOTPPending(_ context.Context, uid string, env []byte, 
 	return nil
 }
 
-func (s *legacyStore) EnableTOTP(_ context.Context, uid string, env []byte, hashes []string, _ time.Time) error {
+func (s *handwrittenStore) EnableTOTP(_ context.Context, uid string, env []byte, hashes []string, _ time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("EnableTOTP")
@@ -307,7 +309,7 @@ func (s *legacyStore) EnableTOTP(_ context.Context, uid string, env []byte, hash
 	return nil
 }
 
-func (s *legacyStore) SetRecoveryCodeHashes(_ context.Context, uid string, hashes []string) error {
+func (s *handwrittenStore) SetRecoveryCodeHashes(_ context.Context, uid string, hashes []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("SetRecoveryCodeHashes")
@@ -317,7 +319,7 @@ func (s *legacyStore) SetRecoveryCodeHashes(_ context.Context, uid string, hashe
 	return nil
 }
 
-func (s *legacyStore) ClearTOTP(_ context.Context, uid string) error {
+func (s *handwrittenStore) ClearTOTP(_ context.Context, uid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.note("ClearTOTP")
@@ -325,7 +327,7 @@ func (s *legacyStore) ClearTOTP(_ context.Context, uid string) error {
 	return nil
 }
 
-func legacyCore(t *testing.T, s *legacyStore, opts ...Option) *Core {
+func legacyCore(t *testing.T, s *handwrittenStore, opts ...Option) *Core {
 	t.Helper()
 	base := []Option{WithRefreshTTL(30 * 24 * time.Hour), WithDefaultACR(testACR)}
 	c, err := New(s, testJWT(), append(base, opts...)...)
@@ -335,52 +337,66 @@ func legacyCore(t *testing.T, s *legacyStore, opts ...Option) *Core {
 	return c
 }
 
-// TestLegacyStore_IsNotTenantScoped guards the fixture itself. The day
-// someone "simplifies" legacyStore by embedding MemStore, it silently
+// TestHandwrittenStore_IsNotTenantScoped guards the fixture itself. The day
+// someone "simplifies" handwrittenStore by embedding MemStore, it silently
 // becomes tenant-scoped and stops modelling anything — this fails first
 // and says why.
-func TestLegacyStore_IsNotTenantScoped(t *testing.T) {
-	if _, ok := any(newLegacyStore()).(TenantScopedStore); ok {
-		t.Fatal("legacyStore implements TenantScopedStore; it must model a PRE-Phase-7 adapter, " +
-			"or the compatibility path has no independent witness left in this module")
+func TestHandwrittenStore_IsNotSatisfiedByPromotion(t *testing.T) {
+	// The fixture must implement Store BY HAND. Every other stand-in in
+	// this package embeds *MemStore and is satisfied by promotion, so if
+	// Store ever widens they are auto-satisfied and stay green while a
+	// real adapter in a consumer's repo fails to compile. This one has to
+	// break, which is the entire reason it exists.
+	//
+	// Before v0.4.0 this asserted "does not implement TenantScopedStore".
+	// That interface is gone, but the property it protected is not: it
+	// just moved from "models a pre-tenancy adapter" to "models a
+	// hand-written one".
+	rt := reflect.TypeOf(handwrittenStore{})
+	for i := range rt.NumField() {
+		f := rt.Field(i)
+		if f.Anonymous {
+			t.Fatalf("handwrittenStore embeds %s; embedding satisfies Store by promotion "+
+				"and the fixture stops witnessing anything", f.Type)
+		}
 	}
 }
 
-// TestLegacyAdapter_BaristaFlowsUnchanged drives the flow list Barista
+// TestHandwrittenAdapter_BaristaFlowsUnchanged drives the flow list Barista
 // drives, against a store that has never heard of a tenant.
-func TestLegacyAdapter_BaristaFlowsUnchanged(t *testing.T) {
+func TestHandwrittenAdapter_BaristaFlowsUnchanged(t *testing.T) {
 	ctx := context.Background()
-	s := newLegacyStore()
+	s := newHandwrittenStore()
 	c := legacyCore(t, s, WithKeySet(testKeySet(t)))
 
 	// Register: first user gets the bootstrap signal.
 	var firstSeen bool
 	c.hooks.OnRegistered = func(_ context.Context, _ User, first bool) { firstSeen = first }
-	alice, tokens, err := c.Register(ctx, "alice@example.com", "correct-horse")
+	alice, tokens, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if !firstSeen {
 		t.Error("first user did not receive firstUser=true")
 	}
-	if _, _, err := c.Register(ctx, "bob@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.Single, "bob@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register second: %v", err)
 	}
 
 	// Duplicate email still collides on the adapter's global index.
-	if _, _, err := c.Register(ctx, "alice@example.com", "correct-horse"); !errors.Is(err, ErrEmailTaken) {
+	if _, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse"); !errors.Is(err, ErrEmailTaken) {
 		t.Errorf("duplicate register err = %v, want ErrEmailTaken", err)
 	}
 
 	// Login: success and the collapsed rejections.
-	if _, _, err := c.Login(ctx, "alice@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Login(ctx, tenant.Single, "alice@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	for _, tc := range []struct{ name, email, pw string }{
 		{"wrong password", "alice@example.com", "nope"},
 		{"unknown email", "nobody@example.com", "correct-horse"},
 	} {
-		if _, _, err := c.Login(ctx, tc.email, tc.pw); !errors.Is(err, ErrInvalidCredentials) {
+		if _, _, err := c.Login(ctx, tenant.Single, tc.email, tc.pw); !errors.Is(err, ErrInvalidCredentials) {
 			t.Errorf("%s: err = %v, want ErrInvalidCredentials", tc.name, err)
 		}
 	}
@@ -398,14 +414,14 @@ func TestLegacyAdapter_BaristaFlowsUnchanged(t *testing.T) {
 	}
 
 	// Federated: resolve miss, provision, resolve hit, link, unlink.
-	if _, _, found, err := c.ResolveByIdentity(ctx, "google", "sub-1"); err != nil || found {
+	if _, _, found, err := c.ResolveByIdentity(ctx, tenant.Single, "google", "sub-1"); err != nil || found {
 		t.Fatalf("ResolveByIdentity(miss) = (%v, %v), want (false, nil)", found, err)
 	}
-	fed, ident, err := c.ProvisionUserWithIdentity(ctx, "carol@example.com", "google", "sub-1")
+	fed, ident, err := c.ProvisionUserWithIdentity(ctx, tenant.Single, "carol@example.com", "google", "sub-1")
 	if err != nil {
 		t.Fatalf("ProvisionUserWithIdentity: %v", err)
 	}
-	if _, _, found, err := c.ResolveByIdentity(ctx, "google", "sub-1"); err != nil || !found {
+	if _, _, found, err := c.ResolveByIdentity(ctx, tenant.Single, "google", "sub-1"); err != nil || !found {
 		t.Fatalf("ResolveByIdentity(hit) = (%v, %v), want (true, nil)", found, err)
 	}
 	if _, err := c.Link(ctx, alice.ID, "saml", "sub-2"); err != nil {
@@ -437,7 +453,7 @@ func mustIdentityID(t *testing.T, c *Core, ctx context.Context, userID string) s
 	return list[0].ID
 }
 
-// TestLegacyAdapter_ProvisionPortTrace is the guard for 7b-2's atomicity
+// TestHandwrittenAdapter_ProvisionPortTrace is the guard for 7b-2's atomicity
 // invariant: "ProvisionUserWithIdentity stays atomic. The tenant does not
 // introduce a second round trip between resolve and provision."
 //
@@ -446,13 +462,13 @@ func mustIdentityID(t *testing.T, c *Core, ctx context.Context, userID string) s
 // which is why an added read compiled and left the whole suite green. The
 // only observable is the SHAPE of the port conversation, so this pins it
 // exactly: count, then the single atomic write. Nothing between them.
-func TestLegacyAdapter_ProvisionPortTrace(t *testing.T) {
+func TestHandwrittenAdapter_ProvisionPortTrace(t *testing.T) {
 	ctx := context.Background()
-	s := newLegacyStore()
+	s := newHandwrittenStore()
 	c := legacyCore(t, s)
 
 	s.reset()
-	if _, _, err := c.ProvisionUserWithIdentity(ctx, "dave@example.com", "google", "sub-9"); err != nil {
+	if _, _, err := c.ProvisionUserWithIdentity(ctx, tenant.Single, "dave@example.com", "google", "sub-9"); err != nil {
 		t.Fatalf("ProvisionUserWithIdentity: %v", err)
 	}
 
@@ -466,20 +482,20 @@ func TestLegacyAdapter_ProvisionPortTrace(t *testing.T) {
 	}
 }
 
-// TestLegacyAdapter_LoginPortTrace pins that the compatibility path uses
+// TestHandwrittenAdapter_LoginPortTrace pins that the compatibility path uses
 // the UNSCOPED lookup and reads the user exactly once. A Core that
 // consulted a scoped method here would not compile against this adapter
 // — which is the whole reason the fixture does not embed MemStore.
-func TestLegacyAdapter_LoginPortTrace(t *testing.T) {
+func TestHandwrittenAdapter_LoginPortTrace(t *testing.T) {
 	ctx := context.Background()
-	s := newLegacyStore()
+	s := newHandwrittenStore()
 	c := legacyCore(t, s)
-	if _, _, err := c.Register(ctx, "erin@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.Single, "erin@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	s.reset()
-	if _, _, err := c.Login(ctx, "erin@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Login(ctx, tenant.Single, "erin@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Login: %v", err)
 	}
 	want := []string{"UserByEmail", "CreateRefreshSession"}
@@ -488,21 +504,21 @@ func TestLegacyAdapter_LoginPortTrace(t *testing.T) {
 	}
 }
 
-// TestLegacyAdapter_SentinelParity pins the error vocabulary an app maps
+// TestHandwrittenAdapter_SentinelParity pins the error vocabulary an app maps
 // onto its own wire errors. A changed sentinel is invisible here and a
 // 500 in production.
-func TestLegacyAdapter_SentinelParity(t *testing.T) {
+func TestHandwrittenAdapter_SentinelParity(t *testing.T) {
 	ctx := context.Background()
-	s := newLegacyStore()
+	s := newHandwrittenStore()
 	c := legacyCore(t, s)
 
-	if _, _, err := c.Register(ctx, "frank@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.Single, "frank@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if _, _, err := c.Register(ctx, "frank@example.com", "correct-horse"); !errors.Is(err, ErrEmailTaken) {
+	if _, _, err := c.Register(ctx, tenant.Single, "frank@example.com", "correct-horse"); !errors.Is(err, ErrEmailTaken) {
 		t.Errorf("ErrEmailTaken not surfaced: %v", err)
 	}
-	if _, _, err := c.Login(ctx, "frank@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, _, err := c.Login(ctx, tenant.Single, "frank@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("ErrInvalidCredentials not surfaced: %v", err)
 	}
 	if _, _, err := c.Refresh(ctx, "not-a-token"); !errors.Is(err, ErrInvalidSession) {
@@ -512,10 +528,10 @@ func TestLegacyAdapter_SentinelParity(t *testing.T) {
 		t.Errorf("ErrNotFound not surfaced: %v", err)
 	}
 	// Cross-user link conflict keeps its pre-delegation message.
-	if _, _, err := c.ProvisionUserWithIdentity(ctx, "gina@example.com", "google", "sub-x"); err != nil {
+	if _, _, err := c.ProvisionUserWithIdentity(ctx, tenant.Single, "gina@example.com", "google", "sub-x"); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
-	u, err := c.store.UserByEmail(ctx, "frank@example.com")
+	u, err := c.store.UserByEmail(ctx, tenant.Single, "frank@example.com")
 	if err != nil {
 		t.Fatalf("UserByEmail: %v", err)
 	}
@@ -524,3 +540,19 @@ func TestLegacyAdapter_SentinelParity(t *testing.T) {
 	}
 }
 
+// RevokeAllRefreshSessionsForTenant is required by the folded Store. The
+// fixture records the call rather than implementing a tenant sweep — its
+// job is to witness the SHAPE of the port conversation, not to be a
+// second MemStore.
+func (s *handwrittenStore) RevokeAllRefreshSessionsForTenant(_ context.Context, tenantID tenant.ID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.note("RevokeAllRefreshSessionsForTenant")
+	for id, sess := range s.sessions {
+		if sess.TenantID == tenantID.String() && !sess.Revoked() {
+			sess.RevokedAt = at
+			s.sessions[id] = sess
+		}
+	}
+	return nil
+}

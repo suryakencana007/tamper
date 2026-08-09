@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // --- the recorder -----------------------------------------------------
@@ -69,15 +70,15 @@ func (r *recorderT) report() string { return strings.Join(r.messages, "\n  ") }
 type leakMode int
 
 const (
-	leakNone leakMode = iota
-	leakUserByEmail        // ignores tenantID on the user read
-	leakIdentity           // ignores tenantID on the identity read
-	leakCount              // counts every tenant's users
-	leakSessionTenant      // drops TenantID when returning a session
-	leakRevokeAll          // revokes every tenant's sessions
-	leakPermissionError    // returns a permission-shaped error instead of ErrNotFound
-	leakZeroValueNilError  // returns a zero value with a nil error
-	leakGlobalEmailUnique  // email unique globally rather than per tenant (blocker B1)
+	leakNone              leakMode = iota
+	leakUserByEmail                // ignores tenantID on the user read
+	leakIdentity                   // ignores tenantID on the identity read
+	leakCount                      // counts every tenant's users
+	leakSessionTenant              // drops TenantID when returning a session
+	leakRevokeAll                  // revokes every tenant's sessions
+	leakPermissionError            // returns a permission-shaped error instead of ErrNotFound
+	leakZeroValueNilError          // returns a zero value with a nil error
+	leakGlobalEmailUnique          // email unique globally rather than per tenant (blocker B1)
 )
 
 // errPermissionDenied is the shape a store might plausibly return
@@ -97,7 +98,7 @@ type fixture struct {
 	byHash   map[string]string
 }
 
-var _ identity.TenantScopedStore = (*fixture)(nil)
+var _ identity.Store = (*fixture)(nil)
 
 func newFixture(mode leakMode) *fixture {
 	return &fixture{
@@ -111,14 +112,14 @@ func newFixture(mode leakMode) *fixture {
 
 // --- the tenant-scoped surface, where the leaks live ---
 
-func (f *fixture) UserByEmailInTenant(_ context.Context, tenantID, email string) (identity.User, error) {
+func (f *fixture) UserByEmail(_ context.Context, tenantID tenant.ID, email string) (identity.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, u := range f.users {
 		if u.Email != email {
 			continue
 		}
-		if f.mode == leakUserByEmail || u.TenantID == tenantID {
+		if f.mode == leakUserByEmail || u.TenantID == tenantID.String() {
 			return u, nil
 		}
 	}
@@ -132,37 +133,37 @@ func (f *fixture) UserByEmailInTenant(_ context.Context, tenantID, email string)
 	}
 }
 
-func (f *fixture) IdentityByProviderSubjectInTenant(_ context.Context, tenantID, provider, subject string) (identity.Identity, error) {
+func (f *fixture) IdentityByProviderSubject(_ context.Context, tenantID tenant.ID, provider, subject string) (identity.Identity, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, i := range f.idents {
 		if i.Provider != provider || i.Subject != subject {
 			continue
 		}
-		if f.mode == leakIdentity || i.TenantID == tenantID {
+		if f.mode == leakIdentity || i.TenantID == tenantID.String() {
 			return i, nil
 		}
 	}
 	return identity.Identity{}, fmt.Errorf("%w: identity %s/%s", identity.ErrNotFound, provider, subject)
 }
 
-func (f *fixture) CountUsersInTenant(_ context.Context, tenantID string) (int64, error) {
+func (f *fixture) CountUsers(_ context.Context, tenantID tenant.ID) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var n int64
 	for _, u := range f.users {
-		if f.mode == leakCount || u.TenantID == tenantID {
+		if f.mode == leakCount || u.TenantID == tenantID.String() {
 			n++
 		}
 	}
 	return n, nil
 }
 
-func (f *fixture) RevokeAllRefreshSessionsForTenant(_ context.Context, tenantID string, at time.Time) error {
+func (f *fixture) RevokeAllRefreshSessionsForTenant(_ context.Context, tenantID tenant.ID, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for id, s := range f.sessions {
-		if f.mode == leakRevokeAll || s.TenantID == tenantID {
+		if f.mode == leakRevokeAll || s.TenantID == tenantID.String() {
 			s.RevokedAt = at
 			f.sessions[id] = s
 		}
@@ -196,23 +197,6 @@ func (f *fixture) UserByID(_ context.Context, id string) (identity.User, error) 
 		return identity.User{}, fmt.Errorf("%w: user %s", identity.ErrNotFound, id)
 	}
 	return u, nil
-}
-
-func (f *fixture) UserByEmail(_ context.Context, email string) (identity.User, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, u := range f.users {
-		if u.Email == email {
-			return u, nil
-		}
-	}
-	return identity.User{}, fmt.Errorf("%w: email %s", identity.ErrNotFound, email)
-}
-
-func (f *fixture) CountUsers(_ context.Context) (int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return int64(len(f.users)), nil
 }
 
 func (f *fixture) CreateRefreshSession(_ context.Context, s identity.RefreshSession) error {
@@ -277,17 +261,6 @@ func (f *fixture) InsertIdentity(_ context.Context, ni identity.NewIdentity) err
 		LinkedAt: ni.LinkedAt, LastLoginAt: ni.LastLoginAt,
 	}
 	return nil
-}
-
-func (f *fixture) IdentityByProviderSubject(_ context.Context, provider, subject string) (identity.Identity, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, i := range f.idents {
-		if i.Provider == provider && i.Subject == subject {
-			return i, nil
-		}
-	}
-	return identity.Identity{}, fmt.Errorf("%w: identity", identity.ErrNotFound)
 }
 
 func (f *fixture) IdentityByID(_ context.Context, id string) (identity.Identity, error) {
@@ -373,7 +346,7 @@ func (f *fixture) ClearTOTP(context.Context, string) error                      
 // TestRunLeakSuite_PassesAgainstCompliantStore runs through the REAL
 // *testing.T, so a regression in the suite fails this package outright.
 func TestRunLeakSuite_PassesAgainstCompliantStore(t *testing.T) {
-	RunLeakSuite(t, func() identity.TenantScopedStore { return newFixture(leakNone) })
+	RunLeakSuite(t, func() identity.Store { return newFixture(leakNone) })
 }
 
 // TestRunLeakSuite_GreenAgainstTwoTenantMemStore is slice 7b-2's DoD
@@ -387,7 +360,7 @@ func TestRunLeakSuite_PassesAgainstCompliantStore(t *testing.T) {
 // second property needs a Core-level test, which lives in
 // identity/tenancy_test.go.
 func TestRunLeakSuite_GreenAgainstTwoTenantMemStore(t *testing.T) {
-	RunLeakSuite(t, func() identity.TenantScopedStore { return identity.NewMemStore() })
+	RunLeakSuite(t, func() identity.Store { return identity.NewMemStore() })
 }
 
 // TestRecorderReportsCompliantStoreAsGreen is the control for every
@@ -396,7 +369,7 @@ func TestRunLeakSuite_GreenAgainstTwoTenantMemStore(t *testing.T) {
 // nothing — the failure mode playbook step 5 is about.
 func TestRecorderReportsCompliantStoreAsGreen(t *testing.T) {
 	rec := &recorderT{}
-	runLeakSuite(rec, func() identity.TenantScopedStore { return newFixture(leakNone) })
+	runLeakSuite(rec, func() identity.Store { return newFixture(leakNone) })
 	if rec.failed {
 		t.Fatalf("recorder reported the COMPLIANT store as failing; every leak case below is "+
 			"therefore vacuous:\n  %s", rec.report())
@@ -413,18 +386,18 @@ func TestRunLeakSuite_FailsAgainstLeakyStore(t *testing.T) {
 		mode     leakMode
 		wantCase string
 	}{
-		{"user read ignores the tenant", leakUserByEmail, "UserByEmailInTenant"},
-		{"identity read ignores the tenant", leakIdentity, "IdentityByProviderSubjectInTenant"},
-		{"count spans every tenant", leakCount, "CountUsersInTenant"},
+		{"user read ignores the tenant", leakUserByEmail, "UserByEmail"},
+		{"identity read ignores the tenant", leakIdentity, "IdentityByProviderSubject"},
+		{"count spans every tenant", leakCount, "CountUsers"},
 		{"session loses its tenant on read", leakSessionTenant, "RefreshSessionByHash"},
 		{"revoke crosses the tenant boundary", leakRevokeAll, "RevokeAllRefreshSessionsForTenant"},
-		{"permission error instead of not-found", leakPermissionError, "UserByEmailInTenant"},
-		{"zero value with a nil error", leakZeroValueNilError, "UserByEmailInTenant"},
-		{"email unique globally, not per tenant", leakGlobalEmailUnique, "UserByEmailInTenant"},
+		{"permission error instead of not-found", leakPermissionError, "UserByEmail"},
+		{"zero value with a nil error", leakZeroValueNilError, "UserByEmail"},
+		{"email unique globally, not per tenant", leakGlobalEmailUnique, "UserByEmail"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &recorderT{}
-			runLeakSuite(rec, func() identity.TenantScopedStore { return newFixture(tc.mode) })
+			runLeakSuite(rec, func() identity.Store { return newFixture(tc.mode) })
 			if !rec.failed {
 				t.Fatalf("the suite PASSED a store that leaks (%s) — the guard is pointed at nothing", tc.name)
 			}

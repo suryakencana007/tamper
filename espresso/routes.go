@@ -275,7 +275,7 @@ func WithEntitlementDenyWriter(fn func(w http.ResponseWriter, r *http.Request, c
 // is a gate that permits everything, and that fails at construction
 // rather than as traffic that looks ordinary.
 func RequireEntitlement(store tenant.EntitlementStore, capability Capability,
-	resolve func(*http.Request) (string, bool), opts ...EntitlementOption,
+	resolve func(*http.Request) (tenant.ID, bool), opts ...EntitlementOption,
 ) func(http.Handler) http.Handler {
 	if store == nil {
 		panic("tamper/espresso: RequireEntitlement requires an EntitlementStore — " +

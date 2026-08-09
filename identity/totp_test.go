@@ -8,6 +8,7 @@ import (
 
 	"github.com/pquerna/otp/totp"
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 func testKeySet(t *testing.T) *crypto.KeySet {
@@ -24,7 +25,7 @@ func testKeySet(t *testing.T) *crypto.KeySet {
 func totpCore(t *testing.T) (*Core, *MemStore, string) {
 	t.Helper()
 	c, store := testCore(t, WithKeySet(testKeySet(t)))
-	user, _, err := c.Register(context.Background(), "alice@example.com", "correct-horse")
+	user, _, err := c.Register(context.Background(), tenant.Single, "alice@example.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -75,7 +76,7 @@ func TestTOTPTwoPhaseEnrollment(t *testing.T) {
 	if !user.TOTPEnrolled || tokens.Access == "" || tokens.Refresh == "" {
 		t.Fatalf("promotion result wrong: %+v %+v", user, tokens)
 	}
-	claims, err := testJWT().VerifyAccess(tokens.Access)
+	claims, err := testJWT().VerifyAccess(tokens.Access, tenant.Single)
 	if err != nil {
 		t.Fatalf("VerifyAccess: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestVerifyTOTPAndLoginGate(t *testing.T) {
 
 	// The enrolled flag now gates Login (the 2a flow reads it through
 	// the same store).
-	if _, _, err := c.Login(ctx, "alice@example.com", "correct-horse"); !errors.Is(err, ErrTOTPRequired) {
+	if _, _, err := c.Login(ctx, tenant.Single, "alice@example.com", "correct-horse"); !errors.Is(err, ErrTOTPRequired) {
 		t.Fatalf("post-enroll Login: err = %v, want ErrTOTPRequired", err)
 	}
 }
@@ -217,7 +218,7 @@ func TestDisableAndClearTOTP(t *testing.T) {
 func TestTOTPRequiresKeySet(t *testing.T) {
 	ctx := context.Background()
 	c, _ := testCore(t) // no keyset
-	user, _, err := c.Register(ctx, "nokeys@example.com", "correct-horse")
+	user, _, err := c.Register(ctx, tenant.Single, "nokeys@example.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}

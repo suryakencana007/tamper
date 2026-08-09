@@ -65,5 +65,5 @@ type EntitlementStore interface {
 	// shape. tamper cannot verify this; the cross-tenant leak suite
 	// (§3.3) is the proof obligation that comes with implementing this
 	// interface.
-	ForTenant(ctx context.Context, tenantID string) (Entitlements, error)
+	ForTenant(ctx context.Context, tenantID ID) (Entitlements, error)
 }

@@ -117,3 +117,36 @@ func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.H
 		})
 	}
 }
+
+// PinTenant pins the tenant a request is routed to, WITHOUT requiring a
+// token. It is the pre-authentication sibling of [RequireTenant].
+//
+// Routes that run before RequireAuth still need a tenant after the v0.4.0
+// flip — an OIDC or SAML start leg has to know whose IdP to look up, and
+// the provider registry is keyed by tenant. Before the flip those routes
+// read an unscoped registry and needed nothing; that unscoped read is
+// exactly what the fold removed.
+//
+// The split matters: RequireTenant cross-checks the token's tid against
+// the routed tenant and therefore CANNOT run before RequireAuth, while
+// PinTenant makes no claim about a credential because there is none yet.
+// Using PinTenant on an authenticated route would skip the cross-check, so
+// the two are deliberately separate names rather than one flag.
+//
+// resolve returns the application's routed tenant. An empty string means
+// the single-tenant deployment and pins tenant.Single — the same
+// FromStored rule RequireTenant applies, because a route's own
+// configuration is trusted input in a way a token claim is not.
+func PinTenant(resolve func(*http.Request) string) func(http.Handler) http.Handler {
+	if resolve == nil {
+		panic("tamper/espresso: PinTenant requires a resolve function — " +
+			"a nil resolver would be a tenant gate that pins nothing")
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			routed := resolve(r)
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}

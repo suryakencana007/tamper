@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"github.com/suryakencana007/tamper/tenant"
 	"testing"
 	"time"
 )
@@ -24,7 +25,7 @@ func TestResolveByIdentity(t *testing.T) {
 
 	t.Run("miss returns found=false, no error", func(t *testing.T) {
 		c, _ := testCore(t)
-		_, _, found, err := c.ResolveByIdentity(ctx, "oidc-google", "sub-unknown")
+		_, _, found, err := c.ResolveByIdentity(ctx, tenant.Single, "oidc-google", "sub-unknown")
 		if err != nil || found {
 			t.Fatalf("miss: found=%v err=%v, want false/nil", found, err)
 		}
@@ -34,7 +35,7 @@ func TestResolveByIdentity(t *testing.T) {
 		c, store := testCore(t)
 		seedFederatedUser(t, store, "u1", "a@example.com", "oidc-google", "sub-1")
 
-		user, ident, found, err := c.ResolveByIdentity(ctx, "oidc-google", "sub-1")
+		user, ident, found, err := c.ResolveByIdentity(ctx, tenant.Single, "oidc-google", "sub-1")
 		if err != nil || !found || user.ID != "u1" {
 			t.Fatalf("hit: %+v found=%v err=%v", user, found, err)
 		}
@@ -44,12 +45,12 @@ func TestResolveByIdentity(t *testing.T) {
 
 		// Deactivate: ErrUserInactive, and last_login must NOT advance.
 		store.SetActive("u1", false)
-		before, _ := store.IdentityByProviderSubject(ctx, "oidc-google", "sub-1")
-		_, _, _, err = c.ResolveByIdentity(ctx, "oidc-google", "sub-1")
+		before, _ := store.IdentityByProviderSubject(ctx, tenant.Single, "oidc-google", "sub-1")
+		_, _, _, err = c.ResolveByIdentity(ctx, tenant.Single, "oidc-google", "sub-1")
 		if !errors.Is(err, ErrUserInactive) {
 			t.Fatalf("deactivated: err=%v, want ErrUserInactive", err)
 		}
-		after, _ := store.IdentityByProviderSubject(ctx, "oidc-google", "sub-1")
+		after, _ := store.IdentityByProviderSubject(ctx, tenant.Single, "oidc-google", "sub-1")
 		if !after.LastLoginAt.Equal(*before.LastLoginAt) {
 			t.Fatal("last_login must not advance when the active gate fails")
 		}
@@ -64,7 +65,7 @@ func TestProvisionUserWithIdentity(t *testing.T) {
 		c, store := testCore(t, WithHooks(Hooks{
 			OnProvisioned: func(_ context.Context, _ User, _ Identity, first bool) { hookFirst = append(hookFirst, first) },
 		}))
-		user, ident, err := c.ProvisionUserWithIdentity(ctx, "fed@example.com", "oidc-google", "sub-x")
+		user, ident, err := c.ProvisionUserWithIdentity(ctx, tenant.Single, "fed@example.com", "oidc-google", "sub-x")
 		if err != nil {
 			t.Fatalf("Provision: %v", err)
 		}
@@ -78,10 +79,10 @@ func TestProvisionUserWithIdentity(t *testing.T) {
 			t.Fatalf("OnProvisioned firstUser = %v, want [true]", hookFirst)
 		}
 		// The identity resolves + the user is findable by email (veto parity).
-		if _, _, found, _ := c.ResolveByIdentity(ctx, "oidc-google", "sub-x"); !found {
+		if _, _, found, _ := c.ResolveByIdentity(ctx, tenant.Single, "oidc-google", "sub-x"); !found {
 			t.Fatal("provisioned identity must resolve")
 		}
-		if _, err := store.UserByEmail(ctx, "fed@example.com"); err != nil {
+		if _, err := store.UserByEmail(ctx, tenant.Single, "fed@example.com"); err != nil {
 			t.Fatalf("provisioned user must be findable by email: %v", err)
 		}
 	})
@@ -89,7 +90,7 @@ func TestProvisionUserWithIdentity(t *testing.T) {
 	t.Run("email collision surfaces ErrEmailTaken (race loser)", func(t *testing.T) {
 		c, store := testCore(t)
 		store.Seed(User{ID: "existing", Email: "dup@example.com", Active: true})
-		if _, _, err := c.ProvisionUserWithIdentity(ctx, "dup@example.com", "oidc-google", "sub-y"); !errors.Is(err, ErrEmailTaken) {
+		if _, _, err := c.ProvisionUserWithIdentity(ctx, tenant.Single, "dup@example.com", "oidc-google", "sub-y"); !errors.Is(err, ErrEmailTaken) {
 			t.Fatalf("err = %v, want ErrEmailTaken", err)
 		}
 	})
@@ -97,11 +98,11 @@ func TestProvisionUserWithIdentity(t *testing.T) {
 	t.Run("identity collision surfaces ErrIdentityTaken", func(t *testing.T) {
 		c, store := testCore(t)
 		seedFederatedUser(t, store, "u1", "a@example.com", "oidc-google", "sub-1")
-		if _, _, err := c.ProvisionUserWithIdentity(ctx, "new@example.com", "oidc-google", "sub-1"); !errors.Is(err, ErrIdentityTaken) {
+		if _, _, err := c.ProvisionUserWithIdentity(ctx, tenant.Single, "new@example.com", "oidc-google", "sub-1"); !errors.Is(err, ErrIdentityTaken) {
 			t.Fatalf("err = %v, want ErrIdentityTaken", err)
 		}
 		// Atomic: the losing provision must NOT have created the user.
-		if _, err := store.UserByEmail(ctx, "new@example.com"); !errors.Is(err, ErrNotFound) {
+		if _, err := store.UserByEmail(ctx, tenant.Single, "new@example.com"); !errors.Is(err, ErrNotFound) {
 			t.Fatal("failed provision must not leave an orphan user (atomicity)")
 		}
 	})
@@ -248,7 +249,7 @@ type doubleRaceStore struct {
 	*MemStore
 }
 
-func (s *doubleRaceStore) IdentityByProviderSubject(context.Context, string, string) (Identity, error) {
+func (s *doubleRaceStore) IdentityByProviderSubject(context.Context, tenant.ID, string, string) (Identity, error) {
 	return Identity{}, ErrNotFound
 }
 

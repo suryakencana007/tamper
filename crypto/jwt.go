@@ -412,7 +412,7 @@ func (j *JWTService) Verify(tokenStr string) (string, error) {
 // signal — the discipline this package already applies to every other
 // JWT failure mode (§6.3).
 func (j *JWTService) VerifyAccess(tokenStr string, tenantID tenant.ID) (*AccessClaims, error) {
-	claims, err := j.verifyAccessUnpinned(tokenStr)
+	claims, err := j.ParseAccess(tokenStr)
 	if err != nil {
 		return nil, err
 	}
@@ -487,16 +487,20 @@ func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
 	return claims.Subject, nil
 }
 
-// verifyAccessUnpinned is VerifyAccess without the tenant comparison —
-// the parse, purpose and subject checks only.
+// ParseAccess validates an access token's signature, purpose and subject
+// and returns its claims WITHOUT checking the tenant.
 //
-// It is unexported deliberately. Before v0.4.0 this was the public
-// VerifyAccess and the tenant-pinning form sat beside it, which meant a
-// caller could reach the unpinned path by accident simply by calling the
-// shorter name. Folding the two made the pinned form the only way in, and
-// this helper exists so the pinned form has something to delegate to
-// rather than recursing.
-func (j *JWTService) verifyAccessUnpinned(tokenStr string) (*AccessClaims, error) {
+// The name is the warning. Use [JWTService.VerifyAccess] unless you are
+// composing the tenant check yourself — espresso's RequireAuth does,
+// because RequireTenant runs after it and performs the comparison against
+// the ROUTED tenant, which RequireAuth cannot know.
+//
+// This is deliberately not called VerifyAccess-something. Before v0.4.0 the
+// unpinned form WAS the short name and the pinned one carried the suffix,
+// so the safe call was the longer one and the foot-gun was the default.
+// That is now inverted: VerifyAccess checks the tenant, and skipping the
+// check requires saying Parse.
+func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	claims := &AccessClaims{}
 	if err := j.parseClaims(tokenStr, claims); err != nil {
 		return nil, err

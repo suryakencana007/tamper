@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Slice 7b-1 carries TenantID through mint / rotate / link without ever
@@ -25,7 +26,7 @@ func TestRefresh_PreservesTenantIDOnSuccessor(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
 
-	user, _, err := c.Register(ctx, "bob@acme.com", "correct-horse")
+	user, _, err := c.Register(ctx, tenant.Single, "bob@acme.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestRefresh_EmptyTenantStaysEmpty(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
 
-	_, tokens, err := c.Register(ctx, "carol@example.com", "correct-horse")
+	_, tokens, err := c.Register(ctx, tenant.Single, "carol@example.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -129,7 +130,7 @@ func TestProvisionUserWithIdentity_CouplesTenantAcrossBothRows(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if _, _, err := c.ProvisionUserWithIdentity(ctx, "dave@acme.com", "google", "sub-1"); err != nil {
+	if _, _, err := c.ProvisionUserWithIdentity(ctx, tenant.Single, "dave@acme.com", "google", "sub-1"); err != nil {
 		t.Fatalf("ProvisionUserWithIdentity: %v", err)
 	}
 	if spy.gotUser.TenantID != spy.gotIdent.TenantID {
@@ -146,8 +147,7 @@ func TestMemStore_ProvisionUserWithIdentity_PersistsTenantOnBothRows(t *testing.
 	store := NewMemStore()
 	now := time.Now()
 
-	user, ident, err := store.ProvisionUserWithIdentity(ctx,
-		NewUser{ID: "u1", TenantID: "acme", Email: "erin@acme.com", CreatedAt: now},
+	user, ident, err := store.ProvisionUserWithIdentity(ctx, NewUser{ID: "u1", TenantID: "acme", Email: "erin@acme.com", CreatedAt: now},
 		NewIdentity{ID: "i1", UserID: "u1", TenantID: "acme", Provider: "google", Subject: "sub-1", LinkedAt: now},
 		false)
 	if err != nil {
@@ -224,7 +224,7 @@ func TestMemStore_CreateUser_PersistsTenant(t *testing.T) {
 	}
 
 	// The tenant-scoped read finds them...
-	scoped, err := store.UserByEmailInTenant(ctx, "globex", "gina@globex.com")
+	scoped, err := store.UserByEmail(ctx, tenant.New("globex"), "gina@globex.com")
 	if err != nil {
 		t.Fatalf("UserByEmailInTenant: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestMemStore_CreateUser_PersistsTenant(t *testing.T) {
 	// it could reach into a tenant, a tenancy-OFF caller would resolve
 	// tenant-owned rows — cross-tenant access by omission, which is the
 	// fail-open shape deny-by-default exists to prevent (§6.2).
-	if _, err := store.UserByEmail(ctx, "gina@globex.com"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.UserByEmail(ctx, tenant.Single, "gina@globex.com"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unscoped UserByEmail found a tenant-owned user: err = %v, want ErrNotFound", err)
 	}
 }

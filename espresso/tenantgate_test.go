@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Slice 7c-2 — the tenant gate. RequireAuth verifies the token;
@@ -22,9 +23,9 @@ func tenantJWT(t *testing.T) *crypto.JWTService {
 	})
 }
 
-func tokenFor(t *testing.T, j *crypto.JWTService, tenantID string) string {
+func tokenFor(t *testing.T, j *crypto.JWTService, tenantID tenant.ID) string {
 	t.Helper()
-	tok, err := j.IssueAccessForTenant("u-1", tenantID, time.Now().Unix(), crypto.ACRLocalPassword)
+	tok, err := j.IssueAccess("u-1", tenantID, time.Now().Unix(), crypto.ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue for tenant %q: %v", tenantID, err)
 	}
@@ -33,7 +34,7 @@ func tokenFor(t *testing.T, j *crypto.JWTService, tenantID string) string {
 
 // gated builds RequireAuth -> RequireTenant over a handler that records
 // whether it ran and what tenant it saw.
-func gated(j *crypto.JWTService, routeTenant string, ran *bool, seen *string, seenOK *bool) http.Handler {
+func gated(j *crypto.JWTService, routeTenant string, ran *bool, seen *tenant.ID, seenOK *bool) http.Handler {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*ran = true
 		*seen, *seenOK = TenantFromContext(r.Context())
@@ -78,9 +79,9 @@ func TestRequireTenant_Matrix(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var ran, seenOK bool
-			var seen string
+			var seen tenant.ID
 			h := gated(j, tc.routeTenant, &ran, &seen, &seenOK)
-			code, _ := callWith(t, h, tokenFor(t, j, tc.tokenTenant))
+			code, _ := callWith(t, h, tokenFor(t, j, tenant.FromStored(tc.tokenTenant)))
 
 			if code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", code, tc.wantStatus)
@@ -89,7 +90,7 @@ func TestRequireTenant_Matrix(t *testing.T) {
 				if !ran {
 					t.Error("handler did not run")
 				}
-				if !seenOK || seen != tc.routeTenant {
+				if !seenOK || seen != tenant.FromStored(tc.routeTenant) {
 					t.Errorf("TenantFromContext = (%q, %v), want (%q, true)", seen, seenOK, tc.routeTenant)
 				}
 			} else if ran {
@@ -108,17 +109,17 @@ func TestRequireTenant_Matrix(t *testing.T) {
 func TestRequireTenant_DenyBodyIsByteIdenticalToInvalidToken(t *testing.T) {
 	j := tenantJWT(t)
 	var ran, seenOK bool
-	var seen string
+	var seen tenant.ID
 	h := gated(j, "globex", &ran, &seen, &seenOK)
 
 	// A real token for the wrong tenant.
-	crossCode, crossBody := callWith(t, h, tokenFor(t, j, "acme"))
+	crossCode, crossBody := callWith(t, h, tokenFor(t, j, tenant.New("acme")))
 	// A structurally invalid token — the reference rejection.
 	badCode, badBody := callWith(t, h, "not-a-jwt")
 	// An EXPIRED token, which the manifest names explicitly.
 	expired := tenantJWT(t)
 	expired.Testing().SetNow(func() time.Time { return time.Now().Add(-2 * time.Hour) })
-	expCode, expBody := callWith(t, h, tokenFor(t, expired, "globex"))
+	expCode, expBody := callWith(t, h, tokenFor(t, expired, tenant.New("globex")))
 
 	if crossCode != badCode || crossCode != expCode {
 		t.Errorf("statuses differ: cross-tenant %d, invalid %d, expired %d", crossCode, badCode, expCode)
@@ -168,7 +169,7 @@ func TestRequireTenant_NilResolverPanics(t *testing.T) {
 // turns a forgotten middleware into an unscoped query.
 func TestTenantFromContext_BareContext(t *testing.T) {
 	id, ok := TenantFromContext(t.Context())
-	if ok || id != "" {
-		t.Errorf("TenantFromContext(bare) = (%q, %v), want (\"\", false)", id, ok)
+	if ok || id.Valid() {
+		t.Errorf("TenantFromContext(bare) = (%q, %v), want (unset, false)", id, ok)
 	}
 }

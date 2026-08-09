@@ -26,6 +26,7 @@ import (
 	"github.com/suryakencana007/tamper/crypto"
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 func main() {
@@ -149,7 +150,7 @@ type coreIdentity struct {
 var _ tamperespresso.IdentityService = coreIdentity{}
 
 func (c coreIdentity) Register(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
-	u, t, err := c.core.Register(ctx, email, password)
+	u, t, err := c.core.Register(ctx, tenant.Single, email, password)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
@@ -157,7 +158,7 @@ func (c coreIdentity) Register(ctx context.Context, email, password string) (tam
 }
 
 func (c coreIdentity) Login(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
-	u, t, err := c.core.Login(ctx, email, password)
+	u, t, err := c.core.Login(ctx, tenant.Single, email, password)
 	if err != nil {
 		// On ErrTOTPRequired the Core returns the user (so the routes can render
 		// the verify form) but no tokens — carry the user through with the error.
@@ -230,8 +231,8 @@ func (c coreIdentity) DisableTOTP(ctx context.Context, userID, code string) erro
 // (e.g. minting a short-lived pending JWT with the Provider's JWT service).
 var errNoSessionTOTP = errors.New("quickstart: session-token TOTP is app policy — not implemented in this example")
 
-func (c coreIdentity) IssueTOTPPending(string) (string, error)            { return "", errNoSessionTOTP }
-func (c coreIdentity) VerifyTOTPPending(string) (string, error)           { return "", errNoSessionTOTP }
+func (c coreIdentity) IssueTOTPPending(string) (string, error)  { return "", errNoSessionTOTP }
+func (c coreIdentity) VerifyTOTPPending(string) (string, error) { return "", errNoSessionTOTP }
 func (c coreIdentity) EnrollTOTPViaSession(context.Context, string, string) (*tamperespresso.TOTPEnrollment, *tamperespresso.AuthResult, error) {
 	return nil, nil, errNoSessionTOTP
 }

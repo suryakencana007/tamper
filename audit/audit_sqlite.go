@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes"
 )
 
 // SQLiteLogger is the production audit.Logger backed by a dedicated
@@ -58,6 +59,22 @@ type SQLiteLogger struct {
 // SELECT against the users table). Slow lookups block the Log call.
 type SQLiteLoggerOptions struct {
 	EmailLookup func(ctx context.Context, userID string) (email string, ok bool)
+
+	// Tenancy switches new emissions to canonical_version=4: the tenant
+	// enters the hashed payload and PII moves to redactable commitments
+	// (Phase 7, 7i-1).
+	//
+	// FALSE IS THE DEFAULT AND IT IS BYTE-IDENTICAL TO PRE-7i-1. A
+	// single-tenant deployment keeps writing v3 rows with v3 hashes
+	// forever, no v4 anchor is emitted, and nothing about its audit DB
+	// changes — which is invariant 1 of the phase, satisfied by not
+	// participating rather than by careful equivalence.
+	//
+	// Existing rows are never rewritten either way. v4 applies to rows
+	// written from here on; every older row keeps its own
+	// canonical_version and its own hash, and the verify walk dispatches
+	// per row exactly as it already does for v2 and v3.
+	Tenancy bool
 }
 
 // NewSQLiteLogger opens (or creates) the audit DB at dbPath and
@@ -123,7 +140,15 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 		e.Actor.Type = ActorTypeUser
 	}
 	if e.CanonicalVersion == 0 {
-		e.CanonicalVersion = CanonicalVersion3
+		// A tenancy-configured logger writes v4; everyone else keeps
+		// writing v3. An explicit CanonicalVersion on the event still
+		// wins, which is what lets the boot bootstraps emit anchors at
+		// a chosen version.
+		if l.opts.Tenancy {
+			e.CanonicalVersion = CanonicalVersion4
+		} else {
+			e.CanonicalVersion = CanonicalVersion3
+		}
 	}
 
 	// v1.1 — service-direct emission email enrichment (TD-AUDIT-04).
@@ -142,6 +167,59 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// THE CHAIN WRITE IS ONE SERIALISED TRANSACTION, not a mutex.
+	//
+	// Appending to a hash chain is read-latest-hash, compute, insert —
+	// a read-modify-write, and it is only atomic if something makes it
+	// so. Until this change the only thing was l.mu, which is
+	// IN-PROCESS: two replicas sharing one audit DB both read the same
+	// latest hash, both computed against it, and both inserted. The
+	// result is two rows claiming the same predecessor — a forked chain
+	// that the boot verify reports as tamper, on a database nobody
+	// tampered with. Reproduced in
+	// TestMultiWriter_ConcurrentLoggersKeepTheChainIntact, which failed
+	// with stored_prev=000...0 before this transaction existed: one
+	// writer saw an empty table while another had already inserted.
+	//
+	// BEGIN IMMEDIATE, not a plain BeginTx. SQLite's default deferred
+	// transaction takes a READ lock and only tries to upgrade at the
+	// INSERT — by which point another writer may hold the write lock,
+	// and the upgrade fails with SQLITE_BUSY that no busy_timeout can
+	// resolve (both sides hold read locks; neither can proceed).
+	// IMMEDIATE takes the write lock up front, so the second writer
+	// simply waits out its busy_timeout and then reads a latest hash
+	// that already includes the first writer's row.
+	//
+	// On a dedicated *sql.Conn because BEGIN and COMMIT must land on the
+	// SAME connection, and a pooled *sql.DB gives no such guarantee. The
+	// SQL is written out rather than configured through a DSN flag
+	// (_txlock=immediate) deliberately: an unrecognised DSN parameter is
+	// ignored silently, and "the fix is present but inert" is the exact
+	// failure mode this whole subsystem exists to make impossible.
+	//
+	// l.mu is kept. It costs nothing and keepssame-process writers off the
+	// database lock entirely, so the transaction only ever contends
+	// across processes.
+	conn, err := l.store.DB.Conn(ctx)
+	if err != nil {
+		return Event{}, fmt.Errorf("audit: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return Event{}, fmt.Errorf("audit: begin chain-append transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// context.Background: the rollback must run even when ctx is
+			// what failed, or the connection returns to the pool holding
+			// a write lock and every later append blocks on it.
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	q := sqlitestore.New(conn)
 
 	// v1.8 follow-up #3 — enforce strictly monotonic `at`. Two
 	// time.Now() calls inside the boot bootstraps
@@ -162,11 +240,39 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	// SELECT queries respectively. This fix closes the
 	// remaining class — v=3 vs v=3 same-`at` collisions where the
 	// canonical_version tiebreak doesn't help.
-	if !l.lastAt.IsZero() && !e.At.After(l.lastAt) {
-		e.At = l.lastAt.Add(time.Nanosecond)
+	// The watermark is the LATER of the in-process one and the DB's, for
+	// the same reason the hash read moved inside the transaction: the
+	// in-process value knows nothing about another replica's writes. Max
+	// rather than replace, so a single-writer deployment behaves exactly
+	// as before — at open the two are primed equal and every append
+	// advances both, so the DB value can only match or trail.
+	watermark := l.lastAt
+	if dbAt, aerr := q.GetLatestAt(ctx); aerr == nil {
+		if dbAt = dbAt.UTC(); dbAt.After(watermark) {
+			watermark = dbAt
+		}
+	} else if !errors.Is(aerr, sql.ErrNoRows) {
+		return Event{}, fmt.Errorf("audit: read at watermark: %w", aerr)
+	}
+	if !watermark.IsZero() && !e.At.After(watermark) {
+		e.At = watermark.Add(time.Nanosecond)
 	}
 
-	prev, err := l.latestHash(ctx)
+	// v4 rows commit to their PII before the payload is built, because
+	// the payload hashes the COMMITMENTS rather than the values. Done
+	// here, once, at write time — the verify path reads the stored
+	// commitments back and never re-derives them, which is what lets a
+	// redacted row still hash to what it hashed to originally.
+	if e.CanonicalVersion == CanonicalVersion4 && len(e.RowSalt) == 0 {
+		salt, serr := NewRowSalt()
+		if serr != nil {
+			return Event{}, serr
+		}
+		e.RowSalt = salt
+		e.Commitments = ComputeCommitments(salt, e)
+	}
+
+	prev, err := latestHashFrom(ctx, q)
 	if err != nil {
 		return Event{}, err
 	}
@@ -197,7 +303,7 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	// rows that DID land.
 	l.lastAt = e.At.UTC()
 
-	if err := l.store.Queries.InsertEvent(ctx, sqlitestore.InsertEventParams{
+	if err := q.InsertEvent(ctx, sqlitestore.InsertEventParams{
 		ID:               e.ID,
 		At:               e.At.UTC(),
 		ActorUserID:      e.Actor.UserID,
@@ -215,9 +321,21 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 		PrevHash:         e.PrevHash,
 		Hash:             e.Hash,
 		CanonicalVersion: int64(e.CanonicalVersion),
+		TenantID:         e.TenantID,
+		ActorTenantID:    e.Actor.TenantID,
+		RowSalt:          sqltypes.Blob(e.RowSalt),
+		CActorEmail:      sqltypes.Blob(e.Commitments.ActorEmail),
+		CActorName:       sqltypes.Blob(e.Commitments.ActorName),
+		CActorIp:         sqltypes.Blob(e.Commitments.ActorIP),
+		CBefore:          sqltypes.Blob(e.Commitments.Before),
+		CAfter:           sqltypes.Blob(e.Commitments.After),
 	}); err != nil {
 		return Event{}, fmt.Errorf("audit: insert: %w", err)
 	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return Event{}, fmt.Errorf("audit: commit chain append: %w", err)
+	}
+	committed = true
 	return e, nil
 }
 
@@ -246,7 +364,25 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 // recent at the same at" (since v=3 chain rows always follow v=2
 // chain_restart in chain order).
 func (l *SQLiteLogger) latestHash(ctx context.Context) ([]byte, error) {
-	row, err := l.store.Queries.GetLatestHash(ctx)
+	return latestHashFrom(ctx, l.store.Queries)
+}
+
+// latestHashFrom is latestHash against an explicit Queries, so the chain
+// append can read it INSIDE its transaction.
+//
+// HONEST SCOPE, because the tempting claim is wrong. This is not what
+// makes the append safe — BEGIN IMMEDIATE is. Once the write lock is
+// held no other writer can commit, so even a read through the pooled
+// handle would return the same value. Swapping this back for
+// l.latestHash leaves every multi-writer test green, and that was
+// checked rather than assumed.
+//
+// It is kept because it makes the invariant LOCAL: the read and the
+// insert are visibly the same transaction, so the next person to touch
+// this function cannot reintroduce the race by moving a line. Defensive
+// clarity, not the load-bearing part.
+func latestHashFrom(ctx context.Context, q *sqlitestore.Queries) ([]byte, error) {
+	row, err := q.GetLatestHash(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return make([]byte, HashSize), nil
 	}
@@ -818,7 +954,17 @@ func fromRow(r sqlitestore.Event) Event {
 		PrevHash:         r.PrevHash,
 		Hash:             r.Hash,
 		CanonicalVersion: int(r.CanonicalVersion),
+		TenantID:         r.TenantID,
+		RowSalt:          []byte(r.RowSalt),
+		Commitments: Commitments{
+			ActorEmail: []byte(r.CActorEmail),
+			ActorName:  []byte(r.CActorName),
+			ActorIP:    []byte(r.CActorIp),
+			Before:     []byte(r.CBefore),
+			After:      []byte(r.CAfter),
+		},
 	}
+	e.Actor.TenantID = r.ActorTenantID
 	if r.BeforeJson != "" {
 		e.Before = json.RawMessage(r.BeforeJson)
 	}
@@ -865,4 +1011,107 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// nonNilBytes was here. It coerced a nil slice to an empty one so the v4
+// NOT NULL columns would accept a tenancy-disabled write, and its comment
+// named the stakes exactly right: "the \"\" path breaking on the very
+// migration that was supposed to leave it alone."
+//
+// It was not wrong, it was in the wrong place. Coercing here protected only
+// this file's INSERT, while sqlitestore.InsertEventParams is public API that
+// any consumer builds as a struct literal — and one written before v4 existed
+// cannot set fields that did not exist. Barista's audit tests broke exactly
+// that way, invisibly, until its CI was finally run against Phase 7.
+//
+// The coercion now lives at the boundary every caller shares, in
+// sqlitestore/sqltypes.Blob.
+
+// insertEventDirect writes a row exactly as given, skipping the chain
+// computation Log performs. It is the single implementation behind both the
+// package's own fixture helpers and the exported InsertEventDirectForTest.
+//
+// It writes whatever it is handed, including a row that breaks the chain.
+// Nothing here validates PrevHash/Hash, because the tamper-detection tests
+// need to be able to write a bad row on purpose.
+func (l *SQLiteLogger) insertEventDirect(ctx context.Context, e Event) error {
+	beforeJSON := ""
+	if len(e.Before) > 0 {
+		beforeJSON = string(e.Before)
+	}
+	afterJSON := ""
+	if len(e.After) > 0 {
+		afterJSON = string(e.After)
+	}
+	return l.store.Queries.InsertEvent(ctx, sqlitestore.InsertEventParams{
+		ID:               e.ID,
+		At:               e.At.UTC(),
+		ActorUserID:      e.Actor.UserID,
+		ActorEmail:       e.Actor.Email,
+		ActorIp:          e.Actor.IP,
+		ActorType:        string(e.Actor.Type),
+		ActorName:        e.Actor.Name,
+		Action:           string(e.Action),
+		ResourceType:     string(e.ResourceType),
+		ResourceID:       e.ResourceID,
+		ClusterID:        e.ClusterID,
+		RequestID:        e.RequestID,
+		BeforeJson:       beforeJSON,
+		AfterJson:        afterJSON,
+		PrevHash:         e.PrevHash,
+		Hash:             e.Hash,
+		CanonicalVersion: int64(e.CanonicalVersion),
+		TenantID:         e.TenantID,
+		ActorTenantID:    e.Actor.TenantID,
+		RowSalt:          sqltypes.Blob(e.RowSalt),
+		CActorEmail:      sqltypes.Blob(e.Commitments.ActorEmail),
+		CActorName:       sqltypes.Blob(e.Commitments.ActorName),
+		CActorIp:         sqltypes.Blob(e.Commitments.ActorIP),
+		CBefore:          sqltypes.Blob(e.Commitments.Before),
+		CAfter:           sqltypes.Blob(e.Commitments.After),
+	})
+}
+
+// ListByCanonicalVersion returns every event stored at the given canonical
+// version, in chain-walk order, as neutral Events.
+//
+// This is the operator-dump surface: when the boot guard reports a chain
+// mismatch it points at a `dump-v2`-style command, and that command needs to
+// read one canonical segment without caring how it is stored. It replaces
+// reaching through StoreForDebug().Queries and converting rows with
+// FromRowForDebug — the two exports whose only purpose was to hand callers
+// the generated row type, and which kept tamper's schema public.
+//
+// Unlike List, this applies no filter, no paging and no cluster scoping: a
+// forensic dump wants the segment whole.
+func (l *SQLiteLogger) ListByCanonicalVersion(ctx context.Context, version int) ([]Event, error) {
+	if l == nil || l.store == nil {
+		return nil, errEmptyDBPath
+	}
+	rows, err := l.store.Queries.ListEventsByCanonicalVersion(ctx, int64(version))
+	if err != nil {
+		return nil, fmt.Errorf("audit: list canonical_version=%d: %w", version, err)
+	}
+	out := make([]Event, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromRow(r))
+	}
+	return out, nil
+}
+
+// IsUniqueViolation reports whether err is a SQLite UNIQUE or PRIMARY KEY
+// constraint violation from the audit store.
+//
+// Exported because a consumer replaying fixture rows has to tell "this ID is
+// already in the chain" apart from "the database fell over", and it must use
+// the SQLite classifier specifically: the audit DB is always SQLite regardless
+// of which driver the application's main store was built with, so a
+// build-tag-dependent classifier would look for a Postgres SQLSTATE and miss
+// this entirely.
+//
+// Previously callers reached into audit/sqlitestore for this. That package is
+// now internal, and this is the only thing outside tamper ever legitimately
+// needed from it.
+func IsUniqueViolation(err error) bool {
+	return sqlitestore.IsUniqueViolation(err)
 }

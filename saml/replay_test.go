@@ -8,6 +8,7 @@ import (
 	"time"
 
 	crewjamsaml "github.com/crewjam/saml"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // assertionWith builds a *crewjamsaml.Assertion whose Subject carries one
@@ -305,7 +306,7 @@ func TestManager_RequiresReplayStore(t *testing.T) {
 		// deliberately NO WithAssertionReplayStore
 	)
 	_ = keyPEM
-	if _, err := m.GetRegistry(ctx); err == nil {
+	if _, err := m.GetRegistry(ctx, tenant.Single); err == nil {
 		t.Fatal("a Manager rebuilding a non-empty registry with no replay store must error")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // WithKeySet attaches the KEK keyset that seals/opens the TOTP secret
@@ -97,7 +98,7 @@ func (c *Core) CompleteTOTPEnrollment(ctx context.Context, userID, code string) 
 	if err := c.store.EnableTOTP(ctx, userID, state.Envelope, state.RecoveryCodeHashes, enrolledAt); err != nil {
 		return User{}, Tokens{}, fmt.Errorf("identity: promote totp enrollment: %w", err)
 	}
-	tokens, err := c.issueTokens(ctx, userID, enrolledAt.Unix(), c.defaultACR)
+	tokens, err := c.issueTokens(ctx, userID, tenant.FromStored(user.TenantID), enrolledAt.Unix(), c.defaultACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -158,6 +159,17 @@ func (c *Core) VerifyTOTP(ctx context.Context, userID, code string) error {
 	if c.keys == nil {
 		return ErrNoKeySet
 	}
+	// Before the store read, for the reason spelled out on
+	// Core.allowSecondFactor: userID is the caller's claim, not the
+	// store's confirmation, so a throttled answer does not disclose that
+	// the user exists or that they have a second factor enrolled.
+	//
+	// This is the surface where the limiter matters most. A TOTP code is
+	// six digits and the window tolerates skew: unlimited guesses is not
+	// a second factor, it is a delay.
+	if retryAfter, ok := c.allowSecondFactor(ctx, userID, ThrottleStepTOTP); !ok {
+		return &ThrottledError{RetryAfter: retryAfter}
+	}
 	state, err := c.store.TOTPState(ctx, userID)
 	if err != nil {
 		return err
@@ -171,6 +183,14 @@ func (c *Core) VerifyTOTP(ctx context.Context, userID, code string) error {
 // VerifyRecoveryCode checks a recovery code against the stored hash
 // list and consumes it on match (single-use).
 func (c *Core) VerifyRecoveryCode(ctx context.Context, userID, code string) error {
+	// A SEPARATE bucket from VerifyTOTP — see Throttling.SecondFactorKey.
+	// Recovery codes are scarce and single-use, TOTP codes are infinite
+	// and cheap; one shared budget lets an attacker grinding the cheap
+	// surface lock the user out of the expensive one, which is exactly
+	// the account they were trying to reach.
+	if retryAfter, ok := c.allowSecondFactor(ctx, userID, ThrottleStepRecovery); !ok {
+		return &ThrottledError{RetryAfter: retryAfter}
+	}
 	state, err := c.store.TOTPState(ctx, userID)
 	if err != nil {
 		return err

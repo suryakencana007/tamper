@@ -2,8 +2,10 @@
 INSERT INTO events (
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetLatestHash :one
 -- v1.8 follow-up #2: canonical_version DESC is the deterministic
@@ -20,7 +22,9 @@ SELECT at FROM events ORDER BY at DESC, canonical_version DESC, id DESC LIMIT 1;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 ORDER BY at DESC, id DESC
 LIMIT ?;
@@ -29,7 +33,9 @@ LIMIT ?;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE at < ?
    OR (at = ? AND id < ?)
@@ -40,7 +46,9 @@ LIMIT ?;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE actor_user_id = ?
 ORDER BY at DESC, id DESC
@@ -50,7 +58,9 @@ LIMIT ?;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE resource_type = ? AND resource_id = ?
 ORDER BY at DESC, id DESC
@@ -60,7 +70,9 @@ LIMIT ?;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE request_id = ?
 ORDER BY at DESC, id DESC
@@ -73,7 +85,9 @@ LIMIT ?;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 ORDER BY at ASC, canonical_version ASC, id ASC;
 
@@ -85,7 +99,9 @@ ORDER BY at ASC, canonical_version ASC, id ASC;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE canonical_version = ?
 ORDER BY at ASC, id ASC;
@@ -97,7 +113,9 @@ ORDER BY at ASC, id ASC;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE id = ?;
 
@@ -110,7 +128,9 @@ WHERE id = ?;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE at > ? OR (at = ? AND id >= ?)
 ORDER BY at ASC, id ASC;
@@ -124,7 +144,9 @@ ORDER BY at ASC, id ASC;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE action = ?
 ORDER BY at DESC, canonical_version DESC, id DESC
@@ -138,7 +160,9 @@ LIMIT 1;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE action = ? AND canonical_version = ?
 ORDER BY at DESC, id DESC
@@ -154,7 +178,9 @@ LIMIT 1;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE cluster_id = ''
 ORDER BY at DESC, id DESC
@@ -165,7 +191,9 @@ LIMIT ?;
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE cluster_id = ''
   AND (at < ? OR (at = ? AND id < ?))
@@ -243,3 +271,37 @@ SELECT COUNT(*) FROM events WHERE action = ?;
 -- to clear prior partial-load rows before re-inserting. Closes
 -- TD-INFRA-19 (v1.4 walk Step 71).
 DELETE FROM events WHERE id = ?;
+
+-- name: ListEventsByTenant :many
+-- Phase 7 (7i-1): the tenant-scoped export projection. Oldest first: an
+-- export is read as a narrative, unlike the paged admin views which are
+-- newest-first. Ordering mirrors the verify walk's tiebreak so an export
+-- and a chain walk agree on row order.
+SELECT
+    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
+    action, resource_type, resource_id, cluster_id, request_id,
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
+FROM events
+WHERE tenant_id = ?
+ORDER BY at ASC, canonical_version ASC, id ASC;
+
+-- name: RedactEventPII :exec
+-- Phase 7 (7i-1): erasure in place. Clears the plaintext and ZEROES the
+-- salt; the c_* commitment columns are deliberately untouched because
+-- they are what the canonical payload hashed, so changing them would
+-- break the chain in exactly the way the commitment scheme avoids.
+-- Scoped to canonical_version=4: a pre-v4 row hashed its PII directly,
+-- so there is nothing to redact without breaking its hash.
+-- NOTE: keep these comments ASCII-only. sqlc mis-computes byte offsets
+-- around multi-byte characters and silently TRUNCATES the generated SQL
+-- (it produced "canonical_versio" and a stray "C;" from an em dash).
+UPDATE events
+SET actor_email = '',
+    actor_name  = '',
+    actor_ip    = '',
+    before_json = '',
+    after_json  = '',
+    row_salt    = x''
+WHERE id = ? AND canonical_version = 4;

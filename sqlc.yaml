@@ -1,12 +1,12 @@
 # sqlc config for the Tamper framework's generated stores.
 #
-# Today the only generated code in tamper is audit/sqlitestore (the
+# Today the only generated code in tamper is audit/internal/sqlitestore (the
 # SQLite-backed audit-log persistence layer). This block regenerates it
-# from audit/sqlitestore/schema.sql + audit/sqlitestore/queries.
+# from audit/internal/sqlitestore/schema.sql + audit/internal/sqlitestore/queries.
 #
 # History: this block used to live in Barista's apps/barista/sqlc.yaml (as
 # the "sqliteaudit" block) but was removed when the audit store moved into
-# the framework at packages/tamper/audit/sqlitestore. For a while there was
+# the framework at packages/tamper/audit/internal/sqlitestore. For a while there was
 # NO generator wired here, so an audit-schema edit had no regen path — the
 # gap flagged in apps/barista/sqlc.yaml and in TAMPER-DESIGN.md's Open items.
 # This file closes it (Phase 6 slice 1).
@@ -24,15 +24,34 @@
 version: "2"
 sql:
   - engine: "sqlite"
-    schema: "audit/sqlitestore/schema.sql"
-    queries: "audit/sqlitestore/queries"
+    schema: "audit/internal/sqlitestore/schema.sql"
+    queries: "audit/internal/sqlitestore/queries"
     gen:
       go:
         package: "sqlitestore"
-        out: "audit/sqlitestore"
+        out: "audit/internal/sqlitestore"
         sql_package: "database/sql"
         emit_interface: true
         emit_json_tags: false
         emit_prepared_queries: false
         emit_exact_table_names: false
         emit_empty_slices: true
+        # The v4 BLOB columns are NOT NULL with a DEFAULT that can never fire,
+        # because sqlc names every column in the INSERT. Left as plain []byte,
+        # a caller's zero-valued struct literal sends NULL and the insert
+        # fails — and InsertEventParams is public API, so that caller is not
+        # necessarily in this repo. Blob's driver.Valuer renders nil as x''.
+        # See audit/internal/sqlitestore/sqltypes/blob.go for the full reasoning.
+        overrides:
+          - column: "events.row_salt"
+            go_type: "github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes.Blob"
+          - column: "events.c_actor_email"
+            go_type: "github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes.Blob"
+          - column: "events.c_actor_name"
+            go_type: "github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes.Blob"
+          - column: "events.c_actor_ip"
+            go_type: "github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes.Blob"
+          - column: "events.c_before"
+            go_type: "github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes.Blob"
+          - column: "events.c_after"
+            go_type: "github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes.Blob"

@@ -4,8 +4,11 @@ import (
 	"errors"
 	"net/http"
 
+	espressofw "github.com/suryakencana007/espresso/v2"
+
 	tamper "github.com/suryakencana007/tamper"
 	"github.com/suryakencana007/tamper/scim"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // RouteConfig carries the transport-layer policy the engines cannot own —
@@ -170,4 +173,155 @@ func Routes(tp *tamper.Provider, cfg RouteConfig) (*Surfaces, error) {
 	}
 
 	return s, nil
+}
+
+// --- entitlement gating (slice 7h-1) ---------------------------------
+//
+// Entitlements are gated HERE, at the route surface, and never at boot.
+// Boot-time nil-encoding — "no OIDC config, no OIDC routes" — is
+// per-process, and a pooled process serves every tier at once. It
+// structurally cannot express "acme bought SSO, globex did not".
+
+// EntitlementDeniedCode is the wire-stable code a client receives when a
+// capability is not purchased. Stable because an SPA branches on it to
+// render an upgrade prompt rather than an error toast.
+const EntitlementDeniedCode = "FEATURE_NOT_ENABLED"
+
+// Capability names the entitlement a route requires.
+type Capability string
+
+const (
+	// CapabilitySSO gates federated login (the OIDC/SAML start routes).
+	CapabilitySSO Capability = "sso"
+	// CapabilitySCIM gates the directory-provisioning surface.
+	CapabilitySCIM Capability = "scim"
+)
+
+// allowed reports whether e includes c.
+func (c Capability) allowed(e tenant.Entitlements) bool {
+	switch c {
+	case CapabilitySSO:
+		return e.SSOEnabled
+	case CapabilitySCIM:
+		return e.SCIMEnabled
+	default:
+		// An unknown capability denies. A typo in a gate must not open
+		// the route it was meant to close.
+		return false
+	}
+}
+
+// TenantFromRoutedContext resolves the tenant RequireTenant pinned.
+// The resolver to use on authenticated routes behind that gate.
+func TenantFromRoutedContext(r *http.Request) (tenant.ID, bool) {
+	return TenantFromContext(r.Context())
+}
+
+// TenantFromServiceAccount resolves the tenant on the validated SCIM
+// principal — the resolver to use behind RequireServiceAccount.
+func TenantFromServiceAccount(r *http.Request) (string, bool) {
+	p, ok := GetPrincipal(r.Context())
+	return p.TenantID, ok
+}
+
+type entitlementConfig struct {
+	deny func(w http.ResponseWriter, r *http.Request, c Capability)
+}
+
+// EntitlementOption configures RequireEntitlement.
+type EntitlementOption func(*entitlementConfig)
+
+// WithEntitlementDenyWriter replaces the deny renderer. The SCIM surface
+// supplies one that emits the RFC 7644 §3.12 envelope, because a SCIM
+// client fail-closes on an app-branded body.
+//
+// Whatever it writes MUST be a 403 with a stable code. See
+// RequireEntitlement for why this is the one place in the phase that
+// does not answer 404.
+func WithEntitlementDenyWriter(fn func(w http.ResponseWriter, r *http.Request, c Capability)) EntitlementOption {
+	return func(cfg *entitlementConfig) {
+		if fn != nil {
+			cfg.deny = fn
+		}
+	}
+}
+
+// RequireEntitlement returns middleware that refuses a route when the
+// request's tenant has not purchased the capability.
+//
+// THE DENY IS 403, NOT 404, AND THAT IS A DELIBERATE INVERSION of the
+// rule this phase applies everywhere else. A cross-tenant miss is 404
+// because a deny and a miss must be indistinguishable — telling a caller
+// that another tenant's resource exists is the leak. Here the caller IS
+// the tenant, the tenant exists, and the feature is simply not bought.
+// That is not a secret; it is a fact the customer needs, and answering
+// 404 would send an operator hunting a broken route when the real answer
+// is "upgrade your plan". Nothing about another tenant is disclosed by
+// telling you about your own.
+//
+// resolve extracts the tenant from the request. It is explicit rather
+// than inferred because the two gated surfaces carry the tenant
+// differently — federation start routes are pre-auth and sit behind
+// RequireTenant (TenantFromRoutedContext), SCIM sits behind
+// RequireServiceAccount (TenantFromServiceAccount). Guessing would mean
+// silently falling back to "" on the surface that used the other one.
+//
+// EVERY failure denies, and each is a case someone could have made
+// permissive: no resolvable tenant, a store error, an unknown
+// capability. A store outage must not become a free upgrade (§6.2 — no
+// error return may be read as allow).
+//
+// Panics if store or resolve is nil: a gate that cannot look anything up
+// is a gate that permits everything, and that fails at construction
+// rather than as traffic that looks ordinary.
+func RequireEntitlement(store tenant.EntitlementStore, capability Capability,
+	resolve func(*http.Request) (tenant.ID, bool), opts ...EntitlementOption,
+) func(http.Handler) http.Handler {
+	if store == nil {
+		panic("tamper/espresso: RequireEntitlement requires an EntitlementStore — " +
+			"a nil store would be a gate that permits everything")
+	}
+	if resolve == nil {
+		panic("tamper/espresso: RequireEntitlement requires a tenant resolver — " +
+			"without one every request resolves to the empty tenant")
+	}
+	cfg := entitlementConfig{deny: writeEntitlementDenied}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			tenantID, ok := resolve(r)
+			if !ok {
+				// No tenant means nothing to check the plan of. Deny.
+				cfg.deny(w, r, capability)
+				return
+			}
+			ent, err := store.ForTenant(r.Context(), tenantID)
+			if err != nil {
+				cfg.deny(w, r, capability)
+				return
+			}
+			if !capability.allowed(ent) {
+				cfg.deny(w, r, capability)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// writeEntitlementDenied is the default 403 renderer.
+func writeEntitlementDenied(w http.ResponseWriter, _ *http.Request, c Capability) {
+	err := espressofw.ErrForbidden(string(c) + " is not enabled for this tenant").
+		WithCode(EntitlementDeniedCode)
+	_ = err.WriteResponse(w)
+}
+
+// WriteSCIMEntitlementDenied is the SCIM-shaped deny writer, for use with
+// WithEntitlementDenyWriter on the SCIM surface. Same status and the same
+// stable meaning, in the envelope RFC 7644 §3.12 mandates.
+func WriteSCIMEntitlementDenied(w http.ResponseWriter, _ *http.Request, c Capability) {
+	WriteSCIMErrorTyped(w, http.StatusForbidden,
+		string(c)+" is not enabled for this tenant", "")
 }

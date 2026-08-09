@@ -172,6 +172,56 @@ setup in production — see its `scripts/provision-keycloak.ps1` and
 
 SAML SSO follows the same shape via the `SAML` engine + `SAML` route bundle.
 
+## Multi-tenancy — one process, many tenants
+
+Tamper is single-tenant by default, and that costs nothing: leave
+`Config.Tenancy` unset and every code path behaves exactly as it always has.
+
+For a **pooled** deployment — one process serving many tenants — set
+`Tenancy.Enabled` and supply a store that implements
+`identity.TenantScopedStore` (the base `identity.Store` plus four
+tenant-constrained methods):
+
+```go
+provider, err := tamper.New(tamper.Config{
+    JWT:      crypto.JWTConfig{Secret: secret, TTL: 15 * time.Minute, Issuer: "myapp"},
+    Identity: &tamper.IdentityConfig{Store: myTenantScopedStore},
+    Tenancy:  &tamper.TenancyConfig{Enabled: true},
+})
+```
+
+A store that cannot serve tenants fails at `New`, naming the offending type —
+never as a per-request denial. With tenancy on, the core resolves users and
+counts **within a tenant**, so an email is unique per tenant rather than
+globally, and the first-user bootstrap signal fires once per tenant instead of
+once ever.
+
+A `TenantID` is an opaque, app-defined string. Tamper never validates, parses
+or canonicalizes it — a UUID, a slug, a `realm/sub-realm` path are all fine.
+The empty string means the single-tenant deployment.
+
+**Implementing `TenantScopedStore` comes with a proof obligation.** Tamper
+cannot enforce isolation — the query lives in your adapter — so it ships the
+instrument that checks it. Run the conformance harness against your own store:
+
+```go
+func TestMyStoreIsolation(t *testing.T) {
+    tenanttest.RunLeakSuite(t, func() identity.TenantScopedStore {
+        return newMyStore(t) // fresh and empty on every call
+    })
+}
+```
+
+[`examples/multitenant`](./examples/multitenant) is the runnable proving
+ground: two tenants over one store in one process, `bob@acme.com` and
+`bob@globex.com` as separate people, and a test asserting that a token minted
+for one tenant is refused on the other's route.
+
+```sh
+go run  ./examples/multitenant      # serves both tenants on :8080
+go test ./examples/multitenant/...  # drives both tenants end to end
+```
+
 ## What your app supplies
 
 Tamper composes; your app provides the leaves:

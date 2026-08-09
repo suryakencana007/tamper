@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Multi-IdP identity linking (Phase 2d). An Identity is a (provider,
@@ -13,21 +15,20 @@ import (
 // provider-agnostic: claim/assertion extraction and the
 // email-collision veto are the caller's (see ResolveByIdentity's doc).
 
-// ResolveByIdentity is the REPEAT federated sign-in half: given a
-// (provider, subject), return the linked user with found=true after
-// gating on Active and bumping the identity's last-login. found=false
-// (nil error) means the identity is unlinked — the caller then runs its
-// own policy (Barista: an email-collision veto) and, if it decides to
-// proceed, calls ProvisionUserWithIdentity. Keeping resolve and provision
-// as two calls is deliberate: the app's policy wedges cleanly between
-// them without the core ever learning it.
+// ResolveByIdentity resolves within a tenant, so the
+// same (provider, subject) can be federated by two tenants against the
+// same IdP without either resolving to the other's user.
 //
-// A deactivated user gets ErrUserInactive BEFORE any last-login bump —
-// deactivation gates every authentication entry point (as Login and
-// Refresh already do), and a federated repeat sign-in is one more.
-func (c *Core) ResolveByIdentity(ctx context.Context, provider, subject string) (User, Identity, bool, error) {
-	ident, err := c.store.IdentityByProviderSubject(ctx, provider, subject)
+// A miss in this tenant is found=false with a NIL error — the unlinked
+// signal, unchanged. It is deliberately indistinguishable from "linked,
+// but to another tenant": the caller runs its own policy next and must
+// not be able to learn that the credential exists elsewhere.
+func (c *Core) ResolveByIdentity(ctx context.Context, tenantID tenant.ID, provider, subject string) (User, Identity, bool, error) {
+	ident, err := c.identityByProviderSubject(ctx, tenantID, provider, subject)
 	if err != nil {
+		if errors.Is(err, ErrTenantRequired) {
+			return User{}, Identity{}, false, err
+		}
 		if errors.Is(err, ErrNotFound) {
 			return User{}, Identity{}, false, nil
 		}
@@ -48,28 +49,28 @@ func (c *Core) ResolveByIdentity(ctx context.Context, provider, subject string) 
 	return user, ident, true, nil
 }
 
-// ProvisionUserWithIdentity is the FIRST federated sign-in half:
-// atomically create a federated-only user (empty password hash) plus
-// its first identity. Called only after the caller resolved a miss and
-// cleared its own policy (e.g. no email collision). email must be
-// normalised by the caller (federated emails are IdP-vouched — the core
-// stores it verbatim for GetUserByEmail lookup parity). LinkedAt ==
-// LastLoginAt == now (the first sign-in is the link event). The
-// firstUser bootstrap signal + the OnProvisioned hook mirror Register.
+// ProvisionUserWithIdentity provisions within a tenant. Both rows are stamped with the SAME tenant and written by the
+// SAME single store call, so atomicity is untouched: the tenant adds no
+// round trip between the caller's resolve and its provision. That gap is
+// where the app's email-collision veto wedges (Phase 2d), and widening it
+// would reopen the lost-first-sign-in race.
 //
-// A lost first-sign-in race surfaces as ErrEmailTaken (users unique
-// index) or ErrIdentityTaken (user_identities unique index); the caller
-// folds both onto its collision outcome.
-func (c *Core) ProvisionUserWithIdentity(ctx context.Context, email, provider, subject string) (User, Identity, error) {
-	count, err := c.store.CountUsers(ctx)
+// firstUser is counted within the tenant — blocker B2 again, on the
+// federated path this time.
+func (c *Core) ProvisionUserWithIdentity(ctx context.Context, tenantID tenant.ID, email, provider, subject string) (User, Identity, error) {
+	count, err := c.countUsers(ctx, tenantID)
 	if err != nil {
 		return User{}, Identity{}, fmt.Errorf("identity: count users: %w", err)
 	}
 	first := count == 0
 	now := c.now()
 	userID := c.newID()
-	nu := NewUser{ID: userID, Email: email, PasswordHash: "", CreatedAt: now}
-	ni := NewIdentity{ID: c.newID(), UserID: userID, Provider: provider, Subject: subject, LinkedAt: now, LastLoginAt: &now}
+	nu := NewUser{ID: userID, TenantID: tenantID.String(), Email: email, PasswordHash: "", CreatedAt: now}
+	// The identity's tenant is the user's, by construction rather than by
+	// convention: both rows are written in one atomic call, so reading
+	// nu.TenantID here is what makes it impossible for a (provider,
+	// subject) to land in a tenant its user does not belong to.
+	ni := NewIdentity{ID: c.newID(), UserID: userID, TenantID: nu.TenantID, Provider: provider, Subject: subject, LinkedAt: now, LastLoginAt: &now}
 
 	user, ident, err := c.store.ProvisionUserWithIdentity(ctx, nu, ni, first)
 	if err != nil {
@@ -97,13 +98,16 @@ func (c *Core) Link(ctx context.Context, userID, provider, subject string) (Iden
 	// The target user must exist (link attaches to a KNOWN account; a
 	// missing user is a caller error surfaced as ErrNotFound rather
 	// than an opaque FK violation from the insert).
-	if _, err := c.store.UserByID(ctx, userID); err != nil {
+	// The user is captured, not discarded: the linked identity inherits
+	// its tenant, and this lookup already happens — no extra round trip.
+	target, err := c.store.UserByID(ctx, userID)
+	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return Identity{}, fmt.Errorf("%w: user %s", ErrNotFound, userID)
 		}
 		return Identity{}, fmt.Errorf("identity: link user lookup: %w", err)
 	}
-	existing, err := c.store.IdentityByProviderSubject(ctx, provider, subject)
+	existing, err := c.store.IdentityByProviderSubject(ctx, tenant.FromStored(target.TenantID), provider, subject)
 	switch {
 	case err == nil:
 		if existing.UserID == userID {
@@ -114,17 +118,17 @@ func (c *Core) Link(ctx context.Context, userID, provider, subject string) (Iden
 		return Identity{}, fmt.Errorf("identity: link lookup: %w", err)
 	}
 
-	ni := NewIdentity{ID: c.newID(), UserID: userID, Provider: provider, Subject: subject, LinkedAt: c.now()}
+	ni := NewIdentity{ID: c.newID(), UserID: userID, TenantID: target.TenantID, Provider: provider, Subject: subject, LinkedAt: c.now()}
 	err = c.store.InsertIdentity(ctx, ni)
 	if err == nil {
-		return Identity{ID: ni.ID, UserID: userID, Provider: provider, Subject: subject, LinkedAt: ni.LinkedAt}, nil
+		return Identity{ID: ni.ID, UserID: userID, TenantID: ni.TenantID, Provider: provider, Subject: subject, LinkedAt: ni.LinkedAt}, nil
 	}
 	if !errors.Is(err, ErrIdentityTaken) {
 		return Identity{}, fmt.Errorf("identity: link insert: %w", err)
 	}
 	// Lost the race — someone linked (provider,subject) between our
 	// lookup and insert. Re-fetch and re-decide.
-	raced, refErr := c.store.IdentityByProviderSubject(ctx, provider, subject)
+	raced, refErr := c.store.IdentityByProviderSubject(ctx, tenant.FromStored(target.TenantID), provider, subject)
 	if refErr != nil {
 		if errors.Is(refErr, ErrNotFound) {
 			// Double race: the winner unlinked between our failed insert

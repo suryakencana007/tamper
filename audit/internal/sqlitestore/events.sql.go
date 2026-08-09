@@ -8,6 +8,8 @@ package sqlitestore
 import (
 	"context"
 	"time"
+
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes"
 )
 
 const countAuditEventsByActionSince = `-- name: CountAuditEventsByActionSince :many
@@ -158,7 +160,9 @@ const getEventByID = `-- name: GetEventByID :one
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE id = ?
 `
@@ -187,6 +191,14 @@ func (q *Queries) GetEventByID(ctx context.Context, id string) (Event, error) {
 		&i.PrevHash,
 		&i.Hash,
 		&i.CanonicalVersion,
+		&i.TenantID,
+		&i.ActorTenantID,
+		&i.RowSalt,
+		&i.CActorEmail,
+		&i.CActorName,
+		&i.CActorIp,
+		&i.CBefore,
+		&i.CAfter,
 	)
 	return i, err
 }
@@ -209,7 +221,9 @@ const getLatestChainRestart = `-- name: GetLatestChainRestart :one
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE action = ?
 ORDER BY at DESC, canonical_version DESC, id DESC
@@ -242,6 +256,14 @@ func (q *Queries) GetLatestChainRestart(ctx context.Context, action string) (Eve
 		&i.PrevHash,
 		&i.Hash,
 		&i.CanonicalVersion,
+		&i.TenantID,
+		&i.ActorTenantID,
+		&i.RowSalt,
+		&i.CActorEmail,
+		&i.CActorName,
+		&i.CActorIp,
+		&i.CBefore,
+		&i.CAfter,
 	)
 	return i, err
 }
@@ -250,7 +272,9 @@ const getLatestChainRestartAtVersion = `-- name: GetLatestChainRestartAtVersion 
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE action = ? AND canonical_version = ?
 ORDER BY at DESC, id DESC
@@ -287,6 +311,14 @@ func (q *Queries) GetLatestChainRestartAtVersion(ctx context.Context, arg GetLat
 		&i.PrevHash,
 		&i.Hash,
 		&i.CanonicalVersion,
+		&i.TenantID,
+		&i.ActorTenantID,
+		&i.RowSalt,
+		&i.CActorEmail,
+		&i.CActorName,
+		&i.CActorIp,
+		&i.CBefore,
+		&i.CAfter,
 	)
 	return i, err
 }
@@ -308,8 +340,10 @@ const insertEvent = `-- name: InsertEvent :exec
 INSERT INTO events (
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertEventParams struct {
@@ -330,6 +364,14 @@ type InsertEventParams struct {
 	PrevHash         []byte
 	Hash             []byte
 	CanonicalVersion int64
+	TenantID         string
+	ActorTenantID    string
+	RowSalt          sqltypes.Blob
+	CActorEmail      sqltypes.Blob
+	CActorName       sqltypes.Blob
+	CActorIp         sqltypes.Blob
+	CBefore          sqltypes.Blob
+	CAfter           sqltypes.Blob
 }
 
 func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error {
@@ -351,6 +393,14 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 		arg.PrevHash,
 		arg.Hash,
 		arg.CanonicalVersion,
+		arg.TenantID,
+		arg.ActorTenantID,
+		arg.RowSalt,
+		arg.CActorEmail,
+		arg.CActorName,
+		arg.CActorIp,
+		arg.CBefore,
+		arg.CAfter,
 	)
 	return err
 }
@@ -359,7 +409,9 @@ const listEventsAll = `-- name: ListEventsAll :many
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 ORDER BY at DESC, id DESC
 LIMIT ?
@@ -392,6 +444,14 @@ func (q *Queries) ListEventsAll(ctx context.Context, limit int64) ([]Event, erro
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -410,7 +470,9 @@ const listEventsBefore = `-- name: ListEventsBefore :many
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE at < ?
    OR (at = ? AND id < ?)
@@ -457,6 +519,14 @@ func (q *Queries) ListEventsBefore(ctx context.Context, arg ListEventsBeforePara
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -475,7 +545,9 @@ const listEventsByActor = `-- name: ListEventsByActor :many
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE actor_user_id = ?
 ORDER BY at DESC, id DESC
@@ -514,6 +586,14 @@ func (q *Queries) ListEventsByActor(ctx context.Context, arg ListEventsByActorPa
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -532,7 +612,9 @@ const listEventsByCanonicalVersion = `-- name: ListEventsByCanonicalVersion :man
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE canonical_version = ?
 ORDER BY at ASC, id ASC
@@ -569,6 +651,14 @@ func (q *Queries) ListEventsByCanonicalVersion(ctx context.Context, canonicalVer
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -587,7 +677,9 @@ const listEventsByRequest = `-- name: ListEventsByRequest :many
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE request_id = ?
 ORDER BY at DESC, id DESC
@@ -626,6 +718,14 @@ func (q *Queries) ListEventsByRequest(ctx context.Context, arg ListEventsByReque
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -644,7 +744,9 @@ const listEventsByResource = `-- name: ListEventsByResource :many
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE resource_type = ? AND resource_id = ?
 ORDER BY at DESC, id DESC
@@ -684,6 +786,79 @@ func (q *Queries) ListEventsByResource(ctx context.Context, arg ListEventsByReso
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEventsByTenant = `-- name: ListEventsByTenant :many
+SELECT
+    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
+    action, resource_type, resource_id, cluster_id, request_id,
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
+FROM events
+WHERE tenant_id = ?
+ORDER BY at ASC, canonical_version ASC, id ASC
+`
+
+// Phase 7 (7i-1): the tenant-scoped export projection. Oldest first: an
+// export is read as a narrative, unlike the paged admin views which are
+// newest-first. Ordering mirrors the verify walk's tiebreak so an export
+// and a chain walk agree on row order.
+func (q *Queries) ListEventsByTenant(ctx context.Context, tenantID string) ([]Event, error) {
+	rows, err := q.db.QueryContext(ctx, listEventsByTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.At,
+			&i.ActorUserID,
+			&i.ActorEmail,
+			&i.ActorIp,
+			&i.ActorType,
+			&i.ActorName,
+			&i.Action,
+			&i.ResourceType,
+			&i.ResourceID,
+			&i.ClusterID,
+			&i.RequestID,
+			&i.BeforeJson,
+			&i.AfterJson,
+			&i.PrevHash,
+			&i.Hash,
+			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -702,7 +877,9 @@ const listEventsForVerify = `-- name: ListEventsForVerify :many
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 ORDER BY at ASC, canonical_version ASC, id ASC
 `
@@ -737,6 +914,14 @@ func (q *Queries) ListEventsForVerify(ctx context.Context) ([]Event, error) {
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -755,7 +940,9 @@ const listEventsForVerifyFromChainRestart = `-- name: ListEventsForVerifyFromCha
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE at > ? OR (at = ? AND id >= ?)
 ORDER BY at ASC, id ASC
@@ -799,6 +986,14 @@ func (q *Queries) ListEventsForVerifyFromChainRestart(ctx context.Context, arg L
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -817,7 +1012,9 @@ const listEventsNonClusterScoped = `-- name: ListEventsNonClusterScoped :many
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE cluster_id = ''
 ORDER BY at DESC, id DESC
@@ -857,6 +1054,14 @@ func (q *Queries) ListEventsNonClusterScoped(ctx context.Context, limit int64) (
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -875,7 +1080,9 @@ const listEventsNonClusterScopedBefore = `-- name: ListEventsNonClusterScopedBef
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version
+    before_json, after_json, prev_hash, hash, canonical_version,
+    tenant_id, actor_tenant_id, row_salt,
+    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE cluster_id = ''
   AND (at < ? OR (at = ? AND id < ?))
@@ -923,6 +1130,14 @@ func (q *Queries) ListEventsNonClusterScopedBefore(ctx context.Context, arg List
 			&i.PrevHash,
 			&i.Hash,
 			&i.CanonicalVersion,
+			&i.TenantID,
+			&i.ActorTenantID,
+			&i.RowSalt,
+			&i.CActorEmail,
+			&i.CActorName,
+			&i.CActorIp,
+			&i.CBefore,
+			&i.CAfter,
 		); err != nil {
 			return nil, err
 		}
@@ -947,6 +1162,31 @@ func (q *Queries) PruneOlderThan(ctx context.Context, at time.Time) (int64, erro
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const redactEventPII = `-- name: RedactEventPII :exec
+UPDATE events
+SET actor_email = '',
+    actor_name  = '',
+    actor_ip    = '',
+    before_json = '',
+    after_json  = '',
+    row_salt    = x''
+WHERE id = ? AND canonical_version = 4
+`
+
+// Phase 7 (7i-1): erasure in place. Clears the plaintext and ZEROES the
+// salt; the c_* commitment columns are deliberately untouched because
+// they are what the canonical payload hashed, so changing them would
+// break the chain in exactly the way the commitment scheme avoids.
+// Scoped to canonical_version=4: a pre-v4 row hashed its PII directly,
+// so there is nothing to redact without breaking its hash.
+// NOTE: keep these comments ASCII-only. sqlc mis-computes byte offsets
+// around multi-byte characters and silently TRUNCATES the generated SQL
+// (it produced "canonical_versio" and a stray "C;" from an em dash).
+func (q *Queries) RedactEventPII(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, redactEventPII, id)
+	return err
 }
 
 const updateEventHash = `-- name: UpdateEventHash :exec

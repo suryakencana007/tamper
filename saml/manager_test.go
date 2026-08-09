@@ -16,6 +16,7 @@ import (
 	crewjamsaml "github.com/crewjam/saml"
 
 	tampercrypto "github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 const (
@@ -162,7 +163,7 @@ func TestSAMLManager_RegistryRebuildAndBadPEMOmission(t *testing.T) {
 		t.Fatalf("Create bad: %v", err)
 	}
 
-	reg, err := m.GetRegistry(ctx)
+	reg, err := m.GetRegistry(ctx, tenant.Single)
 	if err != nil || reg == nil {
 		t.Fatalf("GetRegistry: reg=%v err=%v", reg, err)
 	}
@@ -178,7 +179,7 @@ func TestSAMLManager_RegistryRebuildAndBadPEMOmission(t *testing.T) {
 	}
 
 	// Cache: same instance within ttl; mutation invalidates eagerly.
-	reg2, _ := m.GetRegistry(ctx)
+	reg2, _ := m.GetRegistry(ctx, tenant.Single)
 	if reg2 != reg {
 		t.Fatal("within ttl the cached registry instance must be reused")
 	}
@@ -188,7 +189,7 @@ func TestSAMLManager_RegistryRebuildAndBadPEMOmission(t *testing.T) {
 	if err := m.Delete(ctx, "bad"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	reg3, err := m.GetRegistry(ctx)
+	reg3, err := m.GetRegistry(ctx, tenant.Single)
 	if err != nil || reg3 != nil {
 		t.Fatalf("empty store must yield the nil sentinel: %v %v", reg3, err)
 	}
@@ -207,12 +208,12 @@ func TestSAMLManager_PinRegistryAndTestMetadata(t *testing.T) {
 	)
 
 	pinned := &ProviderRegistry{providers: map[string]*Provider{}}
-	m.PinRegistry(pinned)
-	if got, err := m.GetRegistry(ctx); err != nil || got != pinned {
+	m.PinRegistry(tenant.Single, pinned)
+	if got, err := m.GetRegistry(ctx, tenant.Single); err != nil || got != pinned {
 		t.Fatalf("pinned registry must be served with ttl=0: %v %v", got, err)
 	}
-	m.PinRegistry(nil)
-	if got, err := m.GetRegistry(ctx); err != nil || got != nil {
+	m.PinRegistry(tenant.Single, nil)
+	if got, err := m.GetRegistry(ctx, tenant.Single); err != nil || got != nil {
 		t.Fatalf("cleared pin: %v %v", got, err)
 	}
 

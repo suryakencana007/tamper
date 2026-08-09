@@ -149,6 +149,8 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.SAML != nil && cfg.SAML.SPMetadataURL == nil {
 		return nil, errors.New("tamper: Config.SAML.SPMetadataURL is required when SAML is set")
 	}
+	// Tenancy boot guard. The optional-interface upgrade is checked once,
+	// here, and the message names the concrete type that failed it —
 
 	// --- keyset (validates the KEK entries) ---
 	keySet, err := crypto.NewKeySet(cfg.KEKs, cfg.WriteKeyID)

@@ -1,8 +1,10 @@
 package espresso
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	scim "github.com/suryakencana007/tamper/scim"
@@ -25,6 +27,27 @@ type SCIMConfig struct {
 	// BaseURL is the operator's chart override for meta.location; empty
 	// derives the prefix from each request's scheme + host.
 	BaseURL string
+
+	// BaseURLForTenant maps a tenant to its own absolute URL prefix, for
+	// pooled deployments where each customer reaches SCIM on its own host
+	// (acme.example.com) or path segment.
+	//
+	// Optional. Nil — or a function returning "" — falls through to
+	// BaseURL and then to the request's own scheme + host, so a
+	// single-tenant deployment produces byte-identical DTOs to a
+	// pre-Phase-7 build.
+	//
+	// It exists because meta.location and $ref are ABSOLUTE URLs a SCIM
+	// client will follow. Rendering acme's resources under globex's host
+	// hands a working link to the wrong place: the client follows it,
+	// authenticates against a host it was never provisioned for, and the
+	// failure looks like a broken integration rather than a boundary
+	// problem.
+	//
+	// The tenant comes from the validated principal, like everything else
+	// in this surface — never from the request's Host header, which the
+	// caller controls.
+	BaseURLForTenant func(tenantID string) string
 	// BulkMaxOperations is advertised in ServiceProviderConfig.bulk.
 	BulkMaxOperations int
 	// MaxResults is the enforced List page cap, advertised verbatim as
@@ -45,6 +68,16 @@ type SCIMConfig struct {
 	// into ServiceProviderConfig.
 	DocumentationURI      string
 	AuthSchemeDescription string
+
+	// Tenancy turns on pooled multi-tenancy for the SCIM surface. False
+	// (the default) is byte-identical to a pre-Phase-7 build: the shims
+	// call the original store methods and nothing reads a tenant.
+	//
+	// When true, BOTH stores must implement their tenant-scoped form or
+	// NewSCIMRoutes fails, naming the type. Every read and write is then
+	// constrained to the tenant on the VALIDATED PRINCIPAL — see
+	// Principal.TenantID for why it can only come from there.
+	Tenancy bool
 }
 
 // SCIMRoutes is the SCIM transport. Construct with NewSCIMRoutes.
@@ -52,6 +85,13 @@ type SCIMRoutes struct {
 	cfg    SCIMConfig
 	users  scim.UserStore
 	groups scim.GroupStore
+
+	// tenantUsers / tenantGroups are the scoped forms, settled ONCE at
+	// construction. Non-nil exactly when SCIMConfig.Tenancy is on, so the
+	// per-request shims below branch on a boot-time decision rather than
+	// re-asserting a type on every call — the Phase 0c lesson.
+	tenantUsers  scim.TenantScopedUserStore
+	tenantGroups scim.TenantScopedGroupStore
 }
 
 // NewSCIMRoutes validates the wiring at construction time (never at request
@@ -78,7 +118,174 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 	if cfg.MaxPayloadBytes <= 0 {
 		cfg.MaxPayloadBytes = defaultSCIMMaxPayloadBytes
 	}
-	return &SCIMRoutes{cfg: cfg, users: users, groups: groups}, nil
+	s := &SCIMRoutes{cfg: cfg, users: users, groups: groups}
+	// The optional-interface upgrade is checked HERE, once, and the
+	// result stored. A store that cannot scope by tenant is a
+	// misconfiguration, and discovering it on the first cross-tenant read
+	// means discovering it in production (§6.4). The message names the
+	// concrete type, because "SCIM tenancy doesn't work" with nothing to
+	// grep for is the Phase 0c experience.
+	if cfg.Tenancy {
+		tu, ok := users.(scim.TenantScopedUserStore)
+		if !ok {
+			return nil, fmt.Errorf(
+				"tamper/espresso: SCIMConfig.Tenancy requires a scim.UserStore that implements "+
+					"scim.TenantScopedUserStore; %T does not", users)
+		}
+		tg, ok := groups.(scim.TenantScopedGroupStore)
+		if !ok {
+			return nil, fmt.Errorf(
+				"tamper/espresso: SCIMConfig.Tenancy requires a scim.GroupStore that implements "+
+					"scim.TenantScopedGroupStore; %T does not", groups)
+		}
+		s.tenantUsers, s.tenantGroups = tu, tg
+	}
+	return s, nil
+}
+
+// scimTenant returns the tenant this request acts in.
+//
+// It reads the VALIDATED PRINCIPAL and nothing else. Not a path segment,
+// not a header, not a query parameter — see Principal.TenantID for why
+// those are a horizontal-privilege-escalation bug with extra steps. This
+// is the only function in the SCIM surface that answers the question, so
+// it is the only place that could get it wrong.
+//
+// A request that reached a SCIM handler without a principal has no
+// business being served: MustGetPrincipal panics, which is correct for a
+// route mounted outside RequireServiceAccount (a programmer error, not a
+// runtime condition).
+func scimTenant(ctx context.Context) string {
+	return MustGetPrincipal(ctx).TenantID
+}
+
+// baseURL resolves the absolute URL prefix for THIS request's tenant.
+//
+// One shim, so every meta.location and $ref in the surface is built from
+// one decision — the 7g-1 discipline applied to URLs instead of queries.
+//
+// It reads GetPrincipal rather than scimTenant deliberately: the SCIM
+// discovery endpoints (ServiceProviderConfig, ResourceTypes, Schemas)
+// are commonly mounted UNAUTHENTICATED so a connector can read
+// capabilities before it holds a credential, and scimTenant's
+// MustGetPrincipal would panic there. No principal means no tenant,
+// which falls through to the process-wide behavior — correct, because a
+// request with no identity has no tenant to be scoped to.
+func (s *SCIMRoutes) baseURL(r *http.Request) string {
+	if s.cfg.BaseURLForTenant != nil {
+		if p, ok := GetPrincipal(r.Context()); ok {
+			if u := s.cfg.BaseURLForTenant(p.TenantID); u != "" {
+				return u
+			}
+		}
+	}
+	return ResolveBaseURL(r, s.cfg.BaseURL)
+}
+
+// --- store routing shims ---------------------------------------------
+//
+// One shim per store method the TRANSPORT calls, so the
+// scoped-vs-unscoped decision exists in exactly one place per call site,
+// each individually mutation-testable, and no handler branches on
+// tenancy.
+//
+// There is no shim for List: both List handlers call ListFiltered
+// unconditionally, passing the client's filter (empty when absent), so
+// the plain List is never reached from here. Its tenant-scoped form
+// still exists on the port — an application calling List directly must
+// have a scoped option — it simply has no transport caller to wrap. With Tenancy off these are the original
+// calls, unchanged, which is what keeps the single-tenant path
+// byte-identical.
+
+func (s *SCIMRoutes) userCreate(ctx context.Context, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
+	if s.tenantUsers != nil {
+		return s.tenantUsers.CreateInTenant(ctx, scimTenant(ctx), w, meta)
+	}
+	return s.users.Create(ctx, w, meta)
+}
+
+func (s *SCIMRoutes) userGet(ctx context.Context, id string) (scim.UserRecord, error) {
+	if s.tenantUsers != nil {
+		return s.tenantUsers.GetInTenant(ctx, scimTenant(ctx), id)
+	}
+	return s.users.Get(ctx, id)
+}
+
+func (s *SCIMRoutes) userReplace(ctx context.Context, id string, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
+	if s.tenantUsers != nil {
+		return s.tenantUsers.ReplaceInTenant(ctx, scimTenant(ctx), id, w, meta)
+	}
+	return s.users.Replace(ctx, id, w, meta)
+}
+
+func (s *SCIMRoutes) userDelete(ctx context.Context, id string, meta scim.WriteMeta) error {
+	if s.tenantUsers != nil {
+		return s.tenantUsers.DeleteInTenant(ctx, scimTenant(ctx), id, meta)
+	}
+	return s.users.Delete(ctx, id, meta)
+}
+
+func (s *SCIMRoutes) userSavePatch(ctx context.Context, id string, w scim.UserWrite, ops []scim.Operation) (scim.UserRecord, error) {
+	if s.tenantUsers != nil {
+		return s.tenantUsers.SavePatchInTenant(ctx, scimTenant(ctx), id, w, ops)
+	}
+	return s.users.SavePatch(ctx, id, w, ops)
+}
+
+func (s *SCIMRoutes) userListFiltered(ctx context.Context, startIndex, count int, filter string) (scim.UserPage, error) {
+	if s.tenantUsers != nil {
+		return s.tenantUsers.ListFilteredInTenant(ctx, scimTenant(ctx), startIndex, count, filter)
+	}
+	return s.users.ListFiltered(ctx, startIndex, count, filter)
+}
+
+func (s *SCIMRoutes) groupCreate(ctx context.Context, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
+	if s.tenantGroups != nil {
+		return s.tenantGroups.CreateInTenant(ctx, scimTenant(ctx), w, meta)
+	}
+	return s.groups.Create(ctx, w, meta)
+}
+
+func (s *SCIMRoutes) groupGet(ctx context.Context, id string) (scim.GroupRecord, error) {
+	if s.tenantGroups != nil {
+		return s.tenantGroups.GetInTenant(ctx, scimTenant(ctx), id)
+	}
+	return s.groups.Get(ctx, id)
+}
+
+func (s *SCIMRoutes) groupReplace(ctx context.Context, id string, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
+	if s.tenantGroups != nil {
+		return s.tenantGroups.ReplaceInTenant(ctx, scimTenant(ctx), id, w, meta)
+	}
+	return s.groups.Replace(ctx, id, w, meta)
+}
+
+func (s *SCIMRoutes) groupDelete(ctx context.Context, id string, meta scim.GroupWriteMeta) error {
+	if s.tenantGroups != nil {
+		return s.tenantGroups.DeleteInTenant(ctx, scimTenant(ctx), id, meta)
+	}
+	return s.groups.Delete(ctx, id, meta)
+}
+
+func (s *SCIMRoutes) groupSavePatch(ctx context.Context, id string, w scim.GroupWrite, ops []scim.Operation) (scim.GroupRecord, error) {
+	if s.tenantGroups != nil {
+		return s.tenantGroups.SavePatchInTenant(ctx, scimTenant(ctx), id, w, ops)
+	}
+	return s.groups.SavePatch(ctx, id, w, ops)
+}
+
+func (s *SCIMRoutes) groupValidateMembers(ctx context.Context, members []scim.MemberRef) error {
+	if s.tenantGroups != nil {
+		return s.tenantGroups.ValidateMembersInTenant(ctx, scimTenant(ctx), members)
+	}
+	return s.groups.ValidateMembers(ctx, members)
+}
+
+func (s *SCIMRoutes) groupListFiltered(ctx context.Context, startIndex, count int, filter string) (scim.GroupPage, error) {
+	if s.tenantGroups != nil {
+		return s.tenantGroups.ListFilteredInTenant(ctx, scimTenant(ctx), startIndex, count, filter)
+	}
+	return s.groups.ListFiltered(ctx, startIndex, count, filter)
 }
 
 // defaultSCIMMaxPayloadBytes is the request-body cap applied when
@@ -142,7 +349,7 @@ func (s *SCIMRoutes) ServiceProviderConfig(w http.ResponseWriter, r *http.Reques
 		},
 		Meta: ResourceMeta{
 			ResourceType: "ServiceProviderConfig",
-			Location:     ResolveBaseURL(r, s.cfg.BaseURL) + s.cfg.Prefix + "/ServiceProviderConfig",
+			Location:     s.baseURL(r) + s.cfg.Prefix + "/ServiceProviderConfig",
 		},
 	})
 }

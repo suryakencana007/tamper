@@ -131,7 +131,28 @@ func buildHandler(auditDBPath, jwtSecret, saToken string) (*espresso.Router, *ta
 	//    panics outside a RequireServiceAccount wrap.) SCIM methods are raw
 	//    net/http handlers.
 	sc := surfaces.SCIM
-	guard := surfaces.RequireServiceAccount
+
+	//    Rate limiting (7k-1) sits INSIDE the service-account gate, not
+	//    outside it. ThrottleKeyByServiceAccount reads the principal, and
+	//    the principal only exists once RequireServiceAccount has run —
+	//    limit on the outside and every request keys as unauthenticated,
+	//    so the per-tenant separation quietly becomes one global bucket.
+	//
+	//    The deny writer is the SCIM one: a connector fail-closes on an
+	//    app-branded body, so the 429 has to arrive in the RFC 7644 §3.12
+	//    envelope, the same way the entitlement 403 does.
+	//
+	//    The numbers are a demo's numbers. A real deployment sizes them
+	//    against its connectors' sync behaviour — and remembers that the
+	//    in-process bucket is PER-REPLICA (crypto.NewTokenBucket).
+	limit := tamperespresso.Throttled(
+		crypto.NewTokenBucket(10, time.Second, 20),
+		tamperespresso.ThrottleKeyByServiceAccount,
+		tamperespresso.WithThrottleDenyWriter(tamperespresso.WriteSCIMThrottled),
+	)
+	guard := func(h http.Handler) http.Handler {
+		return surfaces.RequireServiceAccount(limit(h))
+	}
 
 	r := espresso.Portafilter()
 	r.Get("/scim/v2/ServiceProviderConfig", guard(http.HandlerFunc(sc.ServiceProviderConfig)))

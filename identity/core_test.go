@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 func TestMain(m *testing.M) {
@@ -47,7 +48,7 @@ func TestRegister(t *testing.T) {
 
 	t.Run("happy path mints tokens with the default ACR", func(t *testing.T) {
 		c, store := testCore(t)
-		user, tokens, err := c.Register(ctx, "  Alice@Example.COM ", "correct-horse")
+		user, tokens, err := c.Register(ctx, tenant.Single, "  Alice@Example.COM ", "correct-horse")
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -57,7 +58,7 @@ func TestRegister(t *testing.T) {
 		if tokens.Access == "" || tokens.Refresh == "" {
 			t.Fatalf("tokens incomplete: %+v", tokens)
 		}
-		claims, err := testJWT().VerifyAccess(tokens.Access)
+		claims, err := testJWT().VerifyAccess(tokens.Access, tenant.Single)
 		if err != nil {
 			t.Fatalf("VerifyAccess: %v", err)
 		}
@@ -81,10 +82,10 @@ func TestRegister(t *testing.T) {
 				hookCalls = append(hookCalls, first)
 			},
 		}))
-		if _, _, err := c.Register(ctx, "first@example.com", "password-1"); err != nil {
+		if _, _, err := c.Register(ctx, tenant.Single, "first@example.com", "password-1"); err != nil {
 			t.Fatalf("Register first: %v", err)
 		}
-		if _, _, err := c.Register(ctx, "second@example.com", "password-2"); err != nil {
+		if _, _, err := c.Register(ctx, tenant.Single, "second@example.com", "password-2"); err != nil {
 			t.Fatalf("Register second: %v", err)
 		}
 		if len(hookCalls) != 2 || hookCalls[0] != true || hookCalls[1] != false {
@@ -94,23 +95,23 @@ func TestRegister(t *testing.T) {
 
 	t.Run("duplicate email", func(t *testing.T) {
 		c, _ := testCore(t)
-		if _, _, err := c.Register(ctx, "dup@example.com", "password-1"); err != nil {
+		if _, _, err := c.Register(ctx, tenant.Single, "dup@example.com", "password-1"); err != nil {
 			t.Fatalf("Register: %v", err)
 		}
-		if _, _, err := c.Register(ctx, "DUP@example.com", "password-2"); !errors.Is(err, ErrEmailTaken) {
+		if _, _, err := c.Register(ctx, tenant.Single, "DUP@example.com", "password-2"); !errors.Is(err, ErrEmailTaken) {
 			t.Fatalf("err = %v, want ErrEmailTaken", err)
 		}
 	})
 
 	t.Run("policy rejections", func(t *testing.T) {
 		c, _ := testCore(t)
-		if _, _, err := c.Register(ctx, "not-an-email", "password-1"); !errors.Is(err, ErrInvalidEmail) {
+		if _, _, err := c.Register(ctx, tenant.Single, "not-an-email", "password-1"); !errors.Is(err, ErrInvalidEmail) {
 			t.Fatalf("bad email: err = %v, want ErrInvalidEmail", err)
 		}
-		if _, _, err := c.Register(ctx, "a@b.example", "short"); !errors.Is(err, ErrPasswordPolicy) {
+		if _, _, err := c.Register(ctx, tenant.Single, "a@b.example", "short"); !errors.Is(err, ErrPasswordPolicy) {
 			t.Fatalf("short password: err = %v, want ErrPasswordPolicy", err)
 		}
-		if _, _, err := c.Register(ctx, "a@b.example", strings.Repeat("x", MaxPasswordLen+1)); !errors.Is(err, ErrPasswordPolicy) {
+		if _, _, err := c.Register(ctx, tenant.Single, "a@b.example", strings.Repeat("x", MaxPasswordLen+1)); !errors.Is(err, ErrPasswordPolicy) {
 			t.Fatalf("long password: err = %v, want ErrPasswordPolicy", err)
 		}
 	})
@@ -121,7 +122,7 @@ func TestRegister(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		_, tokens, err := c.Register(ctx, "solo@example.com", "password-1")
+		_, tokens, err := c.Register(ctx, tenant.Single, "solo@example.com", "password-1")
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -137,7 +138,7 @@ func TestLogin(t *testing.T) {
 	setup := func(t *testing.T, opts ...Option) (*Core, *MemStore, User) {
 		t.Helper()
 		c, store := testCore(t, opts...)
-		user, _, err := c.Register(ctx, "alice@example.com", "correct-horse")
+		user, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -146,7 +147,7 @@ func TestLogin(t *testing.T) {
 
 	t.Run("happy path", func(t *testing.T) {
 		c, _, _ := setup(t)
-		user, tokens, err := c.Login(ctx, "ALICE@example.com", "correct-horse")
+		user, tokens, err := c.Login(ctx, tenant.Single, "ALICE@example.com", "correct-horse")
 		if err != nil {
 			t.Fatalf("Login: %v", err)
 		}
@@ -167,14 +168,14 @@ func TestLogin(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				if _, _, err := c.Login(ctx, tc.email, tc.password); !errors.Is(err, ErrInvalidCredentials) {
+				if _, _, err := c.Login(ctx, tenant.Single, tc.email, tc.password); !errors.Is(err, ErrInvalidCredentials) {
 					t.Fatalf("err = %v, want ErrInvalidCredentials", err)
 				}
 			})
 		}
 
 		store.SetActive(user.ID, false)
-		if _, _, err := c.Login(ctx, "alice@example.com", "correct-horse"); !errors.Is(err, ErrInvalidCredentials) {
+		if _, _, err := c.Login(ctx, tenant.Single, "alice@example.com", "correct-horse"); !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("inactive: want ErrInvalidCredentials")
 		}
 	})
@@ -185,7 +186,7 @@ func TestLogin(t *testing.T) {
 			ID: "totp-user", Email: "totp@example.com", Active: true, TOTPEnrolled: true,
 			PasswordHash: mustHash(t, "correct-horse"),
 		})
-		user, tokens, err := c.Login(ctx, "totp@example.com", "correct-horse")
+		user, tokens, err := c.Login(ctx, tenant.Single, "totp@example.com", "correct-horse")
 		if !errors.Is(err, ErrTOTPRequired) {
 			t.Fatalf("err = %v, want ErrTOTPRequired", err)
 		}
@@ -196,7 +197,7 @@ func TestLogin(t *testing.T) {
 
 	t.Run("system-wide enforcement gates unenrolled users too", func(t *testing.T) {
 		c, _, _ := setup(t, WithTOTPRequired(true))
-		if _, _, err := c.Login(ctx, "alice@example.com", "correct-horse"); !errors.Is(err, ErrTOTPRequired) {
+		if _, _, err := c.Login(ctx, tenant.Single, "alice@example.com", "correct-horse"); !errors.Is(err, ErrTOTPRequired) {
 			t.Fatalf("err = %v, want ErrTOTPRequired under enforcement", err)
 		}
 	})
@@ -207,7 +208,7 @@ func TestLogin(t *testing.T) {
 			ID: "totp2", Email: "totp2@example.com", Active: true, TOTPEnrolled: true,
 			PasswordHash: mustHash(t, "correct-horse"),
 		})
-		if _, _, err := c.Login(ctx, "totp2@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
+		if _, _, err := c.Login(ctx, tenant.Single, "totp2@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("password must be verified BEFORE the TOTP gate")
 		}
 	})
@@ -218,7 +219,7 @@ func TestRefresh(t *testing.T) {
 
 	t.Run("rotation revokes the old session", func(t *testing.T) {
 		c, _ := testCore(t)
-		_, first, err := c.Register(ctx, "alice@example.com", "correct-horse")
+		_, first, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -241,7 +242,7 @@ func TestRefresh(t *testing.T) {
 
 	t.Run("carry-forward: rotation must NOT advance auth_time or ACR", func(t *testing.T) {
 		c, store := testCore(t)
-		user, _, err := c.Register(ctx, "alice@example.com", "correct-horse")
+		user, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -257,7 +258,7 @@ func TestRefresh(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Refresh: %v", err)
 		}
-		claims, err := testJWT().VerifyAccess(rotated.Access)
+		claims, err := testJWT().VerifyAccess(rotated.Access, tenant.Single)
 		if err != nil {
 			t.Fatalf("VerifyAccess: %v", err)
 		}
@@ -276,7 +277,7 @@ func TestRefresh(t *testing.T) {
 
 	t.Run("legacy row (zero auth_time) falls back to now + default ACR once", func(t *testing.T) {
 		c, store := testCore(t)
-		user, _, err := c.Register(ctx, "alice@example.com", "correct-horse")
+		user, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -291,7 +292,7 @@ func TestRefresh(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Refresh: %v", err)
 		}
-		claims, err := testJWT().VerifyAccess(rotated.Access)
+		claims, err := testJWT().VerifyAccess(rotated.Access, tenant.Single)
 		if err != nil {
 			t.Fatalf("VerifyAccess: %v", err)
 		}
@@ -304,7 +305,7 @@ func TestRefresh(t *testing.T) {
 		now := time.Now()
 		clock := now
 		c, _ := testCore(t, WithClock(func() time.Time { return clock }))
-		_, tokens, err := c.Register(ctx, "alice@example.com", "correct-horse")
+		_, tokens, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -327,7 +328,7 @@ func TestRefresh(t *testing.T) {
 
 	t.Run("inactive user: ErrUserInactive and the presented session is revoked", func(t *testing.T) {
 		c, store := testCore(t)
-		user, tokens, err := c.Register(ctx, "alice@example.com", "correct-horse")
+		user, tokens, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
@@ -346,7 +347,7 @@ func TestRefresh(t *testing.T) {
 func TestLogout(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
-	user, tokens, err := c.Register(ctx, "alice@example.com", "correct-horse")
+	user, tokens, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -368,7 +369,7 @@ func TestLogout(t *testing.T) {
 func TestRevokeAllSessions(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
-	user, first, err := c.Register(ctx, "alice@example.com", "correct-horse")
+	user, first, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -406,7 +407,7 @@ func TestTokenlessCore(t *testing.T) {
 func TestConcurrentUse(t *testing.T) {
 	ctx := context.Background()
 	c, _ := testCore(t)
-	if _, _, err := c.Register(ctx, "alice@example.com", "correct-horse"); err != nil {
+	if _, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	var wg sync.WaitGroup
@@ -415,7 +416,7 @@ func TestConcurrentUse(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < 20; i++ {
-				if _, _, err := c.Login(ctx, "alice@example.com", "correct-horse"); err != nil {
+				if _, _, err := c.Login(ctx, tenant.Single, "alice@example.com", "correct-horse"); err != nil {
 					t.Errorf("goroutine %d: %v", g, err)
 					return
 				}

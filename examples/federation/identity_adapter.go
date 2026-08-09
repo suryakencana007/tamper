@@ -6,6 +6,7 @@ import (
 
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // coreIdentity adapts *identity.Core to the transport's IdentityService port.
@@ -23,7 +24,7 @@ type coreIdentity struct {
 var _ tamperespresso.IdentityService = coreIdentity{}
 
 func (c coreIdentity) Register(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
-	u, t, err := c.core.Register(ctx, email, password)
+	u, t, err := c.core.Register(ctx, tenant.Single, email, password)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
@@ -31,7 +32,7 @@ func (c coreIdentity) Register(ctx context.Context, email, password string) (tam
 }
 
 func (c coreIdentity) Login(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
-	u, t, err := c.core.Login(ctx, email, password)
+	u, t, err := c.core.Login(ctx, tenant.Single, email, password)
 	if err != nil {
 		if errors.Is(err, identity.ErrTOTPRequired) {
 			return tamperespresso.AuthResult{User: &u}, err

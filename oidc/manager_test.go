@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // hex-encoded 32-byte test keys (NOT real secrets).
@@ -116,7 +117,7 @@ func TestManager_RegistryTTLCache(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	reg1, err := m.GetRegistry(ctx)
+	reg1, err := m.GetRegistry(ctx, tenant.Single)
 	if err != nil || reg1 == nil {
 		t.Fatalf("GetRegistry: reg=%v err=%v", reg1, err)
 	}
@@ -130,14 +131,14 @@ func TestManager_RegistryTTLCache(t *testing.T) {
 
 	// Within ttl: same instance served from cache.
 	now = now.Add(10 * time.Second)
-	reg2, _ := m.GetRegistry(ctx)
+	reg2, _ := m.GetRegistry(ctx, tenant.Single)
 	if reg2 != reg1 {
 		t.Fatal("within ttl the cached registry instance must be reused")
 	}
 
 	// Past ttl: rebuilt (fresh instance).
 	now = now.Add(31 * time.Second)
-	reg3, err := m.GetRegistry(ctx)
+	reg3, err := m.GetRegistry(ctx, tenant.Single)
 	if err != nil {
 		t.Fatalf("GetRegistry rebuild: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestManager_RegistryTTLCache(t *testing.T) {
 	if err := m.Delete(ctx, "test"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	reg4, err := m.GetRegistry(ctx)
+	reg4, err := m.GetRegistry(ctx, tenant.Single)
 	if err != nil {
 		t.Fatalf("GetRegistry after delete: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestManager_RegistryTTLCache(t *testing.T) {
 	// convergence symmetry) — a Create on a SISTER replica would not
 	// be visible here until ttl elapses; same-process Create
 	// invalidates eagerly, so exercise the window via the clock only.
-	reg5, _ := m.GetRegistry(ctx)
+	reg5, _ := m.GetRegistry(ctx, tenant.Single)
 	if reg5 != nil {
 		t.Fatal("nil sentinel must be served from cache within ttl")
 	}
@@ -170,14 +171,14 @@ func TestManager_PinRegistrySurvivesTTLZero(t *testing.T) {
 	ctx := context.Background()
 	m, _ := testManager(t) // ttl=0: every call would rebuild
 	pinned := &ProviderRegistry{providers: map[string]*Provider{}, order: nil}
-	m.PinRegistry(pinned)
-	got, err := m.GetRegistry(ctx)
+	m.PinRegistry(tenant.Single, pinned)
+	got, err := m.GetRegistry(ctx, tenant.Single)
 	if err != nil || got != pinned {
 		t.Fatalf("pinned registry must be served regardless of ttl: %v %v", got, err)
 	}
 	// Clearing the pin drops back to rebuild-from-store (empty → nil).
-	m.PinRegistry(nil)
-	got, err = m.GetRegistry(ctx)
+	m.PinRegistry(tenant.Single, nil)
+	got, err = m.GetRegistry(ctx, tenant.Single)
 	if err != nil || got != nil {
 		t.Fatalf("cleared pin: got=%v err=%v, want nil registry", got, err)
 	}

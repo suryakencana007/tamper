@@ -80,6 +80,11 @@ type Querier interface {
 	ListEventsByCanonicalVersion(ctx context.Context, canonicalVersion int64) ([]Event, error)
 	ListEventsByRequest(ctx context.Context, arg ListEventsByRequestParams) ([]Event, error)
 	ListEventsByResource(ctx context.Context, arg ListEventsByResourceParams) ([]Event, error)
+	// Phase 7 (7i-1): the tenant-scoped export projection. Oldest first: an
+	// export is read as a narrative, unlike the paged admin views which are
+	// newest-first. Ordering mirrors the verify walk's tiebreak so an export
+	// and a chain walk agree on row order.
+	ListEventsByTenant(ctx context.Context, tenantID string) ([]Event, error)
 	// v1.8 Sprint 0 follow-up (TD-AUDIT-12): canonical_version ASC is the
 	// deterministic tiebreaker for same-at rows. See verify_boot.go's
 	// package docs for the rationale + observed flake rate.
@@ -100,6 +105,16 @@ type Querier interface {
 	// Cursor-paginated variant of ListEventsNonClusterScoped.
 	ListEventsNonClusterScopedBefore(ctx context.Context, arg ListEventsNonClusterScopedBeforeParams) ([]Event, error)
 	PruneOlderThan(ctx context.Context, at time.Time) (int64, error)
+	// Phase 7 (7i-1): erasure in place. Clears the plaintext and ZEROES the
+	// salt; the c_* commitment columns are deliberately untouched because
+	// they are what the canonical payload hashed, so changing them would
+	// break the chain in exactly the way the commitment scheme avoids.
+	// Scoped to canonical_version=4: a pre-v4 row hashed its PII directly,
+	// so there is nothing to redact without breaking its hash.
+	// NOTE: keep these comments ASCII-only. sqlc mis-computes byte offsets
+	// around multi-byte characters and silently TRUNCATES the generated SQL
+	// (it produced "canonical_versio" and a stray "C;" from an em dash).
+	RedactEventPII(ctx context.Context, id string) error
 	// Used by the v1.5 audit-chain encoder migration (audit.MigrateLegacyV2Hashes).
 	// Writes the recomputed hash + prev_hash for a single existing event,
 	// leaving every other column unchanged. The migration walks v=2 rows

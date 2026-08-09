@@ -18,12 +18,12 @@ import (
 func (s *SCIMRoutes) UsersList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	startIndex, count := s.parsePagination(q)
-	page, err := s.users.ListFiltered(r.Context(), startIndex, count, q.Get("filter"))
+	page, err := s.userListFiltered(r.Context(), startIndex, count, q.Get("filter"))
 	if err != nil {
 		writeListErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	resources := make([]json.RawMessage, 0, len(page.Users))
 	for i := range page.Users {
 		raw, err := json.Marshal(userRecordToResource(page.Users[i], base, s.cfg.Prefix))
@@ -46,12 +46,12 @@ func (s *SCIMRoutes) UsersList(w http.ResponseWriter, r *http.Request) {
 func (s *SCIMRoutes) GroupsList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	startIndex, count := s.parsePagination(q)
-	page, err := s.groups.ListFiltered(r.Context(), startIndex, count, q.Get("filter"))
+	page, err := s.groupListFiltered(r.Context(), startIndex, count, q.Get("filter"))
 	if err != nil {
 		writeListErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	resources := make([]json.RawMessage, 0, len(page.Groups))
 	for i := range page.Groups {
 		raw, err := json.Marshal(groupRecordToResource(page.Groups[i], base, s.cfg.Prefix))

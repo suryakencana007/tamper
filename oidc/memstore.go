@@ -5,6 +5,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // MemProviderStore is an in-memory ProviderStore for tests and
@@ -47,7 +49,7 @@ func (s *MemProviderStore) ListProviders(_ context.Context) ([]ProviderRecord, e
 	return s.sortedLocked(func(ProviderRecord) bool { return true }), nil
 }
 
-func (s *MemProviderStore) ListEnabledProviders(_ context.Context) ([]ProviderRecord, error) {
+func (s *MemProviderStore) ListEnabledProviders(_ context.Context, tenantID tenant.ID) ([]ProviderRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sortedLocked(func(r ProviderRecord) bool { return r.Enabled }), nil

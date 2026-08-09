@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore"
 )
 
 // MigrationResult summarises a MigrateLegacyV2Hashes call. RowsScanned

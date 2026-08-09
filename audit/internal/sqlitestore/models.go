@@ -6,6 +6,8 @@ package sqlitestore
 
 import (
 	"time"
+
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore/sqltypes"
 )
 
 type Event struct {
@@ -26,4 +28,12 @@ type Event struct {
 	PrevHash         []byte
 	Hash             []byte
 	CanonicalVersion int64
+	TenantID         string
+	ActorTenantID    string
+	RowSalt          sqltypes.Blob
+	CActorEmail      sqltypes.Blob
+	CActorName       sqltypes.Blob
+	CActorIp         sqltypes.Blob
+	CBefore          sqltypes.Blob
+	CAfter           sqltypes.Blob
 }

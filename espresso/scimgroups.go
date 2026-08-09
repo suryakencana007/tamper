@@ -36,7 +36,7 @@ func (s *SCIMRoutes) GroupsCreate(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusBadRequest, "displayName is required", SCIMTypeInvalidValue)
 		return
 	}
-	rec, err := s.groups.Create(r.Context(), scim.GroupWrite{
+	rec, err := s.groupCreate(r.Context(), scim.GroupWrite{
 		DisplayName:           displayName,
 		ExternalID:            body.ExternalID,
 		Members:               groupMemberRefs(body.Members),
@@ -46,7 +46,7 @@ func (s *SCIMRoutes) GroupsCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeGroupStoreErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	w.Header().Set("Location", base+s.cfg.Prefix+"/Groups/"+rec.ID)
 	WriteETagHeader(w, ResourceETag(rec.Updated))
 	WriteSCIMJSON(w, http.StatusCreated, groupRecordToResource(rec, base, s.cfg.Prefix))
@@ -60,12 +60,12 @@ func (s *SCIMRoutes) GroupsGet(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "group not found", "")
 		return
 	}
-	rec, err := s.groups.Get(r.Context(), id)
+	rec, err := s.groupGet(r.Context(), id)
 	if err != nil {
 		s.writeGroupStoreErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	WriteETagHeader(w, ResourceETag(rec.Updated))
 	WriteSCIMJSON(w, http.StatusOK, groupRecordToResource(rec, base, s.cfg.Prefix))
 }
@@ -92,11 +92,11 @@ func (s *SCIMRoutes) GroupsReplace(w http.ResponseWriter, r *http.Request) {
 	// Validate members BEFORE the existence + If-Match checks so a bad member
 	// reports 400 invalidValue ahead of a 404/412, matching the pre-lift
 	// handler's ordering (member resolution ran before the before-Get there).
-	if err := s.groups.ValidateMembers(r.Context(), groupMemberRefs(body.Members)); err != nil {
+	if err := s.groupValidateMembers(r.Context(), groupMemberRefs(body.Members)); err != nil {
 		s.writeGroupStoreErr(w, err)
 		return
 	}
-	before, err := s.groups.Get(r.Context(), id)
+	before, err := s.groupGet(r.Context(), id)
 	if err != nil {
 		s.writeGroupStoreErr(w, err)
 		return
@@ -106,7 +106,7 @@ func (s *SCIMRoutes) GroupsReplace(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusPreconditionFailed, "If-Match precondition failed", "")
 		return
 	}
-	rec, err := s.groups.Replace(r.Context(), id, scim.GroupWrite{
+	rec, err := s.groupReplace(r.Context(), id, scim.GroupWrite{
 		DisplayName:           displayName,
 		ExternalID:            body.ExternalID,
 		Members:               groupMemberRefs(body.Members),
@@ -116,7 +116,7 @@ func (s *SCIMRoutes) GroupsReplace(w http.ResponseWriter, r *http.Request) {
 		s.writeGroupStoreErr(w, err)
 		return
 	}
-	base := ResolveBaseURL(r, s.cfg.BaseURL)
+	base := s.baseURL(r)
 	WriteETagHeader(w, ResourceETag(rec.Updated))
 	WriteSCIMJSON(w, http.StatusOK, groupRecordToResource(rec, base, s.cfg.Prefix))
 }
@@ -129,7 +129,7 @@ func (s *SCIMRoutes) GroupsDelete(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "group not found", "")
 		return
 	}
-	before, err := s.groups.Get(r.Context(), id)
+	before, err := s.groupGet(r.Context(), id)
 	if err != nil {
 		s.writeGroupStoreErr(w, err)
 		return
@@ -139,7 +139,7 @@ func (s *SCIMRoutes) GroupsDelete(w http.ResponseWriter, r *http.Request) {
 		WriteSCIMErrorTyped(w, http.StatusPreconditionFailed, "If-Match precondition failed", "")
 		return
 	}
-	if err := s.groups.Delete(r.Context(), id, scim.GroupWriteMeta{IfMatchPresent: ifMatchPresent, Before: &before}); err != nil {
+	if err := s.groupDelete(r.Context(), id, scim.GroupWriteMeta{IfMatchPresent: ifMatchPresent, Before: &before}); err != nil {
 		s.writeGroupStoreErr(w, err)
 		return
 	}

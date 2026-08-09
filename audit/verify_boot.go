@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore"
 )
 
 // VerifyBootResult summarises a VerifyChainPostMigration walk. Count

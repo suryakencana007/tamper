@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/suryakencana007/tamper/saml"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // stateRoutesFixture builds SAMLRoutes with a known signing secret and
@@ -53,7 +54,7 @@ func stateRoutesFixture(t *testing.T) (*SAMLRoutes, []byte, string) {
 			MountPrefix: "/api/auth",
 		},
 		SAMLHooks{
-			Registry: func(context.Context) (*saml.ProviderRegistry, error) { return nil, nil },
+			Registry: func(context.Context, tenant.ID) (*saml.ProviderRegistry, error) { return nil, nil },
 			OnFederatedAssertion: func(context.Context, *saml.Provider, SAMLVerified) (SAMLOutcome, error) {
 				return SAMLOutcome{}, nil
 			},

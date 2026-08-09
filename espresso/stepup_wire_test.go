@@ -10,6 +10,7 @@ import (
 
 	"github.com/suryakencana007/tamper/audit"
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // The STEP_UP_REQUIRED envelope is a security boundary between the
@@ -34,7 +35,7 @@ func TestStepUpWire_StaleAuth_PinnedEnvelopeAndDeniedAction(t *testing.T) {
 	})
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	stale := now.Add(-time.Hour).Unix()
-	token, err := jwt.IssueAccess("u-wire", stale, "urn:mace:incommon:iap:silver")
+	token, err := jwt.IssueAccess("u-wire", tenant.Single, stale, "urn:mace:incommon:iap:silver")
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}

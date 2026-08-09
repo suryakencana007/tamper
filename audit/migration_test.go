@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/suryakencana007/tamper/audit/sqlitestore"
+	"github.com/suryakencana007/tamper/audit/internal/sqlitestore"
 )
 
 // TestMigrateLegacyV2Hashes_FreshInstallNoOp confirms the greenfield
@@ -164,6 +164,16 @@ func seedPreV14V2Row(t *testing.T, l *SQLiteLogger, e Event, prevHash []byte) []
 		PrevHash:         prevHash,
 		Hash:             h,
 		CanonicalVersion: int64(CanonicalVersion2),
+		// The v4 columns are NOT NULL; a nil slice marshals to an
+		// explicit NULL and the column DEFAULT does not apply because
+		// the generated INSERT names every column. A pre-v4 row carries
+		// them empty, which is exactly what these are.
+		RowSalt:     []byte{},
+		CActorEmail: []byte{},
+		CActorName:  []byte{},
+		CActorIp:    []byte{},
+		CBefore:     []byte{},
+		CAfter:      []byte{},
 	}); err != nil {
 		t.Fatalf("seedPreV14V2Row insert: %v", err)
 	}

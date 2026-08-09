@@ -1,6 +1,9 @@
 package identity
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // Error taxonomy. The application maps these onto its own wire errors
 // (Barista: domain.ErrUnauthorized / ErrAlreadyExists / ErrInvalid …).
@@ -86,4 +89,91 @@ var (
 	// ErrLastAuthMethod — unlinking would leave a federated-only user
 	// (empty password hash) with zero sign-in methods.
 	ErrLastAuthMethod = errors.New("identity: cannot unlink the last authentication method")
+
+	// --- tenancy (Phase 7) ---
+
+	// ErrTenantRequired — a tenancy-enabled Core was asked to act with an
+	// empty tenant id. Deny-by-default extends to tenancy: absent and
+	// empty resolve to deny, never to "every tenant" (sketch §6.2).
+	//
+	// Deliberately NOT collapsed into ErrInvalidCredentials. That
+	// collapse exists to stop attackers distinguishing facts ABOUT AN
+	// ACCOUNT — unknown email, bad password, federated-only, deactivated.
+	// This condition is decided from the tenantID argument alone, before
+	// any store read, and is identical for every email and every account,
+	// so it discloses nothing an attacker did not already supply. It is a
+	// wiring bug in the deployment — the tenant-resolving middleware did
+	// not run — and hiding it inside "invalid credentials" would send an
+	// operator hunting a password problem that does not exist.
+	//
+	// Transport obligation: map it onto the SAME generic 401 envelope as
+	// ErrInvalidCredentials. It is legible in logs, not on the wire.
+	ErrTenantRequired = errors.New("identity: tenant id is required when tenancy is enabled")
+
+	// --- rate limiting (Phase 7, 7k-1) ---
+
+	// ErrThrottled — the configured Throttle refused the attempt. Match
+	// with errors.Is; the retry hint travels on *ThrottledError.
+	//
+	// Deliberately NOT collapsed into ErrInvalidCredentials, and this is
+	// the case worth stating carefully because it looks like it should
+	// be. The collapse hides facts about an ACCOUNT. This condition is
+	// decided from the caller-supplied key alone, BEFORE any store read,
+	// so it is identical whether the address exists, never existed, is
+	// federated-only or is deactivated — it discloses nothing an attacker
+	// did not just type. Collapsing it would also be actively harmful:
+	// the honest client that backs off on a 429 would instead be told its
+	// password was wrong and would keep trying.
+	//
+	// Transport obligation: 429 with Retry-After. A deployment that would
+	// rather not admit to limiting at all may render the generic 401
+	// envelope instead — that is a legitimate choice and it is safe,
+	// because the error does not vary by account either way.
+	ErrThrottled = errors.New("identity: too many attempts")
+
+	// --- invitations (Phase 7, 7j-1) ---
+
+	// ErrInvitationInvalid is the single collapsed rejection for every
+	// invitation failure mode — unknown token, malformed token, expired,
+	// already accepted, or issued for a different tenant.
+	//
+	// One error by design, the same posture as ErrInvalidCredentials and
+	// ErrInvalidSession. Separating expired from accepted would tell
+	// whoever holds a stale link whether somebody else used it — which
+	// is a fact about another person's actions inside a tenant. The
+	// honest message for all of them is "this link no longer works".
+	ErrInvitationInvalid = errors.New("identity: invitation is not valid")
+
+	// ErrInvitationConsumed is the STORE sentinel for a compare-and-set
+	// that lost: MarkAccepted found the invitation already accepted.
+	//
+	// It exists so implementations have something precise to return, and
+	// so the losing side of a concurrent accept is distinguishable from
+	// an infrastructure failure. The core never surfaces it — it
+	// collapses into ErrInvitationInvalid at the boundary.
+	ErrInvitationConsumed = errors.New("identity: invitation already accepted")
+
+	// ErrNoInvitationStore — an invitation verb was invoked on a Core
+	// constructed without WithInvitations. A programmer error surfaced
+	// loudly, exactly like ErrNoTokenService and ErrNoKeySet, rather
+	// than a silent no-op that looks like a delivery problem.
+	ErrNoInvitationStore = errors.New("identity: core has no invitation store")
 )
+
+// ThrottledError carries the retry hint alongside ErrThrottled.
+//
+// Its message is FIXED — no email, no user id, no key. The value that
+// composed the key came from the caller, but the error crosses into logs
+// and sometimes onto the wire, and a limiter that echoes the attempted
+// address into either is how a rate limit becomes a credential-stuffing
+// receipt.
+type ThrottledError struct {
+	// RetryAfter is how long until the attempt may be retried. It is a
+	// property of the bucket, not of the account.
+	RetryAfter time.Duration
+}
+
+func (e *ThrottledError) Error() string { return ErrThrottled.Error() }
+
+// Unwrap makes errors.Is(err, ErrThrottled) match.
+func (e *ThrottledError) Unwrap() error { return ErrThrottled }

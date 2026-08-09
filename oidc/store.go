@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // ErrProviderNotFound surfaces from ProviderStore reads when no row
@@ -48,7 +50,14 @@ type ProviderStore interface {
 	// ListProviders returns every record, enabled or not.
 	ListProviders(ctx context.Context) ([]ProviderRecord, error)
 	// ListEnabledProviders returns only records with Enabled=true.
-	ListEnabledProviders(ctx context.Context) ([]ProviderRecord, error)
+	// Isolation contract. The implementation MUST constrain the query to
+	// tenantID and MUST return ErrNotFound — never a permission error and
+	// never another tenant's row — when the addressed object belongs to a
+	// different tenant. tenant.Single selects the single-tenant table
+	// shape. tamper cannot verify this; the cross-tenant leak suite
+	// (§3.3) is the proof obligation that comes with implementing this
+	// interface.
+	ListEnabledProviders(ctx context.Context, tenantID tenant.ID) ([]ProviderRecord, error)
 	// UpdateProvider rewrites every mutable column of the record with
 	// rec.ID. ErrProviderNotFound when no row matches.
 	UpdateProvider(ctx context.Context, rec ProviderRecord) error
@@ -58,3 +67,8 @@ type ProviderStore interface {
 	// DeleteProvider drops the record. Idempotent on a missing id.
 	DeleteProvider(ctx context.Context, id string) error
 }
+
+// TenantScopedProviderStore was here — the optional upgrade that added
+// ListEnabledProvidersForTenant while the additive phase was open. v0.4.0
+// folded it into ProviderStore, so there is no second interface and no
+// boot-time assertion: a store that cannot scope by tenant fails to compile.

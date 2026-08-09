@@ -31,7 +31,13 @@ import (
 // preferences); the Store maps between its wide row and this struct,
 // and the core never learns about the rest.
 type User struct {
-	ID           string
+	ID string
+	// TenantID is opaque and app-defined; "" is a single-tenant
+	// deployment. tamper never validates, parses, namespaces or
+	// canonicalizes it — it compares for equality and passes it through,
+	// the same shape ACR already has (sketch §4.1). Nothing in the core
+	// BRANCHES on this field; it is carried, not read.
+	TenantID     string
 	Email        string
 	PasswordHash string // "" = federated-only account: password login always rejects
 	Active       bool   // false gates login AND refresh (deactivation bites on next rotation)
@@ -41,7 +47,10 @@ type User struct {
 
 // NewUser is the row the core asks the Store to create on Register.
 type NewUser struct {
-	ID           string
+	ID string
+	// TenantID is opaque and app-defined; "" is a single-tenant
+	// deployment. See User.TenantID.
+	TenantID     string
 	Email        string // already normalised (lowercase, trimmed, shape-checked)
 	PasswordHash string
 	CreatedAt    time.Time
@@ -50,8 +59,17 @@ type NewUser struct {
 // RefreshSession is one refresh-token row. Sessions ARE refresh rows —
 // there is no separate session table (Barista precedent).
 type RefreshSession struct {
-	ID        string
-	UserID    string
+	ID     string
+	UserID string
+	// TenantID is opaque and app-defined; "" is a single-tenant
+	// deployment. See User.TenantID.
+	//
+	// Rotation copies this onto the successor row UNCHANGED, exactly as
+	// AuthTime and ACR below are carried. A rotation that dropped the
+	// tenant would silently widen a session from one tenant to all of
+	// them — the failure would be invisible until a tenant-scoped read
+	// used the empty value as a wildcard.
+	TenantID  string
 	TokenHash string // sha-based hash from crypto.HashRefreshToken; plaintext never stored
 	IssuedAt  time.Time
 	ExpiresAt time.Time
@@ -83,8 +101,14 @@ type Tokens struct {
 // same space). LastLoginAt is nil for an identity that has been linked
 // but never used to sign in.
 type Identity struct {
-	ID          string
-	UserID      string
+	ID     string
+	UserID string
+	// TenantID is opaque and app-defined; "" is a single-tenant
+	// deployment. See User.TenantID. It matches the owning user's
+	// tenant — ProvisionUserWithIdentity writes the SAME value to both
+	// rows, so a (provider, subject) can never resolve into a tenant its
+	// user does not belong to.
+	TenantID    string
 	Provider    string
 	Subject     string
 	LinkedAt    time.Time
@@ -95,8 +119,11 @@ type Identity struct {
 // explicit link LastLoginAt is nil; for a JIT provision it equals
 // LinkedAt (the first sign-in is the link event).
 type NewIdentity struct {
-	ID          string
-	UserID      string
+	ID     string
+	UserID string
+	// TenantID is opaque and app-defined; "" is a single-tenant
+	// deployment. See Identity.TenantID.
+	TenantID    string
 	Provider    string
 	Subject     string
 	LinkedAt    time.Time

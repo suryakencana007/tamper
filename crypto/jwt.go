@@ -1,11 +1,16 @@
 package crypto
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // ErrInvalidToken collapses every JWT failure mode (bad signature,
@@ -28,24 +33,192 @@ type JWTService struct {
 	secret []byte
 	ttl    time.Duration
 	issuer string
+	// signer, when non-nil, replaces the built-in HS256 path. nil is the
+	// default and the ONLY configuration that can produce a
+	// byte-identical pre-seam token — see sign.
+	signer Signer
+	// verifiers resolves a token's `kid` to the Signer that can check
+	// it: key rotation, and eventually a per-tenant key. Empty means
+	// "verify with signer".
+	verifiers map[string]Signer
 	// now is the clock source; tests override via Testing().SetNow.
 	now func() time.Time
+}
+
+// JWTOption configures a JWTService at construction.
+type JWTOption func(*JWTService)
+
+// WithSigner replaces the built-in HS256 signing with s — the seam that
+// makes asymmetric keys possible without changing a call site.
+//
+// Supplying a Signer bypasses the JWTConfig.Secret requirement: signing
+// is delegated, so the service needs no key material of its own and an
+// empty Secret is no longer a programmer error. The panic stays for the
+// default path, where an empty secret still means every token is
+// forgeable.
+//
+// A service with a Signer no longer produces byte-identical tokens to
+// the default path unless the Signer is an equivalent HS256 with no
+// kid — which is the point: you asked for different signing.
+func WithSigner(s Signer) JWTOption { return func(j *JWTService) { j.signer = s } }
+
+// WithVerifiers supplies the verification keys, keyed by `kid`, for
+// rotation or per-tenant keys. A token's kid is looked up here; an
+// unknown kid FAILS CLOSED rather than falling back to the signing key,
+// because a fallback would let a token name a key that does not exist
+// and still be checked against one that does.
+//
+// The map is copied, so a later mutation by the caller cannot change
+// verification behaviour underneath a running service.
+func WithVerifiers(byKID map[string]Signer) JWTOption {
+	return func(j *JWTService) {
+		if byKID == nil {
+			j.verifiers = nil
+			return
+		}
+		cp := make(map[string]Signer, len(byKID))
+		maps.Copy(cp, byKID)
+		j.verifiers = cp
+	}
 }
 
 // NewJWTService constructs a JWTService from a JWTConfig. Panics on
 // empty secret — callers are expected to validate their config at
 // startup; reaching NewJWTService with an empty secret is a programmer
 // error.
-func NewJWTService(cfg JWTConfig) *JWTService {
-	if cfg.Secret == "" {
-		panic("auth: jwt secret is empty — config validation should have caught this")
-	}
-	return &JWTService{
+//
+// With no options the service is exactly what it was before the Signer
+// seam existed, down to the bytes it emits: the default path does not
+// route through Signer at all.
+func NewJWTService(cfg JWTConfig, opts ...JWTOption) *JWTService {
+	j := &JWTService{
 		secret: []byte(cfg.Secret),
 		ttl:    cfg.TTL,
 		issuer: cfg.Issuer,
 		now:    time.Now,
 	}
+	for _, opt := range opts {
+		opt(j)
+	}
+	// The secret is only required when THIS service does the signing.
+	if j.signer == nil && cfg.Secret == "" {
+		panic("auth: jwt secret is empty — config validation should have caught this")
+	}
+	return j
+}
+
+// sign produces the signed token for claims.
+//
+// The default branch is deliberately the original code, unchanged and
+// untouched by the seam: byte-identity with a pre-7d-1 token is
+// guaranteed by construction rather than merely asserted by a test. The
+// pinned-token test then proves the guarantee held.
+func (j *JWTService) sign(claims jwt.Claims) (string, error) {
+	if j.signer == nil {
+		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		return tok.SignedString(j.secret)
+	}
+	tok := jwt.NewWithClaims(signerMethod{s: j.signer}, claims)
+	if kid := j.signer.KeyID(); kid != "" {
+		tok.Header["kid"] = kid
+	}
+	// The key travels inside the Signer, so nothing is passed here.
+	return tok.SignedString(nil)
+}
+
+// parserOptions are the validation rules both verification paths apply.
+// Shared so the delegated path cannot drift from the default one.
+func (j *JWTService) parserOptions() []jwt.ParserOption {
+	return []jwt.ParserOption{
+		jwt.WithTimeFunc(j.now),
+		jwt.WithIssuer(j.issuer),
+		jwt.WithExpirationRequired(),
+	}
+}
+
+// resolveVerifier picks the Signer that may check a token carrying kid.
+//
+// Fails closed on an unknown kid. Falling back to the signing key would
+// mean a token could name any key it liked and still be verified against
+// the one key the service holds, which makes the kid header decorative
+// at exactly the moment it becomes load-bearing.
+func (j *JWTService) resolveVerifier(kid string) (Signer, error) {
+	if len(j.verifiers) > 0 {
+		s, ok := j.verifiers[kid]
+		if !ok {
+			return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		}
+		return s, nil
+	}
+	if j.signer == nil {
+		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	return j.signer, nil
+}
+
+// parseClaims verifies tokenStr's signature and validates its claims
+// into claims.
+//
+// The default branch is the original ParseWithClaims call, unchanged.
+// The delegated branch verifies the signature through the resolved
+// Signer and then hands the claims to jwt.NewValidator — golang-jwt's
+// OWN validator, with the same options — rather than re-implementing
+// expiry and issuer checks. Duplicating a security-critical validation
+// is how the two paths would quietly diverge.
+func (j *JWTService) parseClaims(tokenStr string, claims jwt.Claims) error {
+	if j.signer == nil && len(j.verifiers) == 0 {
+		tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc, j.parserOptions()...)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		}
+		if !tok.Valid {
+			return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		}
+		return nil
+	}
+
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	var hdr struct {
+		Alg string `json:"alg"`
+		Kid string `json:"kid"`
+	}
+	if err := json.Unmarshal(headerRaw, &hdr); err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	verifier, err := j.resolveVerifier(hdr.Kid)
+	if err != nil {
+		return err
+	}
+	// The token does not get to choose its algorithm. Accepting the
+	// header's alg would be the classic confusion attack.
+	if hdr.Alg != verifier.Alg() {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if err := verifier.Verify(parts[0]+"."+parts[1], sig); err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	claimsRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if err := json.Unmarshal(claimsRaw, claims); err != nil {
+		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	}
+	if err := jwt.NewValidator(j.parserOptions()...).Validate(claims); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+	}
+	return nil
 }
 
 // AccessClaims is the v1.14 shape of the access-token JWT. Extends
@@ -75,6 +248,28 @@ type AccessClaims struct {
 	// graceful rollout (no mass logout on deploy) without reopening the
 	// bypass.
 	Purpose string `json:"purpose,omitempty"`
+	// TenantID names the tenant this token was minted for, in a pooled
+	// multi-tenant deployment. Opaque and app-defined; tamper compares it
+	// for equality and never parses it.
+	//
+	// Legacy-tolerant on exactly the same terms as purpose above, and the
+	// tolerance has the same shape: every access JWT minted before this
+	// claim existed carries no `tid` and reads as "", and VerifyAccess
+	// accepts it. That buys a graceful rollout — no mass logout on the
+	// deploy that introduces tenancy — for the single-tenant deployments
+	// that are the only ones in a position to have such tokens.
+	//
+	// It is NOT a licence to accept an empty tid forever. The tolerance
+	// ends where tenancy begins: once a deployment enables tenancy, an
+	// empty tid must REJECT, because there "" is not a tenant but the
+	// absence of one, and treating absence as a match is the wildcard
+	// deny-by-default forbids. That rejection lands with
+	// VerifyAccess in 7c-2; VerifyAccess is unchanged here.
+	//
+	// omitempty is load-bearing, not cosmetic: it is what makes a
+	// no-tenant token byte-identical to a pre-tenancy one, so this claim
+	// costs single-tenant deployments nothing on the wire.
+	TenantID string `json:"tid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -124,17 +319,26 @@ const (
 //
 // Empty userID is rejected with ErrInvalidToken.
 func (j *JWTService) Issue(userID string) (string, error) {
-	return j.IssueAccess(userID, j.now().Unix(), ACRLocalPassword)
+	return j.IssueAccess(userID, tenant.Single, j.now().Unix(), ACRLocalPassword)
 }
 
-// IssueAccess mints a v1.14-shape access JWT with auth_time + acr
-// claims. Refresh rotation MUST pass through the previous JWT's
-// auth_time (NOT j.now()) — see Sprint 1 Task 01 contract.
+// IssueAccess mints an access JWT carrying a `tid` claim naming
+// the tenant, for pooled multi-tenant deployments.
 //
-// Empty userID, zero/negative authTime, or empty acr all reject with
-// ErrInvalidToken so the caller can't accidentally mint a JWT that
-// would always trip the step-up gate.
-func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (string, error) {
+// An empty tenantID is legal and means the single-tenant deployment:
+// `tid` is omitted entirely and the token is byte-identical to one
+// IssueAccess produced before this claim existed. That is why IssueAccess
+// is a one-line delegation rather than a parallel implementation — two
+// mint paths would be two chances for them to drift.
+//
+// tenantID is deliberately NOT validated. tamper does not parse, namespace
+// or canonicalize a tenant id (sketch §4.1); deciding that a tenant is
+// real is the application's job, and the boot guard already refused a
+// store that cannot scope by one.
+//
+// Same rejections as IssueAccess otherwise: empty userID, non-positive
+// authTime, empty acr.
+func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int64, acr string) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
 	}
@@ -149,6 +353,7 @@ func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (str
 		AuthTime: authTime,
 		ACR:      acr,
 		Purpose:  purposeAccess,
+		TenantID: tenantID.String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
@@ -156,8 +361,7 @@ func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (str
 			ExpiresAt: jwt.NewNumericDate(now.Add(j.ttl)),
 		},
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := tok.SignedString(j.secret)
+	signed, err := j.sign(claims)
 	if err != nil {
 		return "", fmt.Errorf("auth: sign jwt: %w", err)
 	}
@@ -172,50 +376,49 @@ func (j *JWTService) IssueAccess(userID string, authTime int64, acr string) (str
 // VerifyAccess instead so the typed claims can be stashed for
 // RequireFreshAuth downstream.
 func (j *JWTService) Verify(tokenStr string) (string, error) {
-	claims, err := j.VerifyAccess(tokenStr)
+	claims, err := j.VerifyAccess(tokenStr, tenant.Single)
 	if err != nil {
 		return "", err
 	}
 	return claims.Subject, nil
 }
 
-// VerifyAccess parses tokenStr as a v1.14-shape AccessClaims JWT.
-// Returns the typed claims on success so middleware can inspect
-// auth_time + acr without a re-parse. ErrInvalidToken wraps every
-// failure mode.
+// VerifyAccess is VerifyAccess plus the tenant pin: the token's
+// `tid` claim must equal tenantID EXACTLY, and every other outcome is a
+// rejection.
 //
-// Legacy-tolerant: pre-v1.14 JWTs carry no auth_time + no acr; those
-// fields parse as zero values. The middleware downstream treats
-// AuthTime=0 as "older than any maxAge" and ACR="" as "matches no
-// acrValues" — both trip the step-up gate, which is the intended
-// migration path (operators get a forced re-auth on sensitive
-// endpoints once, then their refreshed JWTs carry the new claims).
+// One equality does all the work, and it is worth reading the table
+// rather than the rule:
 //
-// Rejects any token whose `purpose` claim names a different token
-// shape. This is the other half of the discrimination VerifyTOTPPending
-// already performed: both Verify* entry points now refuse the other's
-// token, so a totp-pending session token handed out after a
-// password-only login cannot be replayed as a bearer credential to
-// skip the second factor. An absent purpose is accepted as a legacy
-// access JWT — see AccessClaims.Purpose for why that is safe.
-func (j *JWTService) VerifyAccess(tokenStr string) (*AccessClaims, error) {
-	claims := &AccessClaims{}
-	tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc,
-		jwt.WithTimeFunc(j.now),
-		jwt.WithIssuer(j.issuer),
-		jwt.WithExpirationRequired(),
-	)
+//	route ""     token ""        allow  — single-tenant, byte-identical to before
+//	route ""     token "acme"    REJECT — a tenant token on an untenanted route
+//	route "acme" token ""        REJECT — tenancy is on; see below
+//	route "acme" token "acme"    allow
+//	route "acme" token "globex"  REJECT — the cross-tenant case
+//
+// The third row is where 7c-1's legacy tolerance ENDS, and it ends here
+// deliberately. AccessClaims.TenantID is tolerant of a missing `tid`
+// because a single-tenant deployment's existing tokens have none — but
+// once a route names a tenant, an absent tid is not a match, it is the
+// absence of an answer, and reading absence as a match is precisely the
+// wildcard deny-by-default forbids (sketch §6.2). A caller that wants
+// the tolerant read still has VerifyAccess.
+//
+// A mismatch collapses onto ErrInvalidToken with a message
+// indistinguishable from an ordinary invalid token. That is not
+// tidiness: a distinguishable "wrong tenant" error tells the caller
+// that its token is well-formed and merely pointed at the wrong place,
+// which is a tenant-existence oracle. One status, one message, no
+// signal — the discipline this package already applies to every other
+// JWT failure mode (§6.3).
+func (j *JWTService) VerifyAccess(tokenStr string, tenantID tenant.ID) (*AccessClaims, error) {
+	claims, err := j.ParseAccess(tokenStr)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return nil, err
 	}
-	if !tok.Valid {
+	if claims.TenantID != tenantID.String() {
+		// Deliberately the SAME message the generic invalid branch uses.
 		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
-	}
-	if claims.Purpose != "" && claims.Purpose != purposeAccess {
-		return nil, fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
-	}
-	if claims.Subject == "" {
-		return nil, fmt.Errorf("%w: sub is missing", ErrInvalidToken)
 	}
 	return claims, nil
 }
@@ -259,8 +462,7 @@ func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
 			ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
 		},
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := tok.SignedString(j.secret)
+	signed, err := j.sign(claims)
 	if err != nil {
 		return "", fmt.Errorf("auth: sign totp-pending jwt: %w", err)
 	}
@@ -273,16 +475,8 @@ func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
 // submitted to the totp-verify endpoint.
 func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
 	claims := &totpPendingClaims{}
-	tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc,
-		jwt.WithTimeFunc(j.now),
-		jwt.WithIssuer(j.issuer),
-		jwt.WithExpirationRequired(),
-	)
-	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidToken, err)
-	}
-	if !tok.Valid {
-		return "", fmt.Errorf("%w: token not valid", ErrInvalidToken)
+	if err := j.parseClaims(tokenStr, claims); err != nil {
+		return "", err
 	}
 	if claims.Purpose != purposeTOTPPending {
 		return "", fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
@@ -291,4 +485,31 @@ func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
 		return "", fmt.Errorf("%w: sub is missing", ErrInvalidToken)
 	}
 	return claims.Subject, nil
+}
+
+// ParseAccess validates an access token's signature, purpose and subject
+// and returns its claims WITHOUT checking the tenant.
+//
+// The name is the warning. Use [JWTService.VerifyAccess] unless you are
+// composing the tenant check yourself — espresso's RequireAuth does,
+// because RequireTenant runs after it and performs the comparison against
+// the ROUTED tenant, which RequireAuth cannot know.
+//
+// This is deliberately not called VerifyAccess-something. Before v0.4.0 the
+// unpinned form WAS the short name and the pinned one carried the suffix,
+// so the safe call was the longer one and the foot-gun was the default.
+// That is now inverted: VerifyAccess checks the tenant, and skipping the
+// check requires saying Parse.
+func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
+	claims := &AccessClaims{}
+	if err := j.parseClaims(tokenStr, claims); err != nil {
+		return nil, err
+	}
+	if claims.Purpose != "" && claims.Purpose != purposeAccess {
+		return nil, fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
+	}
+	if claims.Subject == "" {
+		return nil, fmt.Errorf("%w: sub is missing", ErrInvalidToken)
+	}
+	return claims, nil
 }

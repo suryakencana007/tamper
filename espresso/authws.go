@@ -42,7 +42,13 @@ func RequireAuthWS(jwt *crypto.JWTService, subprotocolPrefix string) func(http.H
 				writeUnauthenticated(w, err.Error())
 				return
 			}
-			claims, err := jwt.VerifyAccess(tok)
+			// ParseAccess, not VerifyAccess: the tenant comparison belongs to
+			// RequireTenant, which runs INSIDE this middleware and checks the
+			// token's tid against the ROUTED tenant. RequireAuth cannot do it
+			// — the route's tenant is not resolved yet at this point, and a
+			// tenant taken from the token would be checking the token against
+			// itself.
+			claims, err := jwt.ParseAccess(tok)
 			if err != nil {
 				writeUnauthenticated(w, "invalid token")
 				return

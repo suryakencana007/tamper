@@ -35,7 +35,23 @@ CREATE TABLE events (
     after_json        TEXT NOT NULL DEFAULT '',
     prev_hash         BLOB NOT NULL,
     hash              BLOB NOT NULL,
-    canonical_version INTEGER NOT NULL DEFAULT 1
+    canonical_version INTEGER NOT NULL DEFAULT 1,
+    -- Phase 7 (migration 005). tenant_id is the row's SCOPE and IS part
+    -- of the canonical payload at canonical_version=4 — unlike
+    -- cluster_id above, because a tenant is the trust boundary rather
+    -- than a visibility filter inside one. actor_tenant_id is the
+    -- actor's home tenant, a different fact (see 005_tenant_v4.sql).
+    -- row_salt + c_* implement redactable PII commitments: the c_*
+    -- columns are what v4 hashes, so nulling the plaintext and zeroing
+    -- the salt erases the value without breaking the chain.
+    tenant_id         TEXT NOT NULL DEFAULT '',
+    actor_tenant_id   TEXT NOT NULL DEFAULT '',
+    row_salt          BLOB NOT NULL DEFAULT x'',
+    c_actor_email     BLOB NOT NULL DEFAULT x'',
+    c_actor_name      BLOB NOT NULL DEFAULT x'',
+    c_actor_ip        BLOB NOT NULL DEFAULT x'',
+    c_before          BLOB NOT NULL DEFAULT x'',
+    c_after           BLOB NOT NULL DEFAULT x''
 );
 
 CREATE INDEX events_at_desc_idx ON events (at DESC, id);
@@ -43,3 +59,4 @@ CREATE INDEX events_actor_user_idx ON events (actor_user_id);
 CREATE INDEX events_resource_idx ON events (resource_type, resource_id);
 CREATE INDEX events_request_idx ON events (request_id);
 CREATE INDEX idx_events_cluster_id ON events (cluster_id) WHERE cluster_id <> '';
+CREATE INDEX idx_events_tenant_id ON events (tenant_id) WHERE tenant_id <> '';

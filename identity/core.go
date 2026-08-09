@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Password length bounds. Min mirrors common baseline guidance; Max is
@@ -22,13 +23,19 @@ const (
 // refresh-session rotation, and revocation. Construct with New; safe
 // for concurrent use as long as the Store is.
 type Core struct {
-	store        Store
+	store Store
+	// tenancy + scoped are settled ONCE at construction. The type
+	// assertion runs in New, never per request: a store that cannot
+	// serve tenants must fail at boot, not as a silent per-request deny
+	// (sketch §4.2, §6.4). scoped is non-nil exactly when tenancy is true.
 	jwt          *crypto.JWTService // nil = token-less instance; mint flows error
 	keys         *crypto.KeySet     // nil = TOTP envelope flows error (ErrNoKeySet)
 	refreshTTL   time.Duration      // 0 disables refresh sessions entirely
 	totpRequired bool
 	defaultACR   string
 	hooks        Hooks
+	throttling   Throttling      // zero value = no rate limiting (pre-7k-1 behavior)
+	invitations  InvitationStore // nil = invitation verbs error (opt-in, 7j-1)
 	now          func() time.Time
 	newID        func() string
 }
@@ -53,6 +60,11 @@ func WithTOTPRequired(required bool) Option { return func(c *Core) { c.totpRequi
 // refresh_tokens.acr, so the framework default would break step-up
 // freshness against existing rows). Defaults to crypto.ACRLocalPassword.
 func WithDefaultACR(acr string) Option { return func(c *Core) { c.defaultACR = acr } }
+
+// WithTenancy was here. It gated the fallback path while the additive
+// phase was open. v0.4.0 removed the fallback, so there is nothing to
+// enable: every Core is tenant-scoped and a single-tenant deployment says
+// so by passing tenant.Single.
 
 // WithHooks attaches the app-side extension points.
 func WithHooks(h Hooks) Option { return func(c *Core) { c.hooks = h } }
@@ -84,18 +96,77 @@ func New(store Store, jwt *crypto.JWTService, opts ...Option) (*Core, error) {
 	if c.defaultACR == "" {
 		return nil, fmt.Errorf("identity: default ACR must not be empty")
 	}
+	// The optional-interface upgrade and its boot assertion were here.
+	// v0.4.0 folded TenantScopedStore into Store, so there is no longer a
+	// second interface to assert against: a Store that does not implement
+	// the tenant-scoped methods does not compile, which is strictly better
+	// than a boot-time error. Phase 0c's lesson is preserved by making the
+	// failure earlier, not by keeping the check.
 	return c, nil
+}
+
+// --- the tenancy routing choice points -------------------------------
+//
+// Every scoped read funnels through one of these three, so the
+// scoped-vs-unscoped decision exists in exactly three places and each
+// is individually mutation-testable. Callers never branch on tenancy.
+
+// tenantGate rejects the one shape that must never reach a store: an
+// UNSET tenant, which is what a caller who forgot to thread it produces.
+// It fails closed.
+//
+// Before v0.4.0 this had a second arm, for a non-empty tenant against a
+// tenancy-disabled Core. There is no disabled mode now, so that shape
+// cannot occur. What remains is the shape a bare string could never
+// express: tenant.ID's zero value is distinguishable from tenant.Single,
+// so "I forgot" and "I am single-tenant" are finally different inputs and
+// only the first one denies (§6.2, sketch §8 item 7).
+func (c *Core) tenantGate(tenantID tenant.ID) error {
+	if !tenantID.Valid() {
+		return ErrTenantRequired
+	}
+	return nil
+}
+
+func (c *Core) userByEmail(ctx context.Context, tenantID tenant.ID, email string) (User, error) {
+	if err := c.tenantGate(tenantID); err != nil {
+		return User{}, err
+	}
+	return c.store.UserByEmail(ctx, tenantID, email)
+}
+
+// countUsers drives the firstUser bootstrap signal, which is why it is
+// per-tenant when tenancy is on. This is blocker B2 and it is the one
+// that fails SILENTLY: a global count compiles, passes, ships, and
+// surfaces months later as "the new customer's admin has no
+// permissions".
+func (c *Core) countUsers(ctx context.Context, tenantID tenant.ID) (int64, error) {
+	if err := c.tenantGate(tenantID); err != nil {
+		return 0, err
+	}
+	return c.store.CountUsers(ctx, tenantID)
+}
+
+func (c *Core) identityByProviderSubject(ctx context.Context, tenantID tenant.ID, provider, subject string) (Identity, error) {
+	if err := c.tenantGate(tenantID); err != nil {
+		return Identity{}, err
+	}
+	return c.store.IdentityByProviderSubject(ctx, tenantID, provider, subject)
 }
 
 // RefreshTTL exposes the configured session lifetime so transport
 // layers can align cookie Max-Age with the row expiry.
 func (c *Core) RefreshTTL() time.Duration { return c.refreshTTL }
 
-// Register creates a user from an email + password and mints the first
-// session. The email is normalised (lowercased, trimmed, shape-checked);
-// duplicates return ErrEmailTaken. The firstUser bootstrap signal and
-// the OnRegistered hook are documented on Store and Hooks.
-func (c *Core) Register(ctx context.Context, email, password string) (User, Tokens, error) {
+// Register creates a user within a tenant. The tenant is an
+// EXPLICIT argument, never derived from the context: an implicit tenant
+// is a cross-tenant leak waiting for one missing middleware call, and it
+// fails open (tenant.WithTenant documents the same rule for ports).
+//
+// firstUser is counted WITHIN the tenant, so tenant #2's first admin
+// receives firstUser=true even though tenant #1 is full of users. That
+// is blocker B2.
+func (c *Core) Register(ctx context.Context, tenantID tenant.ID, email, password string) (User, Tokens, error) {
 	normalised, err := NormaliseEmail(email)
 	if err != nil {
 		return User{}, Tokens{}, err
@@ -108,7 +179,7 @@ func (c *Core) Register(ctx context.Context, email, password string) (User, Toke
 		return User{}, Tokens{}, fmt.Errorf("identity: hash password: %w", err)
 	}
 
-	count, err := c.store.CountUsers(ctx)
+	count, err := c.countUsers(ctx, tenantID)
 	if err != nil {
 		return User{}, Tokens{}, fmt.Errorf("identity: count users: %w", err)
 	}
@@ -116,6 +187,7 @@ func (c *Core) Register(ctx context.Context, email, password string) (User, Toke
 
 	u := NewUser{
 		ID:           c.newID(),
+		TenantID:     tenantID.String(),
 		Email:        normalised,
 		PasswordHash: hash,
 		CreatedAt:    c.now(),
@@ -128,6 +200,7 @@ func (c *Core) Register(ctx context.Context, email, password string) (User, Toke
 	}
 	user := User{
 		ID:           u.ID,
+		TenantID:     u.TenantID, // carried, never read
 		Email:        u.Email,
 		PasswordHash: u.PasswordHash,
 		Active:       true,
@@ -138,31 +211,53 @@ func (c *Core) Register(ctx context.Context, email, password string) (User, Toke
 		c.hooks.OnRegistered(ctx, user, first)
 	}
 
-	tokens, err := c.issueTokens(ctx, user.ID, c.now().Unix(), c.defaultACR)
+	tokens, err := c.issueTokens(ctx, user.ID, tenant.FromStored(user.TenantID), c.now().Unix(), c.defaultACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
 	return user, tokens, nil
 }
 
-// Login authenticates an email + password. Every failure mode —
-// unknown email, malformed email, federated-only account (empty hash),
-// deactivated account, wrong password — collapses to
-// ErrInvalidCredentials, and the non-verify paths burn a stub bcrypt
-// comparison so rejections are timing-indistinguishable from a wrong
-// password (Barista TD-SEC-01).
+// Login authenticates within a tenant.
 //
-// When the user is TOTP-enrolled (or system-wide enforcement is on),
-// Login returns (user, zero Tokens, ErrTOTPRequired): password stands,
-// but the caller must complete the TOTP step before minting tokens.
-func (c *Core) Login(ctx context.Context, email, password string) (User, Tokens, error) {
+// Timing parity is preserved and it is the reason the tenant is applied
+// by the LOOKUP rather than by a comparison afterwards. A wrong tenant
+// makes UserByEmailInTenant miss, which lands on the SAME branch as an
+// unknown email — stub bcrypt burn, then ErrInvalidCredentials. There is
+// deliberately no "fetch globally, then compare TenantID" step: that
+// would both leak (the row is read) and return early before the hash
+// comparison, making a wrong tenant measurably cheaper than a wrong
+// password.
+//
+// The empty-tenant rejection is decided from the argument alone, before
+// any store read, and is identical for every email — see
+// ErrTenantRequired for why it is not an enumeration oracle.
+func (c *Core) Login(ctx context.Context, tenantID tenant.ID, email, password string) (User, Tokens, error) {
 	normalised, err := NormaliseEmail(email)
 	if err != nil {
 		_ = crypto.VerifyStub(password)
 		return User{}, Tokens{}, ErrInvalidCredentials
 	}
-	user, err := c.store.UserByEmail(ctx, normalised)
+	// Throttle on the NORMALISED address, and before the store read.
+	//
+	// Normalised, because a limiter keyed on the raw input is evaded by
+	// changing the case of one letter — the attacker gets a fresh bucket
+	// per spelling of the same account, which is no limiter at all.
+	//
+	// Before the read, because that ordering is the whole of the
+	// non-disclosure property: the key is composed from what the caller
+	// typed, so a throttled answer is identical for an address that
+	// exists, one that never existed, one that is federated-only and one
+	// that is deactivated. Move this below the lookup and "throttled"
+	// starts meaning "this account is real".
+	if retryAfter, ok := c.allowLogin(ctx, tenantID, normalised); !ok {
+		return User{}, Tokens{}, &ThrottledError{RetryAfter: retryAfter}
+	}
+	user, err := c.userByEmail(ctx, tenantID, normalised)
 	if err != nil {
+		if errors.Is(err, ErrTenantRequired) {
+			return User{}, Tokens{}, err
+		}
 		if errors.Is(err, ErrNotFound) {
 			_ = crypto.VerifyStub(password)
 			return User{}, Tokens{}, ErrInvalidCredentials
@@ -181,7 +276,7 @@ func (c *Core) Login(ctx context.Context, email, password string) (User, Tokens,
 		return user, Tokens{}, ErrTOTPRequired
 	}
 
-	tokens, err := c.issueTokens(ctx, user.ID, c.now().Unix(), c.defaultACR)
+	tokens, err := c.issueTokens(ctx, user.ID, tenant.FromStored(user.TenantID), c.now().Unix(), c.defaultACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -190,15 +285,23 @@ func (c *Core) Login(ctx context.Context, email, password string) (User, Tokens,
 
 // IssueTokensForUser mints a session with fresh auth_time and the
 // default ACR — the post-TOTP-verify and shim path.
+//
+// The minted session carries an EMPTY tenant. These two shims take a
+// bare user id, so there is no tenant to carry, and resolving one here
+// would mean a second store read this method has never done. A pooled
+// deployment mints through a tenant-aware entry point instead (7b-2);
+// until then this is byte-identical to pre-7b-1 behavior, because
+// nothing supplies a tenant yet.
 func (c *Core) IssueTokensForUser(ctx context.Context, userID string) (Tokens, error) {
-	return c.issueTokens(ctx, userID, 0, "")
+	return c.issueTokens(ctx, userID, tenant.Single, 0, "")
 }
 
 // IssueTokensForUserWithACR mints a session carrying explicit step-up
 // claims (federated logins thread their own auth_time + ACR through).
 // Non-positive authTime falls back to now; empty acr to the default.
+// Empty tenant, for the reason on IssueTokensForUser.
 func (c *Core) IssueTokensForUserWithACR(ctx context.Context, userID string, authTime int64, acr string) (Tokens, error) {
-	return c.issueTokens(ctx, userID, authTime, acr)
+	return c.issueTokens(ctx, userID, tenant.Single, authTime, acr)
 }
 
 // Refresh validates and rotates a refresh session: the old row is
@@ -252,7 +355,11 @@ func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, 
 	if !session.AuthTime.IsZero() {
 		carryAuthTime = session.AuthTime.Unix()
 	}
-	tokens, err := c.issueTokens(ctx, session.UserID, carryAuthTime, session.ACR)
+	// session.TenantID rides across the rotation UNCHANGED, exactly like
+	// AuthTime and ACR above. Dropping it here would widen the successor
+	// from one tenant to none — and "none" reads as the single-tenant
+	// shape, which is the wildcard.
+	tokens, err := c.issueTokens(ctx, session.UserID, tenant.FromStored(session.TenantID), carryAuthTime, session.ACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -291,6 +398,16 @@ func (c *Core) Logout(ctx context.Context, refreshToken string) error {
 // session for the user is revoked. Access JWTs already in the wild
 // expire on their own (they are stateless by design — revocability is
 // exactly what refresh sessions trade statelessness for).
+// It is deliberately UNCHANGED by tenancy. The 7b-2 routing rule listed
+// RevokeAllSessions among the methods that "use the *InTenant methods",
+// but the only tenant-scoped revoke on the port is
+// RevokeAllRefreshSessionsForTenant — and that is not the tenant-scoped
+// form of this operation. The port's own naming says so: *InTenant
+// narrows an existing lookup to a tenant, while ForTenant is the sibling
+// of ForUser and names the SUBJECT of a bulk revoke. Routing this method
+// onto it would silently turn one user's "log out everywhere" into
+// signing out an entire customer. Blast radius is not a scope
+// adjustment, so the tenant-wide operation gets its own name below.
 func (c *Core) RevokeAllSessions(ctx context.Context, userID string) error {
 	if userID == "" {
 		return fmt.Errorf("identity: user id is required")
@@ -301,10 +418,36 @@ func (c *Core) RevokeAllSessions(ctx context.Context, userID string) error {
 	return nil
 }
 
+// RevokeAllSessionsForTenant revokes every live session belonging to one
+// tenant — the "we are locking this customer out" operation (a suspended
+// account, a breach response, an offboarded organisation).
+//
+// It is NOT the tenant-scoped form of RevokeAllSessions, and the name
+// says so: ForTenant names the subject, matching the port's
+// RevokeAllRefreshSessionsForUser / ...ForTenant pair. Reaching for this
+// when you meant a single user signs out every user that tenant has.
+//
+// An unset tenant denies: revoking "everything" is never what a caller
+// who forgot to thread the tenant meant.
+func (c *Core) RevokeAllSessionsForTenant(ctx context.Context, tenantID tenant.ID) error {
+	if err := c.tenantGate(tenantID); err != nil {
+		return err
+	}
+	if err := c.store.RevokeAllRefreshSessionsForTenant(ctx, tenantID, c.now()); err != nil {
+		return fmt.Errorf("identity: revoke all sessions for tenant: %w", err)
+	}
+	return nil
+}
+
 // issueTokens mints an access JWT and (when refresh is enabled) a
 // persisted refresh session. Non-positive authTime falls back to now,
 // empty acr to the default — the legacy-shim shape.
-func (c *Core) issueTokens(ctx context.Context, userID string, authTime int64, acr string) (Tokens, error) {
+//
+// tenantID is stamped on the successor row verbatim and is never read
+// or defaulted: an empty tenant means a single-tenant deployment, and
+// substituting anything for it here would invent a tenant the caller
+// did not name.
+func (c *Core) issueTokens(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
 	if c.jwt == nil {
 		return Tokens{}, ErrNoTokenService
 	}
@@ -314,7 +457,7 @@ func (c *Core) issueTokens(ctx context.Context, userID string, authTime int64, a
 	if acr == "" {
 		acr = c.defaultACR
 	}
-	access, err := c.jwt.IssueAccess(userID, authTime, acr)
+	access, err := c.jwt.IssueAccess(userID, tenantID, authTime, acr)
 	if err != nil {
 		return Tokens{}, fmt.Errorf("identity: issue access token: %w", err)
 	}
@@ -334,6 +477,7 @@ func (c *Core) issueTokens(ctx context.Context, userID string, authTime int64, a
 	if err := c.store.CreateRefreshSession(ctx, RefreshSession{
 		ID:        c.newID(),
 		UserID:    userID,
+		TenantID:  tenantID.String(),
 		TokenHash: hash,
 		IssuedAt:  now,
 		ExpiresAt: exp,

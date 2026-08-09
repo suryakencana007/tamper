@@ -1072,6 +1072,33 @@ func (l *SQLiteLogger) insertEventDirect(ctx context.Context, e Event) error {
 	})
 }
 
+// ListByCanonicalVersion returns every event stored at the given canonical
+// version, in chain-walk order, as neutral Events.
+//
+// This is the operator-dump surface: when the boot guard reports a chain
+// mismatch it points at a `dump-v2`-style command, and that command needs to
+// read one canonical segment without caring how it is stored. It replaces
+// reaching through StoreForDebug().Queries and converting rows with
+// FromRowForDebug — the two exports whose only purpose was to hand callers
+// the generated row type, and which kept tamper's schema public.
+//
+// Unlike List, this applies no filter, no paging and no cluster scoping: a
+// forensic dump wants the segment whole.
+func (l *SQLiteLogger) ListByCanonicalVersion(ctx context.Context, version int) ([]Event, error) {
+	if l == nil || l.store == nil {
+		return nil, errEmptyDBPath
+	}
+	rows, err := l.store.Queries.ListEventsByCanonicalVersion(ctx, int64(version))
+	if err != nil {
+		return nil, fmt.Errorf("audit: list canonical_version=%d: %w", version, err)
+	}
+	out := make([]Event, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromRow(r))
+	}
+	return out, nil
+}
+
 // IsUniqueViolation reports whether err is a SQLite UNIQUE or PRIMARY KEY
 // constraint violation from the audit store.
 //

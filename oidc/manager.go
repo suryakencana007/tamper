@@ -357,7 +357,7 @@ func (m *Manager) TestDiscovery(ctx context.Context, issuerURL string) (*Discove
 // converging within the TTL, empty ones immediately.
 //
 // A non-empty tenantID requires the store to implement
-// TenantScopedProviderStore. It fails rather than falling back to the
+// the tenant-scoped ProviderStore. It fails rather than falling back to the
 // untenanted list, which would serve every tenant's providers to one
 // tenant. tamper.New already refuses this configuration at boot; this is
 // the second line for a Manager constructed directly.

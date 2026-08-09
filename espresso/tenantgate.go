@@ -31,7 +31,7 @@
 // eliminates it: this gate is the ONLY thing that puts a tenant in the
 // context, so any handler that reads TenantFromContext gets ("", false)
 // rather than a wrong answer; a missing-claims request denies rather
-// than passing; and crypto.VerifyAccessInTenant exists for callers who
+// than passing; and crypto.VerifyAccess exists for callers who
 // would rather do the check at verification time, where it cannot be
 // composed wrong. A deployment enabling tenancy should wrap every authed
 // route with this and treat an unwrapped one as a bug.
@@ -107,7 +107,7 @@ func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.H
 				return
 			}
 			routed := resolve(r)
-			// The same single equality crypto.VerifyAccessInTenant
+			// The same single equality crypto.VerifyAccess
 			// applies. Absent, empty and mismatched all land here.
 			if claims.TenantID != routed {
 				writeUnauthenticated(w, "invalid token")

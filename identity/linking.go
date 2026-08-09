@@ -26,7 +26,7 @@ import (
 func (c *Core) ResolveByIdentity(ctx context.Context, tenantID tenant.ID, provider, subject string) (User, Identity, bool, error) {
 	ident, err := c.identityByProviderSubject(ctx, tenantID, provider, subject)
 	if err != nil {
-		if errors.Is(err, ErrTenantRequired) || errors.Is(err, ErrTenancyDisabled) {
+		if errors.Is(err, ErrTenantRequired) {
 			return User{}, Identity{}, false, err
 		}
 		if errors.Is(err, ErrNotFound) {

@@ -107,7 +107,7 @@ func (m *MemStore) UserByID(_ context.Context, id string) (User, error) {
 	return u, nil
 }
 
-// --- TenantScopedStore (Phase 7). The isolation contract is on the
+// --- tenant-scoped reads (Phase 7). The isolation contract is on the
 // interface; these are the reference implementation of it. ---
 
 // UserByEmail implements Store.

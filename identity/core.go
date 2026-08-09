@@ -255,7 +255,7 @@ func (c *Core) Login(ctx context.Context, tenantID tenant.ID, email, password st
 	}
 	user, err := c.userByEmail(ctx, tenantID, normalised)
 	if err != nil {
-		if errors.Is(err, ErrTenantRequired) || errors.Is(err, ErrTenancyDisabled) {
+		if errors.Is(err, ErrTenantRequired) {
 			return User{}, Tokens{}, err
 		}
 		if errors.Is(err, ErrNotFound) {

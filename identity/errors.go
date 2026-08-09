@@ -110,13 +110,6 @@ var (
 	// ErrInvalidCredentials. It is legible in logs, not on the wire.
 	ErrTenantRequired = errors.New("identity: tenant id is required when tenancy is enabled")
 
-	// ErrTenancyDisabled — a tenant id was supplied to a Core built
-	// WITHOUT tenancy. Also a deny rather than a silent ignore: the store
-	// has no tenant axis, so honouring the call would run an UNSCOPED
-	// query while the caller believes it is scoped. That is precisely the
-	// wildcard §6.2 forbids, and it fails open.
-	ErrTenancyDisabled = errors.New("identity: tenant id supplied but tenancy is not enabled")
-
 	// --- rate limiting (Phase 7, 7k-1) ---
 
 	// ErrThrottled — the configured Throttle refused the attempt. Match

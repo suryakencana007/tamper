@@ -14,7 +14,7 @@
 // What it shows:
 //
 //   - Two tenants, acme and globex, served from ONE process over ONE
-//     identity.TenantScopedStore (store.go).
+//     identity.Store, tenant-scoped (store.go).
 //   - bob@acme.com and bob@globex.com as two different people — the same
 //     address in two tenants, which blocker B1 made impossible.
 //   - globex's first user receiving the bootstrap signal even though acme

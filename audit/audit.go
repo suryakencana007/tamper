@@ -165,7 +165,7 @@ func ActorFromContext(ctx context.Context) Actor {
 	return Actor{Type: ActorTypeUser}
 }
 
-// ActorServiceInTenant is ActorService for a pooled deployment: the same
+// ActorService records a service-account actor and its tenant: the same
 // actor, plus the tenant the service account was acting in.
 //
 // The existing fields keep their exact meaning — UserID is still the

@@ -74,13 +74,41 @@ Run every command in the slice's `verify` block. Then run each `mutation`:
 
 1. Apply the mutation to the **production** path, not the test.
 2. **Confirm it compiles.** A mutant that fails to compile proves nothing —
-   it is measuring your typo.
-3. Run the named test and confirm it goes **red**.
-4. Revert the mutation and confirm green again.
+   it is measuring your typo. (Seen: deleting a field's only use left the
+   binding unused; the mutant failed to build and was briefly scored as
+   "didn't bite". Keep the binding — `_ = x` — and re-run.)
+3. **Confirm the named test actually RAN.** A test that matched nothing exits
+   0 and looks exactly like a passing test. Assert on the run count, not the
+   exit code — `go test -run '^Name$' -v` and check for `=== RUN Name`.
+   (Seen: a harness shelling out through `cmd.exe` passed `-run '^Name$'`
+   with the quotes intact, matched zero tests, and reported six healthy
+   guards as all-surviving. Every mutation in that batch was a false alarm.)
+4. Run the named test and confirm it goes **red**.
+5. Revert the mutation and confirm green again.
 
-Report each mutation as: the diff applied, that it compiled, the test that
-failed. If a mutation stays green, the guard is pointed at the wrong thing —
-fix the test, not the report.
+Report each mutation as: the diff applied, that it compiled, that the test
+ran, and that it failed.
+
+**When a mutation stays green, there are two possibilities and they need
+different answers. Diagnose before acting:**
+
+- **The guard is pointed at the wrong thing** — the usual case. Fix the test,
+  not the report. (Seen: a test asserted "these two fields are distinct" by
+  swapping their values and expecting a different hash — but the encoding is
+  length-prefixed and positional, so swapping *any* two values changes the
+  bytes. It was asserting a property of the encoding, not of the code under
+  test, and could not fail. Replaced with a golden field-order test; three
+  mutations then bit where none had.)
+- **The mutation is not actually a defect** — rarer, and it means a comment or
+  a claim somewhere is overstated. Say so plainly, and correct the overclaim.
+  Do not invent a test for a non-bug to make the table look complete. (Seen: a
+  read moved outside its transaction stayed green because `BEGIN IMMEDIATE`
+  already held the write lock. The code was fine; the comment calling that
+  read "the bug this exists to prevent" was wrong, and that is what got
+  fixed.)
+
+Either way the report says what happened. A mutation table where every row
+reads PASS because the failures were reworded is worth less than no table.
 
 ## Step 5 — report
 
@@ -93,6 +121,18 @@ Finish with a PR-body-ready summary containing:
 - the mutation-proof results
 - any invariant you found yourself under pressure to bend, and how you didn't
 - anything you deliberately left out for a separate change
+
+## Step 6 — what you cannot verify here
+
+Some `dod` lines need a machine this one is not:
+
+- **Barista CI** (`moon run barista:ci`) — a separate repository.
+- **The Docker deploy-artifact walk** with the chain self-test.
+
+Do **not** mark those lines done, and do not quietly drop them. State them as
+outstanding, name the nearest local proxy you ran instead, and add them to
+`PHASE7-HANDOFF.md` so the machine that has Barista and Docker knows exactly
+what to run.
 
 ## When to stop and ask
 

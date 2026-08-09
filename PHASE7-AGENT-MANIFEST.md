@@ -6,6 +6,42 @@
 >
 > Baseline: `20fa206` (2026-07-25). Module `github.com/suryakencana007/tamper`.
 
+## Status — 2026-08-09
+
+**M1-M5 complete.** Every slice through `7k-1` has landed, one branch per
+slice, in manifest order. Only **M6 (`7l-1`, the v0.4.0 default flip)**
+remains, and it is a release decision rather than a queued slice.
+
+| Milestone | Slices | State |
+|---|---|---|
+| M1 | 7a-1, 7b-1, 7a-2, 7b-2, 7b-3 | done |
+| M2 | 7c-1, 7c-2, 7d-1 | done |
+| M3 | 7e-1, 7e-2, 7f-1, 7f-2 | done |
+| M4 | 7g-1, 7g-2, 7h-1 | done |
+| M5 | 7i-1, 7j-1, 7k-1 | done — **two `7i-1` DoD lines outstanding**, see below |
+| M6 | 7l-1 | not started (breaking; v0.4.0) |
+
+**Outstanding, and NOT marked done anywhere:**
+
+1. `7i-1` — *"Boot verify green on a real Barista DB post-migration"* and
+   *"Docker deploy-artifact walk boots with chain self-test OK"*. Neither is
+   runnable on the development machine (Barista is a separate repository; the
+   Docker artifact needs the deploy pipeline). Local proxies were run and are
+   named in the slice's PR body. See `PHASE7-HANDOFF.md`.
+2. Barista CI has been **deferred throughout Phase 7**, with a hand-written
+   legacy adapter plus a golden port-call trace (`7b-2`) standing in for it.
+   That substitution is a proxy, not a pass.
+
+**Decisions taken since the freeze**, all recorded in sketch §8 item 1:
+one audit chain at `canonical_version=4` with commitment redaction; the
+revisit condition answered against ISO/IEC 27001 and found not triggered.
+
+**Landed outside this manifest** (rule 7 — separate change, not a slice):
+the chain-append single-writer fix. `Log` was a read-modify-write guarded only
+by an in-process mutex, so two replicas forked the chain. Reproduced, then
+closed with a `BEGIN IMMEDIATE` transaction. Under ISO 27001 A.8.15 the chain
+IS the tamper-protection control, so this was a reproducible nonconformity.
+
 ## How to use this file
 
 **One slice per PR. Never batch slices.** Work strictly in the order given —
@@ -412,7 +448,20 @@ type TenancyConfig struct {
 
 **mutation** — both are mandatory; a PR without both is incomplete.
 - **M-B1** — in `Core.Login`, swap `UserByEmailInTenant(ctx, tenantID, email)`
-  for `UserByEmail(ctx, email)`. `RunLeakSuite` must go RED.
+  for `UserByEmail(ctx, email)`. A **Core-level** cross-tenant login test must
+  go RED.
+
+  > **CORRECTION, 2026-08-09 — as originally written this mutation could not
+  > bite, and it was demonstrated rather than argued.** The spec named
+  > `RunLeakSuite` as the witness. `RunLeakSuite` exercises a `Store`
+  > implementation directly and never constructs a `Core`, so a mutation
+  > inside `Core.Login` is invisible to it: the mutant was applied, it
+  > compiled, and the suite stayed GREEN. The proof was moved to Core-level
+  > tests, which do go red. Left as a caution rather than a quiet edit: this
+  > is exactly the playbook step-5 failure the manifest warns about — a guard
+  > that is green and pointed at the wrong thing — and it appeared in the
+  > spec, not in the code.
+
 - **M-B2** — in the `firstUser` path, swap `CountUsersInTenant(ctx, tenantID)`
   for `CountUsers(ctx)`. The tenant-B-bootstrap test must go RED.
 

@@ -217,6 +217,12 @@ func Redact(e *Event) {
 // sweeping a subject's rows should learn which ones it could not reach,
 // not abort halfway through.
 //
+// If EVERY call returns (false, nil), check the logger's construction
+// before suspecting the data: rows are only written at v4 when the
+// logger has SQLiteLoggerOptions.Tenancy set, and that option is the
+// erasure switch too — despite its name, it is legal and supported for
+// single-tenant deployments (#25, see the option's doc).
+//
 // IDEMPOTENT. Re-redacting an already-redacted row rewrites the same
 // empty values over themselves and leaves the commitments alone.
 func (l *SQLiteLogger) RedactEvent(ctx context.Context, id string) (bool, error) {

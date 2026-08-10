@@ -397,7 +397,10 @@ Saying it costs nothing and closes a question every evaluator will ask.
    one data subject is a middle-of-chain deletion under BOTH topologies, and
    it is the commoner demand by an order of magnitude. It is solved by
    redaction, which is available under either — so it cannot discriminate
-   between them.
+   between them. (Reaching it always goes through the v4 encoder, i.e.
+   `SQLiteLoggerOptions.Tenancy` — a name #25 found misleading for the
+   single-tenant deployment that wants erasure only. That shape is legal
+   and supported: empty tenant IDs, `BootstrapChainV4` at boot.)
 
    **What was checked and found unavailable.** A mid-table genesis row is
    UNCONSTRUCTIBLE through the port: `Log` sets `e.PrevHash = latestHash()`

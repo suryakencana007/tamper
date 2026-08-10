@@ -6,6 +6,40 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
+## [0.4.1] — 2026-08-10
+
+Audit hardening. No breaking changes, no database changes, no call-site
+changes.
+
+### Fixed
+
+- **A crashed migration no longer bricks the audit store** (#24). Each
+  migration file and its `schema_migrations` row commit as ONE transaction.
+  Previously every statement autocommitted individually; a process killed
+  mid-boot left the schema half-changed, and because 005's `ADD COLUMN`s are
+  unreplayable (SQLite has no `ADD COLUMN IF NOT EXISTS`), every subsequent
+  boot failed with `duplicate column name` — a durable outage from a
+  transient crash. A crash at any point now rolls back to the exact
+  pre-migration state and the next boot retries cleanly.
+- **`Log` rejects an explicit `CanonicalVersion4` on a logger built without
+  `SQLiteLoggerOptions.Tenancy`** (#25). Such a row has no v4 anchor to
+  verify under: the boot guard accepted it while `audit verify` later
+  reported it as forged — a false tamper alarm on an untouched database.
+  The mistake now errors at write time, naming the fix.
+
+### Documentation
+
+- **Single-tenant PII erasure is a stated, supported recipe** (#25).
+  `canonical_version=4` carries two capabilities — the tenant in the hash
+  and the salted commitments that make erasure possible — behind one switch
+  whose docs described only the first and steered single-tenant deployments
+  away. The `Tenancy` option now names both and states the recipe (set it,
+  leave `TenantID` empty, `BootstrapChainV4` at boot), `RedactEvent`
+  explains its silent `(false, nil)` case, and the path is pinned by an
+  end-to-end regression test.
+
+---
+
 ## [0.4.0] — 2026-08-09
 
 Phase 7: tamper serves N tenants from one process. **One process, N tenants,

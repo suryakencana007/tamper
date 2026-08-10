@@ -79,6 +79,13 @@ func (s *Store) Close() error {
 // the main store package to avoid an import dependency that would
 // couple the two DB lifecycles.
 func applyMigrations(db *sql.DB) error {
+	return applyMigrationsFrom(db, migrations)
+}
+
+// applyMigrationsFrom is applyMigrations over an explicit fs.FS, so the
+// atomicity tests can feed it a deliberately broken migration. Production
+// always passes the embedded set.
+func applyMigrationsFrom(db *sql.DB, fsys fs.FS) error {
 	if _, err := db.Exec(
 		`CREATE TABLE IF NOT EXISTS schema_migrations (
 			name       TEXT PRIMARY KEY,
@@ -88,7 +95,7 @@ func applyMigrations(db *sql.DB) error {
 		return fmt.Errorf("sqlitestore: create schema_migrations: %w", err)
 	}
 
-	entries, err := fs.ReadDir(migrations, "migrations")
+	entries, err := fs.ReadDir(fsys, "migrations")
 	if err != nil {
 		return fmt.Errorf("sqlitestore: read migrations: %w", err)
 	}
@@ -111,18 +118,49 @@ func applyMigrations(db *sql.DB) error {
 		if applied > 0 {
 			continue
 		}
-		body, err := fs.ReadFile(migrations, "migrations/"+name)
+		body, err := fs.ReadFile(fsys, "migrations/"+name)
 		if err != nil {
 			return fmt.Errorf("sqlitestore: read migration %s: %w", name, err)
 		}
-		if _, err := db.Exec(string(body)); err != nil {
-			return fmt.Errorf("sqlitestore: apply migration %s: %w", name, err)
+		if err := applyOne(db, name, string(body)); err != nil {
+			return err
 		}
-		if _, err := db.Exec(
-			`INSERT INTO schema_migrations (name) VALUES (?)`, name,
-		); err != nil {
-			return fmt.Errorf("sqlitestore: record migration %s: %w", name, err)
-		}
+	}
+	return nil
+}
+
+// applyOne runs a single migration file AND its schema_migrations row in
+// one transaction, so a crash at any point — mid-file or between apply
+// and record — rolls back to the exact pre-migration state and the next
+// boot retries cleanly.
+//
+// This is load-bearing, not tidiness (#24). The runner's contract is
+// idempotent re-application, and 005_tenant_v4.sql structurally cannot
+// honour it: SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS, so
+// eight of its nine statements are unreplayable. Before this transaction
+// existed, each statement autocommitted individually; a process killed
+// mid-file left columns half-added, every subsequent boot re-ran the file
+// into "duplicate column name", and the store could never open again
+// without manual SQL. SQLite's DDL is fully transactional, so the fix is
+// exactly this shape and nothing more.
+func applyOne(db *sql.DB, name, body string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("sqlitestore: begin migration %s: %w", name, err)
+	}
+	// Rollback after a successful Commit is a no-op (sql.ErrTxDone).
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(body); err != nil {
+		return fmt.Errorf("sqlitestore: apply migration %s: %w", name, err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO schema_migrations (name) VALUES (?)`, name,
+	); err != nil {
+		return fmt.Errorf("sqlitestore: record migration %s: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlitestore: commit migration %s: %w", name, err)
 	}
 	return nil
 }

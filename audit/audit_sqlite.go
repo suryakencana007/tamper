@@ -60,15 +60,30 @@ type SQLiteLogger struct {
 type SQLiteLoggerOptions struct {
 	EmailLookup func(ctx context.Context, userID string) (email string, ok bool)
 
-	// Tenancy switches new emissions to canonical_version=4: the tenant
-	// enters the hashed payload and PII moves to redactable commitments
-	// (Phase 7, 7i-1).
+	// Tenancy switches new emissions to canonical_version=4, which
+	// carries TWO independent capabilities (Phase 7, 7i-1): the tenant
+	// enters the hashed payload, AND PII moves to per-row salted
+	// commitments — the only encoding [SQLiteLogger.RedactEvent] can
+	// erase. This flag is the single switch for both; there is no
+	// commitments-only option.
+	//
+	// A SINGLE-TENANT DEPLOYMENT THAT WANTS ERASURE SHOULD THEREFORE SET
+	// THIS TOO (#25). The name says "tenancy" but the mechanism is the v4
+	// encoder, and it is perfectly at home with no tenants: leave
+	// TenantID empty on every event, call [SQLiteLogger.BootstrapChainV4]
+	// once at boot, and redaction works — the tenant fields simply encode
+	// as empty strings. Do NOT reach for an explicit CanonicalVersion on
+	// the event instead; Log rejects that when this flag is off, because
+	// without the v4 anchor such a row would later be reported as tamper
+	// by Verify (see the guard in Log).
 	//
 	// FALSE IS THE DEFAULT AND IT IS BYTE-IDENTICAL TO PRE-7i-1. A
-	// single-tenant deployment keeps writing v3 rows with v3 hashes
-	// forever, no v4 anchor is emitted, and nothing about its audit DB
-	// changes — which is invariant 1 of the phase, satisfied by not
-	// participating rather than by careful equivalence.
+	// deployment that wants neither capability keeps writing v3 rows with
+	// v3 hashes forever, no v4 anchor is emitted, and nothing about its
+	// audit DB changes — which is invariant 1 of the phase, satisfied by
+	// not participating rather than by careful equivalence. The cost of
+	// staying here is that PII sits in plaintext in an append-only chain
+	// whose only lifecycle is PruneOlderThan.
 	//
 	// Existing rows are never rewritten either way. v4 applies to rows
 	// written from here on; every older row keeps its own
@@ -149,6 +164,23 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 		} else {
 			e.CanonicalVersion = CanonicalVersion3
 		}
+	} else if e.CanonicalVersion == CanonicalVersion4 && !l.opts.Tenancy {
+		// The trap #25 documents: on a logger built without Tenancy,
+		// BootstrapChainV4 refuses to emit the v4 anchor, and Verify's
+		// walk takes its encoder from the NEWEST anchor — overriding
+		// every later row's own column. An explicit v4 row written here
+		// would verify today and read as FORGED on the next audit
+		// verify, while the boot guard (which honours the per-row
+		// column) stays green. A row that becomes a false tamper report
+		// later is strictly worse than an error now, so this fails
+		// loudly at the only moment the mistake is cheap.
+		return Event{}, errors.New(
+			"audit: event requests canonical_version=4 but the logger was built " +
+				"without SQLiteLoggerOptions.Tenancy — the v4 chain anchor cannot " +
+				"exist, and this row would later be reported as tamper by Verify. " +
+				"Set Tenancy: true (legal for single-tenant deployments: leave " +
+				"TenantID empty and call BootstrapChainV4 at boot) instead of " +
+				"forcing the version per event")
 	}
 
 	// v1.1 — service-direct emission email enrichment (TD-AUDIT-04).

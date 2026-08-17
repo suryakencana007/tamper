@@ -638,36 +638,45 @@ func decodeSegment(t *testing.T, token string) string {
 
 // TestVerifyAccessInTenant_Matrix is the whole rule. Only exact equality
 // passes; absent, empty and mismatched all reject.
+//
+// v0.5.0 note on the fixtures: the single-tenant cases pass
+// [tenant.Single], NOT tenant.New(""). They are not the same value and
+// never were -- New("") is documented as INVALID and returns the zero
+// ID, while Single is the explicit single-tenant value. This test used
+// New("") for "untenanted", which happened to pass only because
+// VerifyAccess compared String() (where both render "") instead of
+// checking Valid(). That is precisely the ambiguity tenant.ID exists to
+// remove, and the unset case now has its own subtest below.
 func TestVerifyAccessInTenant_Matrix(t *testing.T) {
 	s := pinnedService(t)
 	for _, tc := range []struct {
 		name        string
-		tokenTenant string
-		routeTenant string
+		tokenTenant tenant.ID
+		routeTenant tenant.ID
 		wantOK      bool
 	}{
 		// The compatibility path — a single-tenant deployment's token on
 		// a single-tenant route. Must still verify.
-		{"untenanted token, untenanted route", "", "", true},
+		{"single-tenant token, single-tenant route", tenant.Single, tenant.Single, true},
 		// Where 7c-1's legacy tolerance ends. A route that names a tenant
 		// cannot accept a token that names none.
-		{"untenanted token, tenanted route", "", "acme", false},
-		{"tenanted token, untenanted route", "acme", "", false},
-		{"matching", "acme", "acme", true},
-		{"cross tenant", "acme", "globex", false},
+		{"single-tenant token, tenanted route", tenant.Single, tenant.New("acme"), false},
+		{"tenanted token, single-tenant route", tenant.New("acme"), tenant.Single, false},
+		{"matching", tenant.New("acme"), tenant.New("acme"), true},
+		{"cross tenant", tenant.New("acme"), tenant.New("globex"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tok, err := s.IssueAccess(pinnedSubject, tenant.New(tc.tokenTenant), pinnedAuthAt, ACRLocalPassword)
+			tok, err := s.IssueAccess(pinnedSubject, tc.tokenTenant, pinnedAuthAt, ACRLocalPassword)
 			if err != nil {
 				t.Fatalf("issue: %v", err)
 			}
-			claims, err := s.VerifyAccess(tok, tenant.New(tc.routeTenant))
+			claims, err := s.VerifyAccess(tok, tc.routeTenant)
 			if tc.wantOK {
 				if err != nil {
 					t.Fatalf("VerifyAccessInTenant: %v", err)
 				}
-				if claims.TenantID != tc.tokenTenant {
-					t.Errorf("TenantID = %q, want %q", claims.TenantID, tc.tokenTenant)
+				if claims.TenantID != tc.tokenTenant.String() {
+					t.Errorf("TenantID = %q, want %q", claims.TenantID, tc.tokenTenant.String())
 				}
 				return
 			}
@@ -742,5 +751,94 @@ func TestVerifyAccessInTenant_PreservesVerifyAccessRejections(t *testing.T) {
 	}
 	if _, err := s.VerifyAccess(pending, tenant.Single); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("totp-pending token accepted as an access token: %v", err)
+	}
+}
+
+// --- v0.5.0 (M2 slice 3): unset-tenant hardening --------------------
+
+// TestVerifyAccess_DeniesUnsetTenant closes the gap tenant.ID was
+// created to close and that this entry point had left open.
+//
+// The zero ID and tenant.Single both render "" from String(), and
+// VerifyAccess compared String() values -- so a caller that never
+// resolved a tenant compared "" against a tid-less token's "" and
+// VERIFIED IT. The deployment looked correct: single-tenant tokens
+// sailed through, and the missing tenancy wiring would only surface the
+// day a pooled tenant was introduced, as a silent cross-tenant accept.
+//
+// tenant/id.go states the rule plainly -- "Every tenant-scoped entry
+// point checks this and denies when it is false". This one now does.
+//
+// Mutation check: delete the Valid() gate and this fails.
+func TestVerifyAccess_DeniesUnsetTenant(t *testing.T) {
+	s := pinnedService(t)
+
+	for _, tokenTenant := range []tenant.ID{tenant.Single, tenant.New("acme")} {
+		tok, err := s.IssueAccess(pinnedSubject, tokenTenant, pinnedAuthAt, ACRLocalPassword)
+		if err != nil {
+			t.Fatalf("issue: %v", err)
+		}
+		var unset tenant.ID // what "I forgot to thread it" produces
+		claims, err := s.VerifyAccess(tok, unset)
+		if !errors.Is(err, ErrTenantRequired) {
+			t.Errorf("token tenant %q: err = %v, want ErrTenantRequired", tokenTenant.String(), err)
+		}
+		if claims != nil {
+			t.Errorf("token tenant %q: rejection returned claims: %+v", tokenTenant.String(), claims)
+		}
+	}
+
+	// tenant.New("") is the same unset value, reached the way a real
+	// caller reaches it: a routing header or config lookup that produced
+	// nothing. It must deny identically rather than selecting the
+	// single-tenant bucket.
+	tok, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if _, err := s.VerifyAccess(tok, tenant.New("")); !errors.Is(err, ErrTenantRequired) {
+		t.Errorf("New(\"\") route: err = %v, want ErrTenantRequired", err)
+	}
+}
+
+// TestVerifyAccess_UnsetTenantDeniesBeforeParsing pins the ordering.
+//
+// A wiring bug must report identically whether the token that happened
+// to arrive was well-formed, expired, or outright garbage. If the parse
+// ran first, an operator debugging the same misconfiguration would see
+// a different error depending on which request tripped it -- and the
+// most likely one, "invalid token", points at the client rather than at
+// the missing tenant resolution.
+func TestVerifyAccess_UnsetTenantDeniesBeforeParsing(t *testing.T) {
+	s := pinnedService(t)
+	var unset tenant.ID
+	for _, tok := range []string{"", "not-a-jwt", "a.b.c"} {
+		if _, err := s.VerifyAccess(tok, unset); !errors.Is(err, ErrTenantRequired) {
+			t.Errorf("token %q: err = %v, want ErrTenantRequired (the tenant gate must precede the parse)", tok, err)
+		}
+	}
+}
+
+// TestVerifyAccess_SingleTenantIsUnaffected is the compatibility pin.
+// The hardening must deny the FORGOTTEN tenant and nothing else: a
+// single-tenant deployment passes tenant.Single explicitly and keeps
+// working byte-for-byte.
+func TestVerifyAccess_SingleTenantIsUnaffected(t *testing.T) {
+	s := pinnedService(t)
+	tok, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	claims, err := s.VerifyAccess(tok, tenant.Single)
+	if err != nil {
+		t.Fatalf("single-tenant verify broke: %v", err)
+	}
+	if claims.TenantID != "" {
+		t.Errorf("TenantID = %q, want empty", claims.TenantID)
+	}
+	// And the convenience wrapper, which passes Single for the caller,
+	// is likewise unaffected.
+	if _, err := s.Verify(tok); err != nil {
+		t.Errorf("Verify (Single shim) broke: %v", err)
 	}
 }

@@ -304,6 +304,37 @@ func (c *Core) IssueTokensForUserWithACR(ctx context.Context, userID string, aut
 	return c.issueTokens(ctx, userID, tenant.Single, authTime, acr)
 }
 
+// IssueTokensForUserInTenant mints a session BOUND TO A TENANT — the
+// entry point the two shims above promised and did not have (v0.5.0,
+// closing the 7b-2 gap).
+//
+// The tenant lands in two places, and both matter:
+//
+//   - the access JWT's `tid` claim, so a verifier can bind the request
+//     to a tenant without a store read;
+//   - the refresh session row, so the rotation successor inherits it
+//     unchanged (see Refresh) instead of silently reverting to Single.
+//
+// An UNSET tenant DENIES with [ErrTenantRequired] rather than falling
+// back to [tenant.Single]. That asymmetry is the whole point of this
+// method existing next to the shims: those two take a bare user id and
+// have no tenant to carry, so Single is the honest answer there. A
+// caller who reached for THIS method is asserting it has a tenant, so
+// an unset one is a wiring bug — the tenant-resolving step did not run —
+// and quietly minting a Single-tenant session for it would hand back a
+// token that authorises the wrong scope. Deny-by-default extends to
+// tenancy: absent never means "every tenant".
+//
+// Single-tenant deployments keep calling the shims and are unaffected;
+// this method is byte-identical to IssueTokensForUserWithACR when passed
+// [tenant.Single] explicitly.
+func (c *Core) IssueTokensForUserInTenant(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
+	if err := c.tenantGate(tenantID); err != nil {
+		return Tokens{}, err
+	}
+	return c.issueTokens(ctx, userID, tenantID, authTime, acr)
+}
+
 // Refresh validates and rotates a refresh session: the old row is
 // revoked and a successor minted. Failures collapse to
 // ErrInvalidSession (anti-enumeration), with ONE exception —

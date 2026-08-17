@@ -242,3 +242,145 @@ func TestMemStore_CreateUser_PersistsTenant(t *testing.T) {
 		t.Errorf("unscoped UserByEmail found a tenant-owned user: err = %v, want ErrNotFound", err)
 	}
 }
+
+// --- v0.5.0 (M2 slice 1): the tenant-aware mint entry point ----------
+//
+// 7b-1 carried a tenant that nothing could supply; the tests above had
+// to hand-seed a session row to observe the carry at all. These pin the
+// entry point that closes that gap, and the deny that keeps it honest.
+
+// TestIssueTokensForUserInTenant_DeniesUnsetTenant is the fence. An
+// unset tenant must NOT fall back to Single: a caller reaching for this
+// method is asserting it has a tenant, so an unset one is a wiring bug,
+// and minting a Single-scoped session for it would hand back a token
+// authorising the wrong scope.
+//
+// Mutation check: replace the tenantGate call with a Single fallback and
+// this fails.
+func TestIssueTokensForUserInTenant_DeniesUnsetTenant(t *testing.T) {
+	ctx := context.Background()
+	c, store := testCore(t)
+
+	user, _, err := c.Register(ctx, tenant.Single, "zoe@acme.com", "correct-horse")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Register already minted a session, so count the delta rather than
+	// asserting the store is empty.
+	before := len(store.sessions)
+
+	var unset tenant.ID // the zero value -- "I forgot", not "single"
+	if _, err := c.IssueTokensForUserInTenant(ctx, user.ID, unset, 0, ""); !errors.Is(err, ErrTenantRequired) {
+		t.Fatalf("err = %v, want ErrTenantRequired", err)
+	}
+
+	// And it denied BEFORE writing anything: a refused mint must not
+	// leave a session behind for the caller to stumble onto later.
+	if after := len(store.sessions); after != before {
+		t.Fatalf("sessions %d -> %d: a REFUSED mint persisted a session", before, after)
+	}
+}
+
+// TestIssueTokensForUserInTenant_CarriesTenantIntoJWTAndSession pins the
+// two places the tenant must land, and then that rotation preserves it.
+// Losing it in either place is silent: the token still verifies, the
+// refresh still works, and the session has quietly widened to the
+// single-tenant shape.
+func TestIssueTokensForUserInTenant_CarriesTenantIntoJWTAndSession(t *testing.T) {
+	ctx := context.Background()
+	c, store := testCore(t)
+
+	user, _, err := c.Register(ctx, tenant.Single, "acme-user@acme.com", "correct-horse")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	acme := tenant.New("acme")
+	tokens, err := c.IssueTokensForUserInTenant(ctx, user.ID, acme, 0, "")
+	if err != nil {
+		t.Fatalf("IssueTokensForUserInTenant: %v", err)
+	}
+
+	// 1. the access JWT's tid claim -- verifying against the WRONG
+	//    tenant must fail, which is what makes the claim load-bearing.
+	if _, err := c.jwt.VerifyAccess(tokens.Access, acme); err != nil {
+		t.Errorf("VerifyAccess against the minting tenant: %v", err)
+	}
+	if _, err := c.jwt.VerifyAccess(tokens.Access, tenant.Single); err == nil {
+		t.Error("token minted for \"acme\" verified against Single -- the tid claim is not binding")
+	}
+
+	// 2. the refresh session row.
+	// Register minted a Single session first, so look for the acme one
+	// specifically rather than asserting every row carries it.
+	var acmeSessions int
+	for _, s := range store.sessions {
+		if s.UserID == user.ID && s.TenantID == "acme" {
+			acmeSessions++
+		}
+	}
+	if acmeSessions != 1 {
+		t.Fatalf("sessions carrying TenantID=acme = %d, want 1 (of %d total)", acmeSessions, len(store.sessions))
+	}
+
+	// 3. rotation inherits it. This is the end-to-end shape 7b-1 could
+	//    only fake by hand-seeding a row.
+	_, rotated, err := c.Refresh(ctx, tokens.Refresh)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if _, err := c.jwt.VerifyAccess(rotated.Access, acme); err != nil {
+		t.Errorf("rotated token lost the tenant: %v", err)
+	}
+}
+
+// TestIssueTokensForUserInTenant_SingleMatchesTheShim pins the
+// compatibility claim in the method's doc: passing Single explicitly is
+// the same session the pre-v0.5.0 shim produces. If these ever diverge,
+// a single-tenant deployment migrating onto the new entry point would
+// change behaviour while reading as a no-op.
+func TestIssueTokensForUserInTenant_SingleMatchesTheShim(t *testing.T) {
+	ctx := context.Background()
+	c, store := testCore(t)
+
+	user, _, err := c.Register(ctx, tenant.Single, "single@acme.com", "correct-horse")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	emptyBefore := 0
+	for _, s := range store.sessions {
+		if s.UserID == user.ID && s.TenantID == "" {
+			emptyBefore++
+		}
+	}
+
+	viaShim, err := c.IssueTokensForUserWithACR(ctx, user.ID, 0, "")
+	if err != nil {
+		t.Fatalf("shim mint: %v", err)
+	}
+	viaTenant, err := c.IssueTokensForUserInTenant(ctx, user.ID, tenant.Single, 0, "")
+	if err != nil {
+		t.Fatalf("tenant mint: %v", err)
+	}
+
+	for _, tok := range []string{viaShim.Access, viaTenant.Access} {
+		claims, err := c.jwt.ParseAccess(tok)
+		if err != nil {
+			t.Fatalf("ParseAccess: %v", err)
+		}
+		if claims.TenantID != "" {
+			t.Errorf("tid = %q, want empty for Single", claims.TenantID)
+		}
+	}
+	var emptyAfter int
+	for _, s := range store.sessions {
+		if s.UserID == user.ID && s.TenantID == "" {
+			emptyAfter++
+		}
+	}
+	if got := emptyAfter - emptyBefore; got != 2 {
+		t.Errorf("empty-tenant sessions added by the two mints = %d, want 2 (one per path)", got)
+	}
+}

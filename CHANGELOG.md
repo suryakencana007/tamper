@@ -6,7 +6,7 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
-## [Unreleased]
+## [0.5.0] — 2026-08-17
 
 Social federation for providers with no OpenID Connect layer, a
 tenant-aware mint, and one behaviour change worth reading before
@@ -60,6 +60,15 @@ upgrading.
   nothing in this protocol could verify one. The state cookie therefore
   carries the entire CSRF defence and stays per-flow, provider-bound,
   signed and single-use.
+
+- **`examples/discord`** — a runnable end-to-end example, with an embedded
+  fake Discord so it needs no application registration. Its point is not
+  that Discord works but that it works through the SAME application code
+  as an OIDC provider: the example's `signIn` tail takes `*oidc.Claims`
+  and never asks which protocol produced them. `main_test.go` drives the
+  whole browser dance twice (JIT-provision, then resolve by
+  `(provider, subject)`) and pins both the unverified-email refusal and
+  the no-state-cookie refusal.
 
 - **`identity.Core.IssueTokensForUserInTenant`** — mints a session bound
   to a tenant, landing it in both the access token's `tid` claim and the

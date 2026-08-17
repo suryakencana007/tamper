@@ -6,6 +6,85 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
+## [Unreleased]
+
+Social federation for providers with no OpenID Connect layer, a
+tenant-aware mint, and one behaviour change worth reading before
+upgrading.
+
+### ⚠️ Changed — behaviour
+
+- **`crypto.JWTService.VerifyAccess` now DENIES an unset tenant id.**
+  Passing the zero `tenant.ID` — what a caller who never resolved a
+  tenant produces — returns the new `crypto.ErrTenantRequired` instead
+  of verifying.
+
+  Previously the zero ID and `tenant.Single` were indistinguishable
+  here: both render `""` from `String()`, and the check compared
+  `String()` values. A deployment whose tenant-resolving step never ran
+  therefore verified single-tenant tokens happily and looked correct
+  doing it — the missing wiring would surface only on the day a pooled
+  tenant was introduced, as a silent cross-tenant accept.
+
+  **Single-tenant deployments are unaffected.** They pass
+  `tenant.Single` explicitly, which is valid and always was; the
+  `Verify` convenience wrapper does the same on the caller's behalf.
+  Only a caller that genuinely forgot to supply a tenant changes
+  behaviour, and that caller was already wrong.
+
+  `ErrTenantRequired` is deliberately NOT folded into `ErrInvalidToken`,
+  unlike every other failure in that package. The anti-oracle rule earns
+  its keep for conditions decided from attacker-supplied input; this one
+  is decided from the caller's own argument before the token is
+  consulted, discloses nothing about any tenant, and is a wiring bug.
+  Transport obligation is unchanged: map it onto the same generic 401.
+
+### Added
+
+- **`oauth2social` — federation for plain-OAuth2 providers, with a
+  Discord preset.** Discord issues no `id_token`, so the OIDC path
+  cannot serve it; identity comes from an authenticated userinfo round
+  trip instead. `Provider.FetchIdentity` returns `*oidc.Claims` — the
+  same type the OIDC path produces — so an application's provisioning,
+  email-collision veto and account-linking code stays protocol-blind.
+
+  Two fences ship on in the preset: `RequireEmail` (an address-less
+  account sits outside the collision veto, invitations and every
+  notification) and `RejectUnverifiedEmail` (an app keying its veto on
+  an unverified address turns a claim into a takeover primitive).
+  Construction refuses `RejectUnverifiedEmail` when no field supplies
+  the flag, rather than denying every sign-in at runtime.
+
+- **`espresso.StartOAuth2Flow` / `espresso.VerifyOAuth2Callback`** — the
+  flow siblings. PKCE S256 is unconditional; no nonce is sent, because
+  nothing in this protocol could verify one. The state cookie therefore
+  carries the entire CSRF defence and stays per-flow, provider-bound,
+  signed and single-use.
+
+- **`identity.Core.IssueTokensForUserInTenant`** — mints a session bound
+  to a tenant, landing it in both the access token's `tid` claim and the
+  refresh session row so rotation inherits it. An unset tenant denies
+  with `ErrTenantRequired`; passing `tenant.Single` is byte-identical to
+  the existing shims.
+
+### Fixed
+
+- **64-bit provider ids no longer lose precision.** `encoding/json`
+  decodes numbers into `float64` (53-bit mantissa), so a userinfo
+  document carrying a numeric id above 2^53 — a Discord snowflake, for
+  instance — round-tripped as a different value and would have keyed a
+  different account. Userinfo is now decoded with `UseNumber()`.
+
+### Security
+
+- Toolchain moved to **go1.26.6**, clearing six standard-library
+  advisories present in go1.26.5 (GO-2026-6218 `net/url`, GO-2026-6090
+  `crypto/tls`, GO-2026-6089 and GO-2026-5026 `net/http`, GO-2026-6088
+  `encoding/xml`, GO-2026-5972 `encoding/asn1`). The XML and ASN.1 ones
+  sit directly under SAML assertion parsing.
+
+---
+
 ## [0.4.1] — 2026-08-10
 
 Audit hardening. No breaking changes, no database changes, no call-site

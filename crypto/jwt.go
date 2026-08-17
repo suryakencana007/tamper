@@ -18,6 +18,30 @@ import (
 // return one stable status code and don't leak which check failed.
 var ErrInvalidToken = errors.New("auth: invalid token")
 
+// ErrTenantRequired — [JWTService.VerifyAccess] was handed an UNSET
+// tenant id (the zero [tenant.ID], not [tenant.Single]).
+//
+// This is the crypto-side twin of identity's error of the same name,
+// and it exists for the same reason: tenant.ID distinguishes "I forgot
+// to thread a tenant" from "I am deliberately single-tenant", and only
+// the first denies. Before v0.5.0 the two were indistinguishable here,
+// because an unset id stringifies to "" and so compared EQUAL to a
+// tid-less token's claim -- a caller that never resolved a tenant
+// verified single-tenant tokens happily and looked correct doing it.
+//
+// Deliberately NOT collapsed into ErrInvalidToken, despite that being
+// this package's rule for every other failure. The rule exists to deny
+// attackers a signal, and it earns its keep because those conditions
+// are decided from ATTACKER-SUPPLIED input. This one is decided from
+// the CALLER's own argument, before the token is even consulted: it is
+// identical for every token, discloses nothing about any tenant, and is
+// a wiring bug in the deployment. Folding it into "invalid token" would
+// send an operator hunting a token problem that does not exist.
+//
+// Transport obligation: map it onto the SAME generic 401 envelope as
+// ErrInvalidToken. It is legible in logs, never on the wire.
+var ErrTenantRequired = errors.New("auth: tenant id is required to verify an access token")
+
 // JWTConfig is tamper's native JWT options struct. It intentionally
 // carries no dependency on any host application's config package — the
 // caller populates it from wherever their configuration lives.
@@ -412,6 +436,13 @@ func (j *JWTService) Verify(tokenStr string) (string, error) {
 // signal — the discipline this package already applies to every other
 // JWT failure mode (§6.3).
 func (j *JWTService) VerifyAccess(tokenStr string, tenantID tenant.ID) (*AccessClaims, error) {
+	// v0.5.0: deny an UNSET tenant BEFORE parsing. Checked first
+	// deliberately -- a wiring bug should surface identically whether
+	// the token happened to be well-formed, expired, or garbage, or the
+	// error an operator sees would depend on which request tripped it.
+	if !tenantID.Valid() {
+		return nil, ErrTenantRequired
+	}
 	claims, err := j.ParseAccess(tokenStr)
 	if err != nil {
 		return nil, err

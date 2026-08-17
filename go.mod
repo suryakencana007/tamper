@@ -16,7 +16,7 @@ go 1.26
 //
 // Bump this when a newer patch closes an advisory the CI govulncheck
 // step reports — that step is the trigger.
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0

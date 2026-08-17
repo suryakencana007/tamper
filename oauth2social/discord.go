@@ -37,7 +37,18 @@ package oauth2social
 // one would hand over another user's account the day a handle is
 // released and re-registered. The snowflake is the only stable value.
 func Discord(clientID, clientSecret, redirectURL string) Config {
-	return Config{
+	// gosec G101 fires on this literal because TokenURL's field name
+	// matches its credential-name heuristic and the value is a string
+	// constant. The value is Discord's PUBLIC token ENDPOINT, published
+	// in their API docs -- a URL, not a secret.
+	//
+	// Suppressed here rather than adding G101 to the repo-wide gosec
+	// excludes: the rule earns its place catching genuinely hardcoded
+	// secrets, and switching it off everywhere to quiet one false
+	// positive would trade a real protection for tidiness. Note the
+	// actual credential on the line below it, ClientSecret, is a
+	// PARAMETER -- which is exactly the shape G101 exists to enforce.
+	return Config{ //nolint:gosec // G101 false positive: TokenURL is a public endpoint, not a credential
 		ID:           "discord",
 		DisplayName:  "Discord",
 		ClientID:     clientID,

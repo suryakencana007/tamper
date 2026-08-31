@@ -6,6 +6,28 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
+## [0.6.0] — 2026-08-31
+
+Additive. No breaking changes, no database changes, no call-site changes.
+
+### Added
+
+- **`audit.ComputeHash`** (#35). The hash-chain computation
+  `SQLiteLogger.Log` performs internally — `sha256(prevHash ||
+  canonicalPayload)` — is now callable directly, so a Logger implementation
+  backed by a store this package doesn't ship (Postgres, for one) can
+  produce chain-compatible hashes without reimplementing the canonical
+  payload encoding. Pairs with `NewRowSalt`/`ComputeCommitments` (already
+  exported via `redaction.go`), which cover the rest of what a v4 event
+  needs. `ComputeHash` requires an explicit `CanonicalVersion3` or
+  `CanonicalVersion4` on the event — unlike `Log`, it does not default a
+  zero version, since that defaulting depends on a specific
+  `SQLiteLogger`'s own `Tenancy` option. Appending to the chain safely
+  under concurrent writers — reading the true latest hash and inserting
+  atomically — remains entirely the caller's own store's responsibility.
+
+---
+
 ## [0.5.0] — 2026-08-17
 
 Social federation for providers with no OpenID Connect layer, a

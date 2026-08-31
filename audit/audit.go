@@ -683,6 +683,60 @@ func computeHash(prevHash []byte, e Event, version int) []byte {
 	return h.Sum(nil)
 }
 
+// ComputeHash computes the tamper-compatible hash for a new audit event,
+// given the immediately preceding event's hash (HashSize zero bytes for
+// the chain's first event) — the same computation Logger.Log performs
+// internally, exposed for a Logger implementation this package doesn't
+// ship. Per doc.go: "every subpackage is store-decoupled behind a port
+// interface the app implements" — SQLiteLogger is the shipped reference
+// implementation of the Logger interface, not the only one the
+// interface allows. redaction.go's NewRowSalt/ComputeCommitments already
+// cover what a bring-your-own-store Logger needs for the PII/commitment
+// side of a v4 event; ComputeHash is the one piece that wasn't
+// reachable from outside this package (suryakencana007/resi#4,
+// suryakencana007/tamper#35).
+//
+// e.CanonicalVersion selects the payload encoding and must already be
+// set to CanonicalVersion3 or CanonicalVersion4 — any other value,
+// including the zero value, is an error. Unlike Logger.Log, ComputeHash
+// does NOT default a zero CanonicalVersion to CanonicalVersion3: that
+// defaulting depends on a specific SQLiteLogger's own Tenancy option,
+// which this function has no way to know, so callers set it explicitly.
+// CanonicalVersion1 and CanonicalVersion2 are legacy shapes this
+// function refuses to produce for a NEW event (the verify path still
+// reads existing rows written under them).
+//
+// Everything else about safely appending to a chain — reading the true
+// latest hash and inserting atomically, so two concurrent writers can
+// never both compute against the same prevHash — is entirely the
+// caller's own store's responsibility (SQLiteLogger.Log's own BEGIN
+// IMMEDIATE + dedicated-connection dance is how it does this for
+// SQLite; a Postgres-backed Logger needs its own equivalent, not this
+// one). ComputeHash only computes a hash for whatever (e, prevHash)
+// it's given.
+func ComputeHash(e Event, prevHash []byte) ([]byte, error) {
+	if e.ID == "" {
+		return nil, fmt.Errorf("audit: event id is required")
+	}
+	if e.At.IsZero() {
+		return nil, fmt.Errorf("audit: event at is required")
+	}
+	if e.Action == "" {
+		return nil, fmt.Errorf("audit: event action is required")
+	}
+	if e.CanonicalVersion != CanonicalVersion3 && e.CanonicalVersion != CanonicalVersion4 {
+		return nil, fmt.Errorf("audit: ComputeHash requires CanonicalVersion3 or CanonicalVersion4 for a new event, got %d", e.CanonicalVersion)
+	}
+	payload, err := canonicalPayloadForVersion(e, prevHash, e.CanonicalVersion)
+	if err != nil {
+		return nil, err
+	}
+	h := sha256.New()
+	h.Write(prevHash)
+	h.Write(payload)
+	return h.Sum(nil), nil
+}
+
 // HashHex is a convenience for diagnostic logging — the bytes are
 // sha256.Size = 32, hex.EncodedLen = 64. Empty input returns "".
 func HashHex(h []byte) string {

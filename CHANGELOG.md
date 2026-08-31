@@ -13,18 +13,24 @@ Additive. No breaking changes, no database changes, no call-site changes.
 ### Added
 
 - **`audit.ComputeHash`** (#35). The hash-chain computation
-  `SQLiteLogger.Log` performs internally — `sha256(prevHash ||
-  canonicalPayload)` — is now callable directly, so a Logger implementation
-  backed by a store this package doesn't ship (Postgres, for one) can
-  produce chain-compatible hashes without reimplementing the canonical
-  payload encoding. Pairs with `NewRowSalt`/`ComputeCommitments` (already
-  exported via `redaction.go`), which cover the rest of what a v4 event
-  needs. `ComputeHash` requires an explicit `CanonicalVersion3` or
-  `CanonicalVersion4` on the event — unlike `Log`, it does not default a
-  zero version, since that defaulting depends on a specific
-  `SQLiteLogger`'s own `Tenancy` option. Appending to the chain safely
-  under concurrent writers — reading the true latest hash and inserting
-  atomically — remains entirely the caller's own store's responsibility.
+  `SQLiteLogger.Log` performs internally — `sha256(prevHash || canonicalPayload)` —
+  is now callable directly, so a Logger implementation backed by a store
+  this package doesn't ship (Postgres, for one) can produce
+  chain-compatible hashes without reimplementing the canonical payload
+  encoding. Pairs with `NewRowSalt`/`ComputeCommitments` (already exported
+  via `redaction.go`), which cover the rest of what a v4 event needs — and
+  `ComputeHash` checks that a v4 event's `Commitments` were actually
+  derived from its own `RowSalt` before hashing, rather than silently
+  committing to PII that was never there. `ComputeHash` requires an
+  explicit `CanonicalVersion3` or `CanonicalVersion4` on the event —
+  unlike `Log`, it does not default a zero version, since that defaulting
+  depends on a specific `SQLiteLogger`'s own `Tenancy` option. Appending to
+  the chain safely under concurrent writers — reading the true latest hash
+  and inserting atomically — remains entirely the caller's own store's
+  responsibility; see the function's doc comment for the full list of
+  invariants (timestamp ordering, the v4 chain-restart anchor, running
+  `VerifyCommitments` alongside chain verification) a from-scratch
+  `Logger` needs to uphold on its own.
 
 ---
 

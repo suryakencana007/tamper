@@ -105,3 +105,104 @@ func TestComputeHash_RejectsUnsetOrLegacyCanonicalVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestComputeHash_RejectsWrongLengthPrevHash guards the review finding
+// that a nil/short/long prevHash silently hashed to something other
+// than what the documented HashSize-zero-byte genesis convention (or
+// any real prior Hash) would produce, with no error at all.
+func TestComputeHash_RejectsWrongLengthPrevHash(t *testing.T) {
+	e := testEventForHash(CanonicalVersion4)
+	for name, prevHash := range map[string][]byte{
+		"nil":          nil,
+		"empty":        {},
+		"one short":    bytes.Repeat([]byte{1}, HashSize-1),
+		"one long":     bytes.Repeat([]byte{1}, HashSize+1),
+		"way too long": bytes.Repeat([]byte{1}, HashSize*2),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ComputeHash(e, prevHash); err == nil {
+				t.Errorf("ComputeHash with %d-byte prevHash succeeded, want an error", len(prevHash))
+			}
+		})
+	}
+}
+
+// TestComputeHash_RejectsV4EventWithUnpopulatedOrRedactedSalt guards
+// the review finding that a CanonicalVersion4 event with a nil,
+// wrong-length, or all-zero RowSalt silently hashed successfully —
+// indistinguishable, from the outside, from a row whose PII was
+// legitimately erased, permanently defeating tamper-evidence on PII
+// with no error ever raised.
+//
+// Commitments is deliberately RE-DERIVED from the same bad salt in
+// every case (rather than left at the fixture's valid value), so this
+// test isolates the standalone RowSalt shape check from the separate
+// Commitments-consistency check: ComputeCommitments happily hashes a
+// nil/short/all-zero salt without error, so a caller who consistently
+// (mis)uses one of these as RowSalt everywhere would still pass a
+// bare equality check — confirmed by first writing this test with
+// Commitments left at the fixture's value, which passed even with the
+// RowSalt check removed, because the untouched Commitments no longer
+// matched ComputeCommitments(badSalt, e) either. Only re-deriving
+// Commitments from the SAME bad salt proves the RowSalt check earns
+// its keep independently.
+func TestComputeHash_RejectsV4EventWithUnpopulatedOrRedactedSalt(t *testing.T) {
+	prevHash := make([]byte, HashSize)
+	for name, salt := range map[string][]byte{
+		"nil":          nil,
+		"empty":        {},
+		"wrong length": bytes.Repeat([]byte{9}, RowSaltSize-1),
+		"all zero":     make([]byte, RowSaltSize), // legitimate shape for an ERASED row, not a new one
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := testEventForHash(CanonicalVersion4)
+			e.RowSalt = salt
+			e.Commitments = ComputeCommitments(salt, e) // self-consistent with the bad salt
+			if _, err := ComputeHash(e, prevHash); err == nil {
+				t.Errorf("ComputeHash with %s RowSalt (and self-consistent Commitments) succeeded, want an error", name)
+			}
+		})
+	}
+}
+
+// TestComputeHash_RejectsV4EventWithCommitmentsNotDerivedFromItsOwnSalt
+// is the highest-severity review finding: ComputeHash must not hash a
+// CanonicalVersion4 event whose Commitments don't actually correspond
+// to ComputeCommitments(e.RowSalt, e) — otherwise two events differing
+// only in PII (e.g. Actor.Email) can hash identically, silently
+// committing to no PII at all.
+func TestComputeHash_RejectsV4EventWithCommitmentsNotDerivedFromItsOwnSalt(t *testing.T) {
+	prevHash := make([]byte, HashSize)
+
+	t.Run("zero-value Commitments", func(t *testing.T) {
+		e := testEventForHash(CanonicalVersion4)
+		e.Commitments = Commitments{}
+		if _, err := ComputeHash(e, prevHash); err == nil {
+			t.Error("ComputeHash with zero-value Commitments succeeded, want an error")
+		}
+	})
+
+	t.Run("Commitments from a different salt", func(t *testing.T) {
+		e := testEventForHash(CanonicalVersion4)
+		otherSalt := bytes.Repeat([]byte{7}, RowSaltSize)
+		e.Commitments = ComputeCommitments(otherSalt, e) // derived from otherSalt, not e.RowSalt
+		if _, err := ComputeHash(e, prevHash); err == nil {
+			t.Error("ComputeHash with Commitments derived from a different salt succeeded, want an error")
+		}
+	})
+
+	t.Run("Commitments stale after editing PII", func(t *testing.T) {
+		e := testEventForHash(CanonicalVersion4)
+		e.Actor.Email = "changed@example.com" // Commitments still reflects the original fixture email
+		if _, err := ComputeHash(e, prevHash); err == nil {
+			t.Error("ComputeHash with Commitments stale relative to the event's own PII succeeded, want an error")
+		}
+	})
+
+	t.Run("correctly derived Commitments still succeeds", func(t *testing.T) {
+		e := testEventForHash(CanonicalVersion4) // fixture already derives Commitments from e.RowSalt
+		if _, err := ComputeHash(e, prevHash); err != nil {
+			t.Errorf("ComputeHash with correctly derived Commitments failed: %v", err)
+		}
+	})
+}

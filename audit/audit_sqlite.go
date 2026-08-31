@@ -2,7 +2,6 @@ package audit
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -142,14 +141,8 @@ func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 // RequireAuth with user_id but no email — only the `auditor.Mutation`
 // middleware path used to enrich there.
 func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
-	if e.ID == "" {
-		return Event{}, errors.New("audit: event id is required")
-	}
-	if e.At.IsZero() {
-		return Event{}, errors.New("audit: event at is required")
-	}
-	if e.Action == "" {
-		return Event{}, errors.New("audit: event action is required")
+	if err := validateRequiredFields(e); err != nil {
+		return Event{}, err
 	}
 	if e.Actor.Type == "" {
 		e.Actor.Type = ActorTypeUser
@@ -834,10 +827,7 @@ func walkChain(rows []sqlitestore.Event, canonicalVersion int) VerifyResult {
 			// the wild, future canonical_version, etc.).
 			return VerifyResult{Total: total, Tamper: true, FirstBadIndex: int64(i)}
 		}
-		h := sha256.New()
-		h.Write(prev)
-		h.Write(payload)
-		want := h.Sum(nil)
+		want := hashChainLink(prev, payload)
 		if !bytesEqual(e.Hash, want) {
 			return VerifyResult{Total: total, Tamper: true, FirstBadIndex: int64(i)}
 		}

@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/suryakencana007/tamper/tenant"
 	"time"
@@ -654,6 +655,36 @@ func appendLP(dst, value []byte) []byte {
 	return dst
 }
 
+// hashChainLink returns sha256(prevHash || payload) — the one
+// arithmetic step every canonical-version encoding shares once its
+// payload bytes are in hand. computeHash, the exported ComputeHash and
+// walkChain's own re-hash all call this so the recipe can only be
+// changed in one place.
+func hashChainLink(prevHash, payload []byte) []byte {
+	h := sha256.New()
+	h.Write(prevHash)
+	h.Write(payload)
+	return h.Sum(nil)
+}
+
+// validateRequiredFields checks the three fields every persisted Event
+// needs regardless of canonical version or write path. Shared by
+// Logger.Log and the exported ComputeHash so both enforce exactly the
+// same requirement under exactly the same message — a future
+// required-field change is then one edit, not two that can drift.
+func validateRequiredFields(e Event) error {
+	if e.ID == "" {
+		return errors.New("audit: event id is required")
+	}
+	if e.At.IsZero() {
+		return errors.New("audit: event at is required")
+	}
+	if e.Action == "" {
+		return errors.New("audit: event action is required")
+	}
+	return nil
+}
+
 // computeHash returns sha256(prevHash || canonicalPayloadForVersion(e, prevHash, version)).
 // Callers populate e.PrevHash before calling and use the returned
 // value as e.Hash. version selects the canonical-payload encoder so
@@ -677,10 +708,136 @@ func computeHash(prevHash []byte, e Event, version int) []byte {
 	if err != nil {
 		return nil
 	}
-	h := sha256.New()
-	h.Write(prevHash)
-	h.Write(payload)
-	return h.Sum(nil)
+	return hashChainLink(prevHash, payload)
+}
+
+// ComputeHash computes the tamper-compatible hash for a new audit event,
+// given the immediately preceding event's hash (HashSize zero bytes for
+// the chain's first event) — the same computation Logger.Log performs
+// internally, exposed for a Logger implementation this package doesn't
+// ship. Per doc.go: "every subpackage is store-decoupled behind a port
+// interface the app implements" — SQLiteLogger is the shipped reference
+// implementation of the Logger interface, not the only one the
+// interface allows. redaction.go's NewRowSalt/ComputeCommitments already
+// cover what a bring-your-own-store Logger needs for the PII/commitment
+// side of a v4 event; ComputeHash is the one piece that wasn't
+// reachable from outside this package (suryakencana007/resi#4,
+// suryakencana007/tamper#35).
+//
+// e.CanonicalVersion selects the payload encoding and must already be
+// set to CanonicalVersion3 or CanonicalVersion4 — any other value,
+// including the zero value, is an error. Unlike Logger.Log, ComputeHash
+// does NOT default a zero CanonicalVersion to CanonicalVersion3: that
+// defaulting depends on a specific SQLiteLogger's own Tenancy option,
+// which this function has no way to know, so callers set it explicitly.
+// CanonicalVersion1 and CanonicalVersion2 are legacy shapes this
+// function refuses to produce for a NEW event (the verify path still
+// reads existing rows written under them).
+//
+// A CanonicalVersion4 event must already carry a fresh RowSalt (see
+// NewRowSalt) and Commitments derived from it (see ComputeCommitments)
+// — ComputeHash checks e.Commitments == ComputeCommitments(e.RowSalt, e)
+// and rejects the call otherwise, rather than silently hashing a
+// commitment set that doesn't match the event's own PII fields (a
+// mismatch here means the row would permanently read as "no PII was
+// ever there," indistinguishable from a legitimate erasure, with no
+// error raised anywhere). An all-zero or wrong-length RowSalt is
+// rejected too: there is no legitimate reason a BRAND-NEW event carries
+// a redacted-looking salt — redaction only happens to a row that
+// already exists — even though VerifyCommitments treats that same
+// shape as merely "not checkable" on the read path.
+//
+// PREVHASH MUST MATCH WHAT YOU PERSIST AS e.PrevHash. This function
+// hashes exactly the prevHash bytes it's given and has no way to also
+// set e.PrevHash for you (Go passes Event by value). If the row you
+// persist ends up with e.PrevHash set to anything other than this same
+// slice — two separate reads of "the latest hash" that raced is the
+// natural way this happens — Verify's linkage check (each row's stored
+// PrevHash compared against the actual preceding row's Hash) reports
+// Tamper on that row even though this function computed its Hash
+// correctly from what it was given. Read the latest hash once and
+// persist that identical slice both as the argument here and as the
+// row's PrevHash column.
+//
+// AT SHOULD BE STRICTLY INCREASING. SQLiteLogger.Log silently bumps a
+// colliding or out-of-order timestamp by one nanosecond specifically
+// because its own Verify reconstructs row order via ORDER BY at ASC.
+// ComputeHash has no previous event to compare against and cannot do
+// this on a caller's behalf; a store whose verification also orders by
+// At needs its own Logger to enforce monotonicity before this is
+// called.
+//
+// A CanonicalVersion4 CHAIN NEEDS AN ANCHOR BEFORE ITS FIRST ROW.
+// SQLiteLogger's equivalent is BootstrapChainV4, gated on
+// SQLiteLoggerOptions.Tenancy (issue #25: an explicit v4 row written
+// before that anchor exists verifies fine in isolation today and reads
+// as forged on the next chain walk, because Verify determines ONE
+// canonical_version for the whole segment from its newest chain-restart
+// anchor and applies it to every row, overriding each row's own stored
+// column — see walkChain in audit_sqlite.go). A from-scratch store
+// needs the same two-part invariant: an anchor establishing where the
+// v4 segment starts, and a verify pass that honours it the same way,
+// before this is called for a real v4 event.
+//
+// RUN VerifyCommitments ALONGSIDE WHATEVER VERIFIES THE CHAIN. The
+// chain hash covers the commitments, not the PII plaintext beside them
+// — that is what makes redaction possible at all (see the package
+// comment above ComputeCommitments) — so a verify pass that walks the
+// chain but never calls VerifyCommitments has strictly less
+// tamper-evidence on PII than a v3-only deployment had.
+//
+// ACTOR.TYPE DEFAULTING IS YOURS TO REPLICATE IF YOU WANT IT.
+// SQLiteLogger.Log defaults a blank e.Actor.Type to ActorTypeUser
+// before persisting; canonicalPayloadV3/V4 independently re-default it
+// when hashing either way, so this does not change the hash ComputeHash
+// returns. It does mean a bring-your-own-store Logger that persists e
+// verbatim after calling ComputeHash stores an empty actor_type where
+// SQLiteLogger would have stored "user" — a storage-level, not a
+// hash-level, inconsistency. Default it yourself first if your queries
+// rely on the column being populated.
+//
+// Everything else about safely appending to a chain — reading the true
+// latest hash and inserting atomically, so two concurrent writers can
+// never both compute against the same prevHash — is entirely the
+// caller's own store's responsibility (SQLiteLogger.Log's own BEGIN
+// IMMEDIATE + dedicated-connection dance is how it does this for
+// SQLite; a Postgres-backed Logger needs its own equivalent, not this
+// one). ComputeHash only computes a hash for whatever (e, prevHash)
+// it's given.
+func ComputeHash(e Event, prevHash []byte) ([]byte, error) {
+	if err := validateRequiredFields(e); err != nil {
+		return nil, err
+	}
+	if len(prevHash) != HashSize {
+		return nil, fmt.Errorf("audit: prevHash must be exactly %d bytes (HashSize), got %d", HashSize, len(prevHash))
+	}
+	if e.CanonicalVersion != CanonicalVersion3 && e.CanonicalVersion != CanonicalVersion4 {
+		return nil, fmt.Errorf("audit: ComputeHash requires CanonicalVersion3 or CanonicalVersion4 for a new event, got %d", e.CanonicalVersion)
+	}
+	if e.CanonicalVersion == CanonicalVersion4 {
+		if len(e.RowSalt) != RowSaltSize || IsRedacted(e.RowSalt) {
+			return nil, fmt.Errorf("audit: ComputeHash requires a fresh %d-byte RowSalt for a new CanonicalVersion4 event — call NewRowSalt first", RowSaltSize)
+		}
+		want := ComputeCommitments(e.RowSalt, e)
+		if !bytesEqual(e.Commitments.ActorEmail, want.ActorEmail) ||
+			!bytesEqual(e.Commitments.ActorName, want.ActorName) ||
+			!bytesEqual(e.Commitments.ActorIP, want.ActorIP) ||
+			!bytesEqual(e.Commitments.Before, want.Before) ||
+			!bytesEqual(e.Commitments.After, want.After) {
+			return nil, errors.New("audit: ComputeHash: event Commitments do not match ComputeCommitments(e.RowSalt, e) — compute and set Commitments before calling ComputeHash")
+		}
+	}
+	// canonicalPayloadForVersion cannot error here: the version check
+	// above already narrows e.CanonicalVersion to {CanonicalVersion3,
+	// CanonicalVersion4}, and both of those switch cases return a nil
+	// error unconditionally today. Checked anyway — this call is the
+	// only thing standing between a future third canonical version and
+	// a silently wrong hash, and the check costs nothing.
+	payload, err := canonicalPayloadForVersion(e, prevHash, e.CanonicalVersion)
+	if err != nil {
+		return nil, err
+	}
+	return hashChainLink(prevHash, payload), nil
 }
 
 // HashHex is a convenience for diagnostic logging — the bytes are

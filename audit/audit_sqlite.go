@@ -69,12 +69,13 @@ type SQLiteLoggerOptions struct {
 	// A SINGLE-TENANT DEPLOYMENT THAT WANTS ERASURE SHOULD THEREFORE SET
 	// THIS TOO (#25). The name says "tenancy" but the mechanism is the v4
 	// encoder, and it is perfectly at home with no tenants: leave
-	// TenantID empty on every event, call [SQLiteLogger.BootstrapChainV4]
-	// once at boot, and redaction works — the tenant fields simply encode
-	// as empty strings. Do NOT reach for an explicit CanonicalVersion on
-	// the event instead; Log rejects that when this flag is off, because
-	// without the v4 anchor such a row would later be reported as tamper
-	// by Verify (see the guard in Log).
+	// TenantID empty on every event and redaction works — the tenant
+	// fields simply encode as empty strings. No chain anchor is needed:
+	// [SQLiteLogger.BootstrapChainV4] is optional, and on a DB with
+	// history it moves Verify's start past the existing rows. Do NOT
+	// reach for an explicit CanonicalVersion on the event instead; Log
+	// rejects an explicit v4 when this flag is off (see the guard in
+	// Log).
 	//
 	// FALSE IS THE DEFAULT AND IT IS BYTE-IDENTICAL TO PRE-7i-1. A
 	// deployment that wants neither capability keeps writing v3 rows with
@@ -158,21 +159,21 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 			e.CanonicalVersion = CanonicalVersion3
 		}
 	} else if e.CanonicalVersion == CanonicalVersion4 && !l.opts.Tenancy {
-		// The trap #25 documents: on a logger built without Tenancy,
-		// BootstrapChainV4 refuses to emit the v4 anchor, and Verify's
-		// walk takes its encoder from the NEWEST anchor — overriding
-		// every later row's own column. An explicit v4 row written here
-		// would verify today and read as FORGED on the next audit
-		// verify, while the boot guard (which honours the per-row
-		// column) stays green. A row that becomes a false tamper report
-		// later is strictly worse than an error now, so this fails
-		// loudly at the only moment the mistake is cheap.
+		// An explicit v4 event on a logger built without Tenancy is
+		// refused (#25): v4 is switched on for the logger, and the caller
+		// is told to set the option instead of forcing the version.
+		//
+		// The check is ONE-DIRECTIONAL. An explicit OLDER version on a
+		// Tenancy logger is accepted, because that is how an
+		// application's boot step writes a v2 or v3 chain-restart
+		// anchor. Such a row is a v3 row in every respect: plaintext
+		// PII, no tenant in its hash.
 		return Event{}, errors.New(
 			"audit: event requests canonical_version=4 but the logger was built " +
-				"without SQLiteLoggerOptions.Tenancy — the v4 chain anchor cannot " +
-				"exist, and this row would later be reported as tamper by Verify. " +
+				"without SQLiteLoggerOptions.Tenancy — v4 is a per-logger setting, " +
+				"not a per-event one. " +
 				"Set Tenancy: true (legal for single-tenant deployments: leave " +
-				"TenantID empty and call BootstrapChainV4 at boot) instead of " +
+				"TenantID empty) instead of " +
 				"forcing the version per event")
 	}
 
@@ -634,17 +635,32 @@ func (l *SQLiteLogger) List(ctx context.Context, f Filter) (Page, error) {
 // the stored Hash, or Total + Tamper=false on a clean walk.
 //
 // Chain-restart handling: when a `system.audit.chain_restart` row
-// exists, Verify walks forward from the most-recent one and re-hashes
-// every row under that row's `canonical_version` (so the boot-path
-// insert + everything emitted afterward verify under the v1.1+ shape
-// when present, otherwise the v1.0 shape). Older segments at earlier
-// canonical versions are walkable via VerifyLegacy.
+// exists, Verify walks forward from the most-recent one. The anchor
+// chooses WHERE the walk starts and nothing else. Older segments are
+// walkable via VerifyLegacy.
 //
 // When no chain-restart row exists (pre-v1.0 install, or a fresh
-// install before main.go inserts the genesis row), Verify falls back
-// to walking from row 0 — keyed by each row's own
-// `canonical_version` column so v0.9 fixture rows still verify
-// correctly under the v0.9 shape.
+// install before main.go inserts the genesis row), Verify walks from
+// row 0.
+//
+// EVERY ROW IS HASHED UNDER ITS OWN `canonical_version`, on both paths.
+// The anchor's version is not applied to the rows after it. A segment
+// can hold more than one version — a v4 row behind a v3 anchor when
+// Tenancy is switched on, a v3 row behind a v4 anchor while one replica
+// still runs the old config, an older anchor written after the v4 one —
+// and a row hashed under any version but its own would read as tamper
+// although nobody touched it.
+//
+// The version column is an input to this check, not a way around it:
+// relabel a row and it is hashed with an encoder it was not written
+// with, so the recomputed hash no longer matches.
+//
+// KNOWN LIMIT. A clean result says every row matches its own hash and
+// links to its predecessor. It does NOT say every row behind a v4
+// anchor is a v4 row. A v3 row there verifies like any v3 row, and a v3
+// hash does not cover the tenant: its tenant_id can be changed without
+// Verify noticing, and ExportForTenant will return it under the new
+// tenant. Only v4 rows have a hash-protected tenant.
 //
 // The first event's PrevHash is taken as the chain baseline rather
 // than insisted upon — for an unpruned chain it equals HashSize zero
@@ -655,11 +671,13 @@ func (l *SQLiteLogger) List(ctx context.Context, f Filter) (Page, error) {
 // event's Hash (linkage check); a mismatch reports the same
 // FirstBadIndex as a hash-recompute failure.
 func (l *SQLiteLogger) Verify(ctx context.Context) (VerifyResult, error) {
-	rows, canonicalVersion, err := l.verifyRows(ctx)
+	rows, err := l.verifyRows(ctx)
 	if err != nil {
 		return VerifyResult{}, fmt.Errorf("audit: verify list: %w", err)
 	}
-	return walkChain(rows, canonicalVersion), nil
+	// 0 = per-row dispatch: the anchor roots the walk, it does not
+	// choose the encoder.
+	return walkChain(rows, 0), nil
 }
 
 // VerifyLegacy walks every row at the given canonical_version in
@@ -748,31 +766,20 @@ func (l *SQLiteLogger) VerifyLegacy(ctx context.Context, canonicalVersion int, f
 
 // verifyRows picks the chain segment Verify walks. When a chain-restart
 // row exists, returns rows from the most-recent restart row forward
-// (inclusive) in chain-asc order plus the canonical_version those rows
-// were hashed under; otherwise walks every row in the table and
-// returns 0 as the canonical_version (the per-row column is used in
-// that fallback path).
-func (l *SQLiteLogger) verifyRows(ctx context.Context) ([]sqlitestore.Event, int, error) {
+// (inclusive) in chain-asc order; otherwise every row in the table.
+func (l *SQLiteLogger) verifyRows(ctx context.Context) ([]sqlitestore.Event, error) {
 	restart, err := l.store.Queries.GetLatestChainRestart(ctx, string(ActionAuditChainRestart))
 	if errors.Is(err, sql.ErrNoRows) {
-		all, lerr := l.store.Queries.ListEventsForVerify(ctx)
-		if lerr != nil {
-			return nil, 0, lerr
-		}
-		return all, 0, nil
+		return l.store.Queries.ListEventsForVerify(ctx)
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	rows, err := l.store.Queries.ListEventsForVerifyFromChainRestart(ctx, sqlitestore.ListEventsForVerifyFromChainRestartParams{
+	return l.store.Queries.ListEventsForVerifyFromChainRestart(ctx, sqlitestore.ListEventsForVerifyFromChainRestartParams{
 		At:   restart.At,
 		At_2: restart.At,
 		ID:   restart.ID,
 	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return rows, int(restart.CanonicalVersion), nil
 }
 
 // walkChain runs the verify-loop shape: linkage check + per-row
@@ -784,15 +791,10 @@ func (l *SQLiteLogger) verifyRows(ctx context.Context) ([]sqlitestore.Event, int
 //
 // When canonicalVersion > 0, that explicit version overrides each
 // row's column — used by VerifyLegacy(N) to walk a segment under a
-// specific encoder + by the chain-restart-rooted Verify path (the
-// genesis row + every successor share the genesis row's canonical
-// version because the boot path emits them under that version
-// deliberately).
+// specific encoder. That is the only caller that overrides.
 //
 // When canonicalVersion is 0, per-row dispatch is honoured — used by
-// the pre-v1.0 fallback walk and by any future mixed-version DB shape
-// where the chain-restart row no longer pins a single version across
-// the segment.
+// Verify, with or without a chain-restart anchor.
 //
 // FirstBadIndex distinguishes the failure modes:
 //

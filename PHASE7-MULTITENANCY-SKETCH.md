@@ -415,6 +415,55 @@ Saying it costs nothing and closes a question every evaluator will ask.
    encoder version. (A consequence worth its own issue: deleting the oldest N
    rows is undetectable without head-hash notarisation.)
 
+   **AMENDED 2026-10-02: the anchor selects the walk root ONLY.** `Verify` no
+   longer takes the encoder version from the newest chain-restart anchor. It
+   hashes every row under that row's own `canonical_version`, on the anchored
+   path as well as the unanchored one — which is what
+   `VerifyChainPostMigration` has always done.
+
+   The override held while a segment could contain only one version. v4 ended
+   that, and the override then reported TAMPER on rows nobody had touched, in
+   every order of events the rules below it did not cover:
+
+   - tenancy switched on and one v4 row logged before `BootstrapChainV4` ran
+     (a v4 row behind a v3 anchor) — and `BootstrapChainV4`, which is
+     idempotent on "a v4 row exists", then never ran;
+   - two replicas on one DB during a rolling deploy, or tenancy turned off and
+     on again (a v3 row behind a v4 anchor);
+   - an application's legacy boot step emitting a v2/v3 anchor after the v4
+     one.
+
+   Each was reproduced with a test. The one decision above is unaffected: it
+   is still ONE chain with the tenant in the v4 row. What changes is that the
+   v4 anchor is no longer required for a clean verify, so "the anchor must
+   land before the first v4 write" stops being a correctness rule. An anchor
+   still moves `Verify`'s walk root forward, which is a reason not to write
+   one onto a DB with history.
+
+   **What is kept.** A row's version column is an input to the check, not a
+   way around it: relabel a row and it is hashed with an encoder it was not
+   written with, so the walk reports tamper there. Content edits and, on a v4
+   row, tenant edits are caught as before.
+
+   **What is given up.** The override had one side effect that was useful: a
+   v3 row written behind a v4 anchor read as tamper, which pointed at a row
+   whose tenant is not in its hash. `Verify` no longer says anything about
+   such a row. It verifies like any v3 row, its `tenant_id` can be changed
+   without `Verify` noticing, and `ExportForTenant` returns it. If "no v3 row
+   after tenancy was switched on" is to be checked, it needs its own explicit
+   check; a false tamper report was never the right way to say it.
+
+   **On existing DBs.** The rows in the walk and their order are the same as
+   before; only the encoder choice changes. A DB whose boot guard passes has a
+   correct version column on every row, so a row that hashed correctly under
+   the old override hashes correctly under its own version too. (The boot
+   guard and `Verify` order rows differently on an `at` tie, so "boot guard
+   passes" alone does not imply "`Verify` is clean" — that was already so.)
+
+   **Not verifiable here:** the real Barista audit DB. The argument above says
+   a chain that verified before still verifies; that should still be run once
+   on a machine that has it (`PHASE7-HANDOFF.md` §0 has the commands).
+
    **The honest residual.** Rows written before the v4 anchor hash plaintext
    and are permanently un-redactable; they can only age out through
    `PruneOlderThan`. That window closes the day v4 ships and grows every month

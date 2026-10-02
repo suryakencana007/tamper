@@ -17,17 +17,22 @@ import (
 // is emitted through Logger.Log — the one path that reads the latest
 // hash under the write lock.
 //
-// WHY IT MUST LAND BEFORE THE FIRST v4 ROW. verifyRows selects the walk
-// root from the most recent anchor and takes the ENCODER VERSION from
-// it, overriding each row's own column. A v4 row sitting after a v3
-// anchor is therefore re-hashed under the v3 encoder and reads as
-// tamper. Emitting the anchor first is not tidiness; it is the
-// difference between a clean boot and a chain that reports itself
-// forged.
+// WHAT THE ANCHOR IS FOR. It marks where the v4 segment begins and
+// becomes Verify's walk root. It is NOT needed for a clean verify:
+// Verify hashes each row under its own version, so a DB with v4 rows
+// and no v4 anchor verifies clean.
+//
+// It has a cost, worth knowing before calling this on a DB with
+// history: Verify starts at the newest anchor, so the rows before it
+// leave Verify's walk. They stay covered by VerifyChainPostMigration.
 
-// HasChainRestartV4 reports whether the DB already carries a v4
-// chain-restart anchor. The idempotency key for BootstrapChainV4 —
-// subsequent boots see true and skip.
+// HasChainRestartV4 is the idempotency key for BootstrapChainV4.
+//
+// Despite its name it does not look for an anchor. It reports whether
+// the DB holds ANY row at canonical_version=4 (CountChainRestartV2 is
+// `SELECT COUNT(*) FROM events WHERE canonical_version = ?`). So it is
+// true after the anchor is written, and equally true once one ordinary
+// v4 row exists without an anchor.
 func (l *SQLiteLogger) HasChainRestartV4(ctx context.Context) (bool, error) {
 	n, err := l.store.Queries.CountChainRestartV2(ctx, int64(CanonicalVersion4))
 	if err != nil {
@@ -45,8 +50,13 @@ func (l *SQLiteLogger) HasChainRestartV4(ctx context.Context) (bool, error) {
 // than left to the caller because "remember not to call this" is the
 // kind of instruction that survives exactly one refactor.
 //
-// Returns (false, nil) when the anchor already exists or tenancy is off.
-// Call at boot, BEFORE any application event is logged.
+// Optional: see the top of this file for what the anchor does and what
+// it costs.
+//
+// Returns (false, nil) when tenancy is off or the DB already holds a v4
+// row — any v4 row, not only an anchor (see HasChainRestartV4). So an
+// application that wants the anchor must call this BEFORE its first v4
+// event is logged; called later it writes nothing.
 func (l *SQLiteLogger) BootstrapChainV4(ctx context.Context, at time.Time, id string) (bool, error) {
 	if l == nil || l.store == nil {
 		return false, nil

@@ -19,18 +19,28 @@ deployments are unaffected unless a line below says otherwise.
   stored row equals the tenant asked for. Before, it minted for any user in
   any tenant and only refused an unset tenant.
 
-  Three consequences:
+  Four consequences:
 
   - A user id with no row is now refused. It used to mint, because the method
     never read the store.
   - A mismatch and a missing user return the same `identity.ErrNotFound`, so
     the two cannot be told apart.
+  - A deactivated user is refused with `identity.ErrUserInactive`. The tenant
+    is checked first, so an inactive user addressed from another tenant still
+    gets `ErrNotFound`.
   - The method costs one `UserByID` read per mint.
 
   A user stored in the single tenant, minted with `tenant.Single`, gets the
   same tokens as before. `IssueTokensForUser` and `IssueTokensForUserWithACR`
   are unchanged. The method can no longer be used to give a user a session in
   a tenant they are not stored in.
+
+- **`identity.Store.UserByID` must return the user's tenant, and the leak
+  suite checks it** (#40, TD-10). The mint above compares the tenant on the
+  row `UserByID` returns, so that row must carry `User.TenantID`.
+  `tenanttest.RunLeakSuite` has a new `UserByID` case. A store whose by-id
+  query does not select the tenant column now fails the suite; fix the query,
+  because every tenant-bound mint would fail with it.
 
 - **`crypto.JWTService.VerifyTOTPPending` rejects a tenant-bound pending
   token** (#40, TD-10). It is now the `tenant.Single` form of
@@ -43,7 +53,9 @@ deployments are unaffected unless a line below says otherwise.
   store method runs. Before, it was served from the unscoped store, so tenant
   A's service account could read and change tenant B's directory. A principal
   with an empty `TenantID` is unchanged. If your validator returns a tenant,
-  set `SCIMConfig.Tenancy: true`.
+  set `SCIMConfig.Tenancy: true`. If your unscoped stores are already confined
+  to one tenant by other means, set `SCIMConfig.TenantBoundStores` instead
+  (see Added).
 
 - **`audit.SQLiteLogger.HasChainRestartV4` reports anchors, not rows** (#41,
   TD-16). It used to be true as soon as any v4 row existed. It is now true
@@ -77,6 +89,14 @@ deployments are unaffected unless a line below says otherwise.
     anchor, and `Verify` reports tamper.
   - An application that emits its own v2 or v3 chain-restart anchor after
     `New` should skip that step when `Tenancy` is on.
+
+- **`espresso.SCIMConfig.TenantBoundStores`** (#39, TD-15). The opt-out for
+  the SCIM refusal above. Set it when the unscoped stores given to
+  `NewSCIMRoutes` are already confined to one tenant: one `SCIMRoutes` per
+  tenant over a tenant-bound store, or stores that scope themselves from the
+  principal. Tamper cannot verify this. Setting it on a store shared by
+  several tenants re-opens the leak. `Tenancy` and `TenantBoundStores`
+  together are rejected by `NewSCIMRoutes`.
 
 - **`crypto.JWTService.IssueTOTPPendingInTenant` and
   `VerifyTOTPPendingInTenant`** (#40, TD-10). A TOTP-pending token can now

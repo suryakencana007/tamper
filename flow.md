@@ -364,8 +364,9 @@ Three things to know:
 - **`SCIMConfig.Tenancy` is `false` by default.** With the default, the routes
   call the unscoped store methods. A pooled deployment must set it to `true`.
   With the fix for TD-15 (#39), a principal that carries a tenant is refused
-  with a 500 while the flag is off, so a forgotten flag no longer leaks. See
-  `tech-debt.md`.
+  with a 500 while the flag is off, so a forgotten flag no longer leaks. A
+  deployment whose unscoped stores are already confined to one tenant sets
+  `SCIMConfig.TenantBoundStores` instead. See `tech-debt.md`.
 - When tenancy is on, the SCIM tenant always comes from the validated token.
   It never comes from the URL path or a header.
 - The routes pass the raw filter string and the PATCH operations to the store.

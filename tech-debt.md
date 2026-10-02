@@ -25,15 +25,19 @@ request. None is merged yet.
 
 | Item | Pull request | Note |
 |---|---|---|
-| TD-15 | #39 | Non-breaking guard. |
+| TD-15 | #39 | Guard with an explicit opt-out. |
 | TD-10 | #40 | Contains behaviour changes. |
 | TD-16 | #41 | |
 | TD-09 | #42 | Merge after #41. |
 | TD-08 | #43 | |
 
-TD-17 is not fixed. Five more items (TD-18 to TD-22) were found while the
-fixes were written. They are listed after TD-17, and three of them (TD-18,
-TD-20, TD-21) are also sharp edges that exist today.
+TD-17 is not fixed. Six more items (TD-18 to TD-23) were found while the
+fixes were written and reviewed. They are listed after TD-17, and four of them
+(TD-18, TD-20, TD-21, TD-23) are also sharp edges that exist today.
+
+Pull requests #39, #40 and #43 had a code review. Two of its findings changed
+the fixes (see the **Fix** paragraphs of TD-15 and TD-10). The findings that
+were not fixed are recorded in TD-18, TD-20 and TD-23.
 
 All six sharp edges, and the refresh-session problem in TD-02, were
 **reproduced with tests on 2026-10-02**. The test sources and their output are
@@ -65,6 +69,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-20 | Step-up-denied audit rows carry no tenant | sharp edge | P2 | Tamper |
 | TD-21 | `HasChainRestartV2` / `V3` count rows, not anchors | sharp edge | P2 | Tamper |
 | TD-22 | The multitenant example is out of date | gap | P2 | example |
+| TD-23 | A wrong-tenant token error has its own text | sharp edge | P2 | Tamper |
 
 P0 = the feature cannot be built safely without this. P1 = the application can
 work around it, but mistakes are easy. P2 = convenience and completeness.
@@ -358,7 +363,10 @@ and check it in `VerifyTOTPPending`. Also change the port signature to carry
 the tenant, so a missing tenant fails at compile time.
 
 **Fix: #40.** `IssueTokensForUserInTenant` refuses a tenant that differs from
-the user's stored tenant, with the same `ErrNotFound` as a missing user. New
+the user's stored tenant, with the same `ErrNotFound` as a missing user. It
+also refuses a deactivated user with `ErrUserInactive`, after the tenant check.
+Because the check reads the row from `UserByID`, that method must return the
+user's tenant; the leak suite now has a `UserByID` case for it. New
 `IssueTOTPPendingInTenant` / `VerifyTOTPPendingInTenant` put the tenant in the
 pending token. The example adapter uses both. The port signature is not
 changed, so an adapter that forwards `IssueTokensForUser` straight to `Core`
@@ -398,11 +406,22 @@ does not implement the scoped interface.
 `scim.GroupStore`, the same way v0.4.0 did for the other ports. A
 single-tenant deployment then passes `tenant.Single` explicitly.
 
-**Fix: #39.** Not the fold. A non-breaking guard: with `Tenancy` off, a
-principal that carries a tenant is refused with a 500 `CONFIG_ERROR` before
-any store call. A single-tenant principal is unchanged. The guard fails per
-request, not at `New`, because `NewSCIMRoutes` never sees the validator. The
-fold stays the long-term fix.
+**Fix: #39.** Not the fold. A guard: with `Tenancy` off, a principal that
+carries a tenant is refused with a 500 `CONFIG_ERROR` before any store call. A
+single-tenant principal is unchanged.
+
+- The guard is one wrapper around each unscoped store, built in
+  `NewSCIMRoutes`. No code in the package can reach an unscoped store method
+  without passing it.
+- There is an explicit opt-out, `SCIMConfig.TenantBoundStores`, for a
+  deployment whose unscoped stores are already confined to one tenant (one
+  `SCIMRoutes` per tenant, or stores that scope themselves). Tamper cannot
+  verify that claim. `Tenancy` and `TenantBoundStores` together fail at
+  `NewSCIMRoutes`.
+- The guard fails per request, not at `New`, because `NewSCIMRoutes` never
+  sees the validator.
+
+The fold stays the long-term fix.
 
 **Proof.** `TestTD15_SCIMDefaultConfigIsTenantScoped`. With the default
 config, a principal of tenant A got `200` on `GET` of tenant B's user, `204` on
@@ -554,8 +573,13 @@ earlier, at `VerifyTOTPPending`, with a 401. The 500 remains for a user deleted
 in the middle of the ceremony, and for an adapter that does not bind the
 pending token. Standing rule 3 wants a deny and a miss to look the same.
 
+The refusal also comes late. `AuthRoutes.VerifyTOTP` checks the code first and
+mints after (`espresso/authroutes.go`). So when the mint is refused, a
+single-use recovery code has already been spent.
+
 **Proposal for Tamper.** Map `ErrNotFound` on this path to the same 401 as
-invalid credentials.
+invalid credentials. This also changes the single-tenant path (a user deleted
+during the ceremony gets 401 instead of 500), so it is its own change.
 
 ### TD-19 — `Refresh` does not re-check the session's tenant
 
@@ -571,16 +595,25 @@ or one written by the application, keeps rotating.
 on a mismatch. This is a behaviour change and needs its own entry in the
 changelog.
 
-### TD-20 — Step-up-denied audit rows carry no tenant *(sharp edge)*
+### TD-20 — Two kinds of audit rows still carry no scope *(sharp edge)*
 
-**Evidence.** `emitStepUpDenied` builds its own `audit.Actor` and
-`audit.Event` (`espresso/stepup.go:232`, `:256`). Neither gets a tenant. It
-does not go through `captureActor`, although its comment says it does.
+**Evidence.** #43 fills the tenant for user requests that pass `RequireTenant`
+or `PinTenant`. Two emitters are not covered:
 
-**Impact.** The same as TD-08, for the rows that `RequireFreshAuthWithAudit`
-writes when it denies a request.
+- `emitStepUpDenied` builds its own `audit.Actor` and `audit.Event`
+  (`espresso/stepup.go:232`, `:256`). Neither gets a tenant. It does not go
+  through `captureActor`, although its comment says it does.
+- An `Auditor` route behind `RequireServiceAccount`. The actor carries the
+  service account's tenant, but no tenant is pinned in the context, so
+  `Event.TenantID` stays empty.
 
-**Proposal for Tamper.** Fill both fields the way #43 does for `Auditor`.
+**Impact.** The same as TD-08 for those rows: they are missing from
+`ExportForTenant` of the real tenant.
+
+**Proposal for Tamper.** One shared event builder for both emitters. For
+service accounts, decide whether `RequireServiceAccount` should pin the
+principal's tenant as the routed tenant. That is a design decision: #43
+deliberately has no fallback from the actor's tenant to the row's scope.
 
 ### TD-21 — `HasChainRestartV2` / `V3` count rows, not anchors *(sharp edge)*
 
@@ -612,6 +645,23 @@ puts the check in one handler's adapter and not in a gate on the route.
 
 **Proposal.** Add `RequireTenant` to the authenticated routes and update the
 comments.
+
+### TD-23 — A wrong-tenant token error has its own text *(sharp edge)*
+
+**Evidence.** `VerifyAccess` and `VerifyTOTPPendingInTenant` return
+`ErrInvalidToken` with the text "token not valid" on a tenant mismatch
+(`crypto/jwt.go`). Other failures on the default HS256 path include the JWT
+library's own text, for example for an expired token. `errors.Is` cannot tell
+them apart, but `err.Error()` can.
+
+**Impact.** The comments say a mismatch is indistinguishable from an ordinary
+invalid token. That holds on the wire, because the built-in routes answer with
+a generic 401. It does not hold for an adapter or a log line that shows the
+error text: "token not valid" then means "a real token, aimed at the wrong
+tenant".
+
+**Proposal for Tamper.** Return one fixed text for every `ErrInvalidToken`
+case, and keep the detail for a debug log.
 
 ## What is ready to use
 
@@ -658,8 +708,8 @@ Suggested slice order if this work moves into Tamper:
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
    answered.
-8. **TD-12, TD-13, TD-14, TD-17, TD-18, TD-20, TD-21** — the rest. TD-17
-   fits well with TD-11, and TD-20 with TD-08.
+8. **TD-12, TD-13, TD-14, TD-17, TD-18, TD-20, TD-21, TD-23** — the rest.
+   TD-17 fits well with TD-11, and TD-20 with TD-08.
 
 ## Process limits
 

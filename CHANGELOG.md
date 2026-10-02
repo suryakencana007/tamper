@@ -6,6 +6,91 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
+## [Unreleased]
+
+Five fixes for sharp edges in pooled deployments. Each one is a separate
+change (#39–#43) and is described in `tech-debt.md`. Single-tenant
+deployments are unaffected unless a line below says otherwise.
+
+### ⚠️ Changed — behaviour
+
+- **`identity.Core.IssueTokensForUserInTenant` denies a mismatched tenant**
+  (#40, TD-10). It now loads the user and refuses unless the tenant on the
+  stored row equals the tenant asked for. Before, it minted for any user in
+  any tenant and only refused an unset tenant.
+
+  Three consequences:
+
+  - A user id with no row is now refused. It used to mint, because the method
+    never read the store.
+  - A mismatch and a missing user return the same `identity.ErrNotFound`, so
+    the two cannot be told apart.
+  - The method costs one `UserByID` read per mint.
+
+  A user stored in the single tenant, minted with `tenant.Single`, gets the
+  same tokens as before. `IssueTokensForUser` and `IssueTokensForUserWithACR`
+  are unchanged. The method can no longer be used to give a user a session in
+  a tenant they are not stored in.
+
+- **`crypto.JWTService.VerifyTOTPPending` rejects a tenant-bound pending
+  token** (#40, TD-10). It is now the `tenant.Single` form of
+  `VerifyTOTPPendingInTenant`. A token minted by `IssueTOTPPending` carries no
+  `tid` and verifies as before.
+
+- **A tenant-bound credential on an unscoped SCIM surface is refused** (#39,
+  TD-15). With `SCIMConfig.Tenancy` off, a request whose validated principal
+  carries a non-empty `TenantID` now gets a 500 `CONFIG_ERROR` before any
+  store method runs. Before, it was served from the unscoped store, so tenant
+  A's service account could read and change tenant B's directory. A principal
+  with an empty `TenantID` is unchanged. If your validator returns a tenant,
+  set `SCIMConfig.Tenancy: true`.
+
+- **`audit.SQLiteLogger.HasChainRestartV4` reports anchors, not rows** (#41,
+  TD-16). It used to be true as soon as any v4 row existed. It is now true
+  only when a v4 chain-restart anchor row exists.
+
+- **`audit.SQLiteLogger.BootstrapChainV4` can emit on a late call** (#41,
+  TD-16). It decides from the newest chain-restart anchor: it emits when that
+  anchor is older than v4, even if v4 rows already exist. A repaired DB can
+  carry more than one v4 anchor, and `(false, nil)` no longer implies that a
+  v4 anchor exists. When no anchor of any version exists, the old rule holds:
+  it emits only while the DB has no v4 row.
+
+- **Rows written by `espresso.Auditor` now carry the tenant** (#43, TD-08).
+  `Event.TenantID` is the tenant pinned by `RequireTenant` or `PinTenant`.
+  `Actor.TenantID` is the token's `tid`. Before, both were empty, so
+  `audit.ExportForTenant` never returned these rows. A request with no `tid`
+  and no pinned tenant produces the same event as before. Rows written before
+  this change are not migrated.
+
+### Added
+
+- **`tamper.AuditConfig.Tenancy`** (#42, TD-09). Turns on the
+  `canonical_version=4` encoder for the logger built by `tamper.New`: the
+  tenant enters the hash and PII becomes redactable. `New` also writes the v4
+  chain anchor before it returns. Default `false` is byte-identical to before.
+
+  Read before turning it on:
+
+  - It requires `Audit.DBPath`. `New` rejects `Tenancy` with an empty path.
+  - It is a one-way switch. Turning it back off writes v3 rows behind the v4
+    anchor, and `Verify` reports tamper.
+  - An application that emits its own v2 or v3 chain-restart anchor after
+    `New` should skip that step when `Tenancy` is on.
+
+- **`crypto.JWTService.IssueTOTPPendingInTenant` and
+  `VerifyTOTPPendingInTenant`** (#40, TD-10). A TOTP-pending token can now
+  carry a `tid` claim, and verification pins it the same way `VerifyAccess`
+  pins an access token. A pooled adapter should use these, so a pending token
+  minted in one tenant cannot be finished in another.
+
+### Fixed
+
+- **`examples/multitenant`** (#40). The post-TOTP session now carries the
+  tenant, and the example issues tenant-bound pending tokens.
+
+---
+
 ## [0.6.0] — 2026-08-31
 
 Additive. No breaking changes, no database changes, no call-site changes.

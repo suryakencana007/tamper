@@ -182,7 +182,8 @@ the application mounts the Surfaces on its own Espresso router
 
 `tamper.New` opens the audit DB but does not verify the chain. Chain
 verification at boot (`audit.VerifyChainPostMigration`) is a call the
-application must add.
+application must add. With the fix for TD-09 (#42), `AuditConfig.Tenancy`
+turns on the v4 encoder and `New` writes the v4 anchor.
 
 ### 4.2 Register and password login
 
@@ -219,10 +220,12 @@ The pending token is rejected as a normal bearer token, and an access token is
 rejected at `/totp/verify`. The `purpose` claim separates the two in both
 directions.
 
-The pending token carries **no tenant**, and `Core.VerifyTOTP` is not
-tenant-scoped. So the application adapter must load the user, compare the
-user's stored tenant with the routed tenant, and only then mint. See TD-10 in
-`tech-debt.md`.
+The pending token from `IssueTOTPPending` carries **no tenant**, and
+`Core.VerifyTOTP` is not tenant-scoped. A pooled adapter must therefore use
+the tenant-bound pair `IssueTOTPPendingInTenant` / `VerifyTOTPPendingInTenant`
+and mint with `IssueTokensForUserInTenant`, which refuses a tenant that
+differs from the user's stored tenant. These arrive with the fix for TD-10
+(#40); see `tech-debt.md`.
 
 ### 4.4 Refresh and logout
 
@@ -359,8 +362,10 @@ Bearer <service account token>
 Three things to know:
 
 - **`SCIMConfig.Tenancy` is `false` by default.** With the default, the routes
-  call the unscoped store methods and never read the tenant. A pooled
-  deployment must set it to `true`. See TD-15 in `tech-debt.md`.
+  call the unscoped store methods. A pooled deployment must set it to `true`.
+  With the fix for TD-15 (#39), a principal that carries a tenant is refused
+  with a 500 while the flag is off, so a forgotten flag no longer leaks. See
+  `tech-debt.md`.
 - When tenancy is on, the SCIM tenant always comes from the validated token.
   It never comes from the URL path or a header.
 - The routes pass the raw filter string and the PATCH operations to the store.

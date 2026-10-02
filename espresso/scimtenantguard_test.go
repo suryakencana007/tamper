@@ -40,7 +40,7 @@ const (
 )
 
 // scimVerb is one request against the surface. Every body is VALID, so a
-// request is never turned away by the wire parse before it reaches a shim —
+// request is never turned away by the wire parse before it reaches a store —
 // a 400 for a malformed body would pass a "was it refused" assertion while
 // proving nothing about the guard.
 type scimVerb struct {
@@ -101,7 +101,7 @@ func TestSCIMTenancyOff_TenantBoundCredentialIsRefusedOnEveryVerb(t *testing.T) 
 			}
 			// The operator reads this in their IdP's provisioning log; it
 			// has to say what is wrong and which setting fixes it.
-			for _, want := range []string{"CONFIG_ERROR", "not tenant-scoped", "SCIMConfig.Tenancy"} {
+			for _, want := range []string{"CONFIG_ERROR", "not tenant-scoped", "SCIMConfig.Tenancy", "SCIMConfig.TenantBoundStores"} {
 				if !strings.Contains(env.Detail, want) {
 					t.Errorf("detail %q does not mention %q", env.Detail, want)
 				}
@@ -171,54 +171,247 @@ func TestSCIMTenancyOff_RefusalDoesNotDependOnTheResource(t *testing.T) {
 	}
 }
 
-// TestSCIMTenancyOff_EveryShimRefusesATenantBoundCredential guards the
-// shims the handler test cannot reach. A handler stops at its FIRST
-// refusal — PUT never gets past its Get, a Group PUT never past
-// ValidateMembers — so the guards on Replace, Delete and SavePatch sit
-// behind one that already fired. They are not redundant: the day a handler
-// is reordered, or a new one calls a write shim directly, they are the
-// only thing in the way. So each shim is called on its own.
-func TestSCIMTenancyOff_EveryShimRefusesATenantBoundCredential(t *testing.T) {
-	rt, store := untenantedSCIM(t)
-	ctx := context.WithValue(context.Background(), principalKey{},
-		Principal{ID: "sa-1", TenantID: tenantA})
+// portCall is one method of an unscoped port, called through whatever
+// store value a SCIMRoutes holds.
+type portCall struct {
+	name string
+	call func(context.Context) error
+}
 
-	for _, tc := range []struct {
-		name string
-		call func() error
-	}{
-		{"userCreate", func() error { _, err := rt.userCreate(ctx, scim.UserWrite{}, scim.WriteMeta{}); return err }},
-		{"userGet", func() error { _, err := rt.userGet(ctx, "u-b"); return err }},
-		{"userReplace", func() error { _, err := rt.userReplace(ctx, "u-b", scim.UserWrite{}, scim.WriteMeta{}); return err }},
-		{"userDelete", func() error { return rt.userDelete(ctx, "u-b", scim.WriteMeta{}) }},
-		{"userSavePatch", func() error { _, err := rt.userSavePatch(ctx, "u-b", scim.UserWrite{}, nil); return err }},
-		{"userListFiltered", func() error { _, err := rt.userListFiltered(ctx, 1, 20, ""); return err }},
-		{"groupCreate", func() error { _, err := rt.groupCreate(ctx, scim.GroupWrite{}, scim.GroupWriteMeta{}); return err }},
-		{"groupGet", func() error { _, err := rt.groupGet(ctx, "g-b"); return err }},
-		{"groupReplace", func() error {
-			_, err := rt.groupReplace(ctx, "g-b", scim.GroupWrite{}, scim.GroupWriteMeta{})
+// everyPortMethod is EVERY method of scim.UserStore and scim.GroupStore —
+// seven and eight — not just the ones a handler happens to call. It
+// includes the plain List, which has no transport caller, and
+// ValidateMembers, which returns only an error and so "succeeds" when left
+// open.
+func everyPortMethod(users scim.UserStore, groups scim.GroupStore) []portCall {
+	return []portCall{
+		{"users.Create", func(ctx context.Context) error {
+			_, err := users.Create(ctx, scim.UserWrite{}, scim.WriteMeta{})
 			return err
 		}},
-		{"groupDelete", func() error { return rt.groupDelete(ctx, "g-b", scim.GroupWriteMeta{}) }},
-		{"groupSavePatch", func() error { _, err := rt.groupSavePatch(ctx, "g-b", scim.GroupWrite{}, nil); return err }},
-		// The one most likely to be left open: it returns only an error, so
-		// an unguarded call "succeeds" and tenant B's user is nested into
-		// an A group by the write that follows.
-		{"groupValidateMembers", func() error {
-			return rt.groupValidateMembers(ctx, []scim.MemberRef{{Value: "u-b"}})
+		{"users.Get", func(ctx context.Context) error { _, err := users.Get(ctx, "u-b"); return err }},
+		{"users.Replace", func(ctx context.Context) error {
+			_, err := users.Replace(ctx, "u-b", scim.UserWrite{}, scim.WriteMeta{})
+			return err
 		}},
-		{"groupListFiltered", func() error { _, err := rt.groupListFiltered(ctx, 1, 20, ""); return err }},
-	} {
+		{"users.Delete", func(ctx context.Context) error { return users.Delete(ctx, "u-b", scim.WriteMeta{}) }},
+		{"users.SavePatch", func(ctx context.Context) error {
+			_, err := users.SavePatch(ctx, "u-b", scim.UserWrite{}, nil)
+			return err
+		}},
+		{"users.List", func(ctx context.Context) error { _, err := users.List(ctx, 1, 20); return err }},
+		{"users.ListFiltered", func(ctx context.Context) error {
+			_, err := users.ListFiltered(ctx, 1, 20, "")
+			return err
+		}},
+		{"groups.Create", func(ctx context.Context) error {
+			_, err := groups.Create(ctx, scim.GroupWrite{}, scim.GroupWriteMeta{})
+			return err
+		}},
+		{"groups.Get", func(ctx context.Context) error { _, err := groups.Get(ctx, "g-b"); return err }},
+		{"groups.Replace", func(ctx context.Context) error {
+			_, err := groups.Replace(ctx, "g-b", scim.GroupWrite{}, scim.GroupWriteMeta{})
+			return err
+		}},
+		{"groups.Delete", func(ctx context.Context) error {
+			return groups.Delete(ctx, "g-b", scim.GroupWriteMeta{})
+		}},
+		{"groups.SavePatch", func(ctx context.Context) error {
+			_, err := groups.SavePatch(ctx, "g-b", scim.GroupWrite{}, nil)
+			return err
+		}},
+		{"groups.ValidateMembers", func(ctx context.Context) error {
+			return groups.ValidateMembers(ctx, []scim.MemberRef{{Value: "u-b"}})
+		}},
+		{"groups.List", func(ctx context.Context) error { _, err := groups.List(ctx, 1, 20); return err }},
+		{"groups.ListFiltered", func(ctx context.Context) error {
+			_, err := groups.ListFiltered(ctx, 1, 20, "")
+			return err
+		}},
+	}
+}
+
+// TestSCIMTenantGuard_GuardsEveryMethodOfBothPorts is the half the handler
+// test cannot reach. A handler stops at its FIRST refusal — PUT never gets
+// past its Get, a Group PUT never past ValidateMembers — so the guards on
+// Replace, Delete and SavePatch sit behind one that already fired, and
+// List sits behind no handler at all.
+//
+// It calls the stores the ROUTES hold (rt.users / rt.groups), not a guard
+// built by hand, so it proves what a handler written tomorrow would get
+// from those fields: every method refuses a tenant-bound credential before
+// the application's store runs, and every method still delegates — once —
+// for a single-tenant one.
+func TestSCIMTenantGuard_GuardsEveryMethodOfBothPorts(t *testing.T) {
+	rt, store := untenantedSCIM(t)
+	bound := context.WithValue(context.Background(), principalKey{},
+		Principal{ID: "sa-1", TenantID: tenantA})
+	single := context.WithValue(context.Background(), principalKey{},
+		Principal{ID: "sa-1"})
+
+	methods := everyPortMethod(rt.users, rt.groups)
+	if len(methods) != 15 {
+		t.Fatalf("%d port methods listed, want 15 (7 on UserStore, 8 on GroupStore)", len(methods))
+	}
+	for _, tc := range methods {
 		t.Run(tc.name, func(t *testing.T) {
 			before := len(store.calls)
-			err := tc.call()
-			if !errors.Is(err, errSCIMNotTenantScoped) {
-				t.Errorf("err = %v, want errSCIMNotTenantScoped", err)
+			if err := tc.call(bound); !errors.Is(err, errSCIMNotTenantScoped) {
+				t.Errorf("tenant-bound: err = %v, want errSCIMNotTenantScoped", err)
 			}
 			if got := store.calls[before:]; len(got) != 0 {
-				t.Errorf("the shim reached the store before refusing: %v", got)
+				t.Errorf("tenant-bound: the guard reached the store before refusing: %v", got)
+			}
+
+			before = len(store.calls)
+			if err := tc.call(single); err != nil {
+				t.Errorf("single-tenant: err = %v, want nil — the guard refuses everything", err)
+			}
+			if got := store.calls[before:]; len(got) != 1 || got[0] != "UNSCOPED" {
+				t.Errorf("single-tenant: store calls = %v, want exactly one UNSCOPED — the "+
+					"guard did not delegate to the method it wraps", got)
 			}
 		})
+	}
+}
+
+// TestSCIMTenantGuard_RoutesHoldTheGuardedStores is the structural half:
+// the guard is only worth anything if it is what s.users / s.groups
+// actually hold. If NewSCIMRoutes ever stores the application's store
+// directly again, every handler — present and future — is back to calling
+// an unguarded store, and no behavioural test of today's handlers is
+// obliged to notice a handler that does not exist yet.
+func TestSCIMTenantGuard_RoutesHoldTheGuardedStores(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  SCIMConfig
+	}{
+		{"tenancy off", SCIMConfig{Prefix: "/scim/v2", MaxResults: 100}},
+		// With Tenancy on no shim calls these fields, and they are guarded
+		// all the same.
+		{"tenancy on", SCIMConfig{Prefix: "/scim/v2", MaxResults: 100, Tenancy: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTenantSCIMStore()
+			groups := groupSide{s: store}
+			rt, err := NewSCIMRoutes(tc.cfg, store, groups)
+			if err != nil {
+				t.Fatalf("NewSCIMRoutes: %v", err)
+			}
+			gu, ok := rt.users.(guardedUserStore)
+			if !ok {
+				t.Fatalf("rt.users is %T, want guardedUserStore — the routes hold an "+
+					"unguarded UserStore", rt.users)
+			}
+			gg, ok := rt.groups.(guardedGroupStore)
+			if !ok {
+				t.Fatalf("rt.groups is %T, want guardedGroupStore — the routes hold an "+
+					"unguarded GroupStore", rt.groups)
+			}
+			// And the guard is around the application's store, not around
+			// nothing or another guard.
+			if gu.next != scim.UserStore(store) {
+				t.Errorf("the user guard wraps %T, want the application's store", gu.next)
+			}
+			if gg.next != scim.GroupStore(groups) {
+				t.Errorf("the group guard wraps %T, want the application's store", gg.next)
+			}
+		})
+	}
+
+	// The guard must not be what the TenantScoped* assertion sees. If it
+	// were, a store that CAN scope would be reported as one that cannot.
+	if _, ok := scim.UserStore(guardedUserStore{}).(scim.TenantScopedUserStore); ok {
+		t.Error("guardedUserStore satisfies TenantScopedUserStore; it must stay the unscoped port only")
+	}
+	if _, ok := scim.GroupStore(guardedGroupStore{}).(scim.TenantScopedGroupStore); ok {
+		t.Error("guardedGroupStore satisfies TenantScopedGroupStore; it must stay the unscoped port only")
+	}
+}
+
+// --- the opt-out -------------------------------------------------------
+
+// tenantBoundSCIM is a deployment that DECLARED its unscoped stores safe.
+// The fixture's stores are in fact shared by two tenants, which is exactly
+// the misuse the flag's doc warns about — and what makes it a usable
+// probe: "UNSCOPED" in the trace is the proof the guard stood down.
+func tenantBoundSCIM(t *testing.T) (*SCIMRoutes, *tenantSCIMStore) {
+	t.Helper()
+	store := newTenantSCIMStore()
+	rt, err := NewSCIMRoutes(SCIMConfig{
+		Prefix: "/scim/v2", BaseURL: "https://panel.test", MaxResults: 100,
+		TenantBoundStores: true,
+	}, store, groupSide{s: store})
+	if err != nil {
+		t.Fatalf("NewSCIMRoutes: %v", err)
+	}
+	return rt, store
+}
+
+// TestSCIMTenantBoundStores_TenantBoundCredentialIsServed: with the
+// declaration made, a tenant-bound principal gets what a single-tenant one
+// gets on every verb — same status, same unscoped store methods, same
+// number of them. A deployment that isolates its directory another way,
+// and sets Principal.TenantID for entitlements or throttling, must not be
+// answered 500 on every request.
+func TestSCIMTenantBoundStores_TenantBoundCredentialIsServed(t *testing.T) {
+	rt, store := tenantBoundSCIM(t)
+
+	for _, tc := range scimEveryVerb(rt) {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(store.calls)
+			rec := asTenant(tc.h, tenantA, tc.method, tc.path, tc.body)
+
+			if rec.Code != tc.singleStatus {
+				t.Fatalf("status = %d, want %d — TenantBoundStores did not lift the refusal. "+
+					"Body: %s", rec.Code, tc.singleStatus, bodyOf(t, rec))
+			}
+			calls := store.calls[before:]
+			if len(calls) != tc.singleCalls {
+				t.Errorf("store calls = %v, want %d of them", calls, tc.singleCalls)
+			}
+			for _, got := range calls {
+				if got != "UNSCOPED" {
+					t.Errorf("an opted-out request was routed to a scoped method with "+
+						"tenant %q; calls = %v", got, calls)
+				}
+			}
+		})
+	}
+}
+
+// TestSCIMTenantBoundStores_KeepsTheStoresBare: the declared path is the
+// pre-guard code with nothing in between — not a guard switched off.
+func TestSCIMTenantBoundStores_KeepsTheStoresBare(t *testing.T) {
+	rt, store := tenantBoundSCIM(t)
+	if rt.users != scim.UserStore(store) {
+		t.Errorf("rt.users is %T, want the application's own store", rt.users)
+	}
+	if rt.groups != scim.GroupStore(groupSide{s: store}) {
+		t.Errorf("rt.groups is %T, want the application's own store", rt.groups)
+	}
+}
+
+// TestSCIMTenantBoundStores_ContradictsTenancy is standing rule 4: the two
+// flags answer the same question in opposite ways, and that must fail at
+// New — not be resolved quietly in favour of one of them.
+func TestSCIMTenantBoundStores_ContradictsTenancy(t *testing.T) {
+	// Stores that CAN scope, so the only thing wrong with this config is
+	// the contradiction; a store-type error would pass a bare err != nil.
+	store := newTenantSCIMStore()
+	rt, err := NewSCIMRoutes(SCIMConfig{
+		Prefix: "/scim/v2", MaxResults: 100, Tenancy: true, TenantBoundStores: true,
+	}, store, groupSide{s: store})
+	if err == nil {
+		t.Fatal("NewSCIMRoutes accepted Tenancy together with TenantBoundStores")
+	}
+	if rt != nil {
+		t.Error("NewSCIMRoutes returned routes alongside the error")
+	}
+	for _, want := range []string{"SCIMConfig.Tenancy", "SCIMConfig.TenantBoundStores"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %s: %v", want, err)
+		}
 	}
 }
 

@@ -152,7 +152,8 @@ func (s *SCIMRoutes) GroupsDelete(w http.ResponseWriter, r *http.Request) {
 // CIRCULAR_GROUP_REFERENCE; then ErrNotFound → 404 (fixed "group not found");
 // ErrConflict → 409 uniqueness; ErrInvalidInput → 400 invalidValue (detail
 // recovered from the folded error); else 500. errSCIMNotTenantScoped is the
-// shim's own refusal (see writeUserStoreErr) and maps to its CONFIG_ERROR.
+// guarded store's own refusal (see writeUserStoreErr) and maps to its
+// CONFIG_ERROR.
 func (s *SCIMRoutes) writeGroupStoreErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errSCIMNotTenantScoped):

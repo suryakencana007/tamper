@@ -74,24 +74,66 @@ type SCIMConfig struct {
 	// single-tenant deployment: the shims call the original store methods
 	// and no tenant reaches a store.
 	//
-	// False is NOT a way to run pooled. A request whose validated principal
-	// carries a non-empty TenantID is refused with a 500 CONFIG_ERROR
-	// before any store method runs — see requireUntenanted. The unscoped
-	// methods have no tenant argument, so serving that request would hand
-	// tenant A's service account every tenant's directory; a deployment
-	// that issues tenant-bound credentials and forgot this flag must find
-	// out on its first request, not in an incident review.
+	// False is NOT, by itself, a way to run pooled. A request whose
+	// validated principal carries a non-empty TenantID is refused with a
+	// 500 CONFIG_ERROR before any store method runs — see
+	// requireUntenanted. The unscoped methods have no tenant argument, so
+	// serving that request would hand tenant A's service account every
+	// tenant's directory; a deployment that issues tenant-bound
+	// credentials and forgot this flag must find out on its first request,
+	// not in an incident review. TenantBoundStores is the way to say the
+	// refusal does not apply.
 	//
 	// When true, BOTH stores must implement their tenant-scoped form or
 	// NewSCIMRoutes fails, naming the type. Every read and write is then
 	// constrained to the tenant on the VALIDATED PRINCIPAL — see
 	// Principal.TenantID for why it can only come from there.
 	Tenancy bool
+
+	// TenantBoundStores is the application's DECLARATION that the unscoped
+	// stores it hands to NewSCIMRoutes are already confined to one tenant
+	// by other means, so a tenant-bound principal may be served by them.
+	// False (the default) keeps the refusal described on Tenancy.
+	//
+	// It exists because Principal.TenantID is not only a scoping key. A
+	// validator sets it for entitlements, throttle keys, audit attribution
+	// and BaseURLForTenant too, and a deployment can want all of those
+	// while isolating its directory without the TenantScoped* ports. There
+	// are two legitimate shapes:
+	//
+	//   - One SCIMRoutes per tenant, each built over stores bound to that
+	//     tenant. The store cannot return another tenant's row because it
+	//     cannot see one. The application then also owns dispatching each
+	//     request to the routes of the PRINCIPAL's tenant; nothing here
+	//     checks that the two agree.
+	//   - Stores that scope themselves: every method reads the validated
+	//     principal from the context (GetPrincipal) and constrains its
+	//     query to that tenant.
+	//
+	// TAMPER CANNOT VERIFY EITHER. The flag is taken on trust, it removes
+	// the guard and adds nothing in its place: with it set, and Tenancy
+	// off, the surface behaves exactly as it did before the guard existed.
+	// Setting it on a store that several tenants share and that does not
+	// scope itself re-opens the leak — tenant A's service account reads
+	// and changes tenant B's users and groups, with a 200.
+	//
+	// It contradicts Tenancy, which scopes every call by the principal's
+	// tenant instead of trusting the store; NewSCIMRoutes rejects the two
+	// together rather than guess which was meant. A single-tenant
+	// deployment (empty Principal.TenantID) needs neither.
+	TenantBoundStores bool
 }
 
 // SCIMRoutes is the SCIM transport. Construct with NewSCIMRoutes.
 type SCIMRoutes struct {
-	cfg    SCIMConfig
+	cfg SCIMConfig
+
+	// users / groups are the UNSCOPED ports, and never the application's
+	// stores as received: NewSCIMRoutes wraps them in guardedUserStore /
+	// guardedGroupStore, which refuse a tenant-bound credential before
+	// delegating. They are the bare stores only when the application set
+	// SCIMConfig.TenantBoundStores. A new handler that reaches for s.users
+	// therefore gets the guard without knowing it is there.
 	users  scim.UserStore
 	groups scim.GroupStore
 
@@ -99,6 +141,11 @@ type SCIMRoutes struct {
 	// construction. Non-nil exactly when SCIMConfig.Tenancy is on, so the
 	// per-request shims below branch on a boot-time decision rather than
 	// re-asserting a type on every call — the Phase 0c lesson.
+	//
+	// These hold the application's stores UNWRAPPED, and the scoped ports
+	// embed the unscoped ones, so s.tenantUsers.Get compiles and bypasses
+	// the guard on users above. Only the …InTenant methods may be called
+	// through these two fields.
 	tenantUsers  scim.TenantScopedUserStore
 	tenantGroups scim.TenantScopedGroupStore
 }
@@ -127,7 +174,18 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 	if cfg.MaxPayloadBytes <= 0 {
 		cfg.MaxPayloadBytes = defaultSCIMMaxPayloadBytes
 	}
-	s := &SCIMRoutes{cfg: cfg, users: users, groups: groups}
+	// The two tenancy flags answer the same question in opposite ways, so
+	// both at once is a misconfiguration, and it fails here like the rest.
+	// Picking a winner would mean silently ignoring the other: either the
+	// operator's request for scoping, or their statement that the stores
+	// need none.
+	if cfg.Tenancy && cfg.TenantBoundStores {
+		return nil, errors.New(
+			"tamper/espresso: SCIMConfig.Tenancy and SCIMConfig.TenantBoundStores are mutually " +
+				"exclusive; Tenancy scopes every store call by the principal's tenant, " +
+				"TenantBoundStores declares the unscoped stores already confined to one")
+	}
+	s := &SCIMRoutes{cfg: cfg}
 	// The optional-interface upgrade is checked HERE, once, and the
 	// result stored. A store that cannot scope by tenant is a
 	// misconfiguration, and discovering it on the first cross-tenant read
@@ -148,6 +206,26 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 					"scim.TenantScopedGroupStore; %T does not", groups)
 		}
 		s.tenantUsers, s.tenantGroups = tu, tg
+	}
+	// The guard goes on AFTER the assertions above, which must see the
+	// application's own stores: the decorators implement the unscoped port
+	// and nothing else, so asserting on them would report every store as
+	// unable to scope, and name the wrong type while doing it.
+	//
+	// It goes on with Tenancy too. Every shim takes the scoped branch
+	// there, so the guarded stores are never called — but "never called"
+	// is a property of today's shims, and the guard is what holds if one
+	// of tomorrow's reaches for s.users. (It does not cover the unscoped
+	// methods reachable through s.tenantUsers / s.tenantGroups; see the
+	// note on those fields.)
+	//
+	// With TenantBoundStores the stores are kept bare, not wrapped in a
+	// guard that is switched off: the declared path is then the pre-guard
+	// code with nothing in between, which is the easiest thing to be sure
+	// is byte-identical.
+	s.users, s.groups = users, groups
+	if !cfg.TenantBoundStores {
+		s.users, s.groups = guardedUserStore{next: users}, guardedGroupStore{next: groups}
 	}
 	return s, nil
 }
@@ -206,72 +284,15 @@ func (s *SCIMRoutes) baseURL(r *http.Request) string {
 // calls, unchanged, which is what keeps the single-tenant path
 // byte-identical.
 //
-// Every unscoped call sits behind requireUntenanted. The guard is on the
-// SHIM, not the handler, because a handler is a sequence of store calls
-// (Replace is ValidateMembers, Get, Replace) and a check at its top
-// protects only the handlers someone remembered to give one. Here a store
-// method cannot be reached without passing it.
-
-// errSCIMNotTenantScoped is what a shim returns INSTEAD of calling the
-// unscoped store for a tenant-bound credential. It never leaves the
-// package: writeSCIMNotTenantScoped renders it, through the same
-// write…StoreErr paths every other store error takes.
-var errSCIMNotTenantScoped = errors.New(
-	"tamper/espresso: tenant-bound credential on a SCIM surface built without SCIMConfig.Tenancy")
-
-// scimNotTenantScopedDetail is the §3.12 detail for that refusal. It names
-// the setting, because the reader is the operator looking at their IdP's
-// provisioning log with nothing else to grep for, and it names no tenant
-// and no resource: the answer is the same for every id, existing or not,
-// so it cannot be used to probe another customer's directory. The
-// CONFIG_ERROR prefix is the code espresso/decision.go answers a
-// misconfigured gate with; the SCIM envelope has no code field, so it
-// rides in the detail the way CIRCULAR_GROUP_REFERENCE does.
-const scimNotTenantScopedDetail = "CONFIG_ERROR: this SCIM surface is not tenant-scoped " +
-	"(SCIMConfig.Tenancy is off) but the credential is bound to a tenant"
-
-// requireUntenanted is the one gate in front of every UNSCOPED store call.
-//
-// With Tenancy off the store methods take no tenant, so there is nothing
-// to constrain them with. A principal that carries one is therefore a
-// deployment misconfiguration — a pooled validator wired to a
-// single-tenant surface — and the only two things to do with it are
-// refuse, or serve it from every tenant's rows. This refuses, before the
-// store is touched, on reads as much as writes.
-//
-// It cannot be a boot guard, which is where tenancy misconfiguration
-// normally fails: NewSCIMRoutes never sees the validator, and what a
-// validator returns is only known per token. So it fails on the first
-// request instead, as a 500 rather than a 404 — nothing was looked up, and
-// a 404 would report a deployment fault as a fact about the directory.
-//
-// An empty TenantID is the single-tenant deployment and passes untouched,
-// which is what keeps that path byte-identical. So does a request with no
-// principal at all: it is the caller's wiring that decides whether such a
-// request can arrive here, exactly as before.
-//
-// The ok from GetPrincipal is deliberately ignored. It is false for a
-// principal with an empty ID, and a credential that names a tenant but no
-// account is still tenant-bound; reading ok would let it through.
-func requireUntenanted(ctx context.Context) error {
-	if p, _ := GetPrincipal(ctx); p.TenantID != "" {
-		return errSCIMNotTenantScoped
-	}
-	return nil
-}
-
-// writeSCIMNotTenantScoped renders errSCIMNotTenantScoped. One writer, so
-// the Users, Groups and List error paths answer with the same bytes.
-func writeSCIMNotTenantScoped(w http.ResponseWriter) {
-	WriteSCIMErrorTyped(w, http.StatusInternalServerError, scimNotTenantScopedDetail, "")
-}
+// With Tenancy off the calls land on s.users / s.groups, which hold the
+// GUARDED stores (scimtenantguard.go) unless the application declared
+// TenantBoundStores. The refusal of a tenant-bound credential therefore
+// happens inside the store value, not here: a shim has nothing to
+// remember, and neither does the next handler someone writes.
 
 func (s *SCIMRoutes) userCreate(ctx context.Context, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
 	if s.tenantUsers != nil {
 		return s.tenantUsers.CreateInTenant(ctx, scimTenant(ctx), w, meta)
-	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.UserRecord{}, err
 	}
 	return s.users.Create(ctx, w, meta)
 }
@@ -280,18 +301,12 @@ func (s *SCIMRoutes) userGet(ctx context.Context, id string) (scim.UserRecord, e
 	if s.tenantUsers != nil {
 		return s.tenantUsers.GetInTenant(ctx, scimTenant(ctx), id)
 	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.UserRecord{}, err
-	}
 	return s.users.Get(ctx, id)
 }
 
 func (s *SCIMRoutes) userReplace(ctx context.Context, id string, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
 	if s.tenantUsers != nil {
 		return s.tenantUsers.ReplaceInTenant(ctx, scimTenant(ctx), id, w, meta)
-	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.UserRecord{}, err
 	}
 	return s.users.Replace(ctx, id, w, meta)
 }
@@ -300,18 +315,12 @@ func (s *SCIMRoutes) userDelete(ctx context.Context, id string, meta scim.WriteM
 	if s.tenantUsers != nil {
 		return s.tenantUsers.DeleteInTenant(ctx, scimTenant(ctx), id, meta)
 	}
-	if err := requireUntenanted(ctx); err != nil {
-		return err
-	}
 	return s.users.Delete(ctx, id, meta)
 }
 
 func (s *SCIMRoutes) userSavePatch(ctx context.Context, id string, w scim.UserWrite, ops []scim.Operation) (scim.UserRecord, error) {
 	if s.tenantUsers != nil {
 		return s.tenantUsers.SavePatchInTenant(ctx, scimTenant(ctx), id, w, ops)
-	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.UserRecord{}, err
 	}
 	return s.users.SavePatch(ctx, id, w, ops)
 }
@@ -320,18 +329,12 @@ func (s *SCIMRoutes) userListFiltered(ctx context.Context, startIndex, count int
 	if s.tenantUsers != nil {
 		return s.tenantUsers.ListFilteredInTenant(ctx, scimTenant(ctx), startIndex, count, filter)
 	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.UserPage{}, err
-	}
 	return s.users.ListFiltered(ctx, startIndex, count, filter)
 }
 
 func (s *SCIMRoutes) groupCreate(ctx context.Context, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
 	if s.tenantGroups != nil {
 		return s.tenantGroups.CreateInTenant(ctx, scimTenant(ctx), w, meta)
-	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.GroupRecord{}, err
 	}
 	return s.groups.Create(ctx, w, meta)
 }
@@ -340,18 +343,12 @@ func (s *SCIMRoutes) groupGet(ctx context.Context, id string) (scim.GroupRecord,
 	if s.tenantGroups != nil {
 		return s.tenantGroups.GetInTenant(ctx, scimTenant(ctx), id)
 	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.GroupRecord{}, err
-	}
 	return s.groups.Get(ctx, id)
 }
 
 func (s *SCIMRoutes) groupReplace(ctx context.Context, id string, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
 	if s.tenantGroups != nil {
 		return s.tenantGroups.ReplaceInTenant(ctx, scimTenant(ctx), id, w, meta)
-	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.GroupRecord{}, err
 	}
 	return s.groups.Replace(ctx, id, w, meta)
 }
@@ -360,18 +357,12 @@ func (s *SCIMRoutes) groupDelete(ctx context.Context, id string, meta scim.Group
 	if s.tenantGroups != nil {
 		return s.tenantGroups.DeleteInTenant(ctx, scimTenant(ctx), id, meta)
 	}
-	if err := requireUntenanted(ctx); err != nil {
-		return err
-	}
 	return s.groups.Delete(ctx, id, meta)
 }
 
 func (s *SCIMRoutes) groupSavePatch(ctx context.Context, id string, w scim.GroupWrite, ops []scim.Operation) (scim.GroupRecord, error) {
 	if s.tenantGroups != nil {
 		return s.tenantGroups.SavePatchInTenant(ctx, scimTenant(ctx), id, w, ops)
-	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.GroupRecord{}, err
 	}
 	return s.groups.SavePatch(ctx, id, w, ops)
 }
@@ -380,18 +371,12 @@ func (s *SCIMRoutes) groupValidateMembers(ctx context.Context, members []scim.Me
 	if s.tenantGroups != nil {
 		return s.tenantGroups.ValidateMembersInTenant(ctx, scimTenant(ctx), members)
 	}
-	if err := requireUntenanted(ctx); err != nil {
-		return err
-	}
 	return s.groups.ValidateMembers(ctx, members)
 }
 
 func (s *SCIMRoutes) groupListFiltered(ctx context.Context, startIndex, count int, filter string) (scim.GroupPage, error) {
 	if s.tenantGroups != nil {
 		return s.tenantGroups.ListFilteredInTenant(ctx, scimTenant(ctx), startIndex, count, filter)
-	}
-	if err := requireUntenanted(ctx); err != nil {
-		return scim.GroupPage{}, err
 	}
 	return s.groups.ListFiltered(ctx, startIndex, count, filter)
 }

@@ -73,8 +73,13 @@ func (s *SCIMRoutes) GroupsList(w http.ResponseWriter, r *http.Request) {
 // writeListErr maps a List error: scim.ErrInvalidFilter → 400 invalidFilter
 // (impl-wrapped detail recovered via scimStoreDetail); anything else → 500.
 // Matches the pre-lift handleList (Parse/Translate/domain.ErrInvalid →
-// invalidFilter; else internalError).
+// invalidFilter; else internalError). errSCIMNotTenantScoped is the guarded
+// store's own refusal (see writeUserStoreErr) and maps to its CONFIG_ERROR.
 func writeListErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, errSCIMNotTenantScoped) {
+		writeSCIMNotTenantScoped(w)
+		return
+	}
 	if errors.Is(err, scim.ErrInvalidFilter) {
 		WriteSCIMErrorTyped(w, http.StatusBadRequest, scimStoreDetail(err), SCIMTypeInvalidFilter)
 		return

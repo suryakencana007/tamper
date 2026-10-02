@@ -129,7 +129,7 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 				Cookies:     tamperespresso.CookieConfig{Name: "mt_" + tenantID + "_refresh"},
 				ProjectUser: projectUser,
 			},
-			Identity: tenantIdentity{core: provider.Identity, store: store, tenantID: tenantID},
+			Identity: newTenantIdentity(provider, store, tenantID),
 		})
 		if serr != nil {
 			_ = provider.Close()

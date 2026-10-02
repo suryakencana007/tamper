@@ -842,3 +842,303 @@ func TestVerifyAccess_SingleTenantIsUnaffected(t *testing.T) {
 		t.Errorf("Verify (Single shim) broke: %v", err)
 	}
 }
+
+// --- TD-10: the tenant-bound totp-pending token ---------------------
+//
+// The pending token is the only credential the totp-verify endpoint
+// sees, and until TD-10 it named a user and nothing else. In a pooled
+// deployment that let a globex user's pending token finish its login at
+// acme's endpoint. These pin the `tid` claim that closes it, on the same
+// terms the access token's `tid` is pinned above: exact equality, no
+// oracle, an unset tenant denies, and the single-tenant shape does not
+// move by a byte.
+
+// pinnedPreTD10PendingToken is a REAL totp-pending token minted by this
+// service BEFORE the pending token had a tid claim, captured from the
+// code at b28b001 and pasted here verbatim — the same fixed-point
+// discipline as pinnedPre7cToken. Its payload decodes to
+//
+//	{"purpose":"totp_pending","iss":"pin-issuer","sub":"user-1","exp":1700000300,"iat":1700000000}
+const pinnedPreTD10PendingToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+	"eyJwdXJwb3NlIjoidG90cF9wZW5kaW5nIiwiaXNzIjoicGluLWlzc3VlciIsInN1YiI6InVzZXItMSIsImV4cCI6MTcwMDAwMDMwMCwiaWF0IjoxNzAwMDAwMDAwfQ" +
+	".WBe2JU1m0w8aVN1NvqMhwYg7LWsgfv2z-gmpqHvOeCQ"
+
+// TestIssueTOTPPending_IsByteIdenticalToPreTD10 is standing rule 1 for
+// this claim. The comparison is on the whole encoded token, because the
+// thing that would break it — a `"tid":""` key appearing on the wire —
+// is invisible to a parsed-struct comparison.
+func TestIssueTOTPPending_IsByteIdenticalToPreTD10(t *testing.T) {
+	s := pinnedService(t)
+
+	legacy, err := s.IssueTOTPPending(pinnedSubject)
+	if err != nil {
+		t.Fatalf("IssueTOTPPending: %v", err)
+	}
+	if legacy != pinnedPreTD10PendingToken {
+		t.Errorf("single-tenant pending token drifted from the pre-TD-10 one.\n got: %s\nwant: %s\n"+
+			"check that omitempty is still on totpPendingClaims.TenantID", legacy, pinnedPreTD10PendingToken)
+	}
+
+	// The delegation: Single said explicitly is the same bytes, or there
+	// are two mint paths that can drift.
+	viaTenant, err := s.IssueTOTPPendingInTenant(pinnedSubject, tenant.Single)
+	if err != nil {
+		t.Fatalf("IssueTOTPPendingInTenant(Single): %v", err)
+	}
+	if viaTenant != legacy {
+		t.Errorf("Single mint differs from IssueTOTPPending:\n  %s\n  %s", viaTenant, legacy)
+	}
+
+	// And a token the OLD code minted still verifies on the old entry
+	// point — no in-flight login is dropped by the deploy.
+	sub, err := s.VerifyTOTPPending(pinnedPreTD10PendingToken)
+	if err != nil {
+		t.Fatalf("a pre-TD-10 pending token no longer verifies: %v", err)
+	}
+	if sub != pinnedSubject {
+		t.Errorf("sub = %q, want %q", sub, pinnedSubject)
+	}
+}
+
+// TestTOTPPendingInTenant_RoundTrip: a tenant goes in, the subject comes
+// out for that tenant, and the claim is actually on the wire as `tid`.
+func TestTOTPPendingInTenant_RoundTrip(t *testing.T) {
+	s := pinnedService(t)
+	acme := tenant.New("acme")
+
+	tok, err := s.IssueTOTPPendingInTenant(pinnedSubject, acme)
+	if err != nil {
+		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+	}
+	sub, err := s.VerifyTOTPPendingInTenant(tok, acme)
+	if err != nil {
+		t.Fatalf("VerifyTOTPPendingInTenant: %v", err)
+	}
+	if sub != pinnedSubject {
+		t.Errorf("sub = %q, want %q", sub, pinnedSubject)
+	}
+	payload := decodeSegment(t, tok)
+	if !strings.Contains(payload, `"tid":"acme"`) {
+		t.Errorf("payload does not carry tid: %s", payload)
+	}
+	if !strings.Contains(payload, `"purpose":"totp_pending"`) {
+		t.Errorf("payload lost its purpose: %s", payload)
+	}
+}
+
+// TestVerifyTOTPPendingInTenant_Matrix is the whole rule, and it is the
+// VerifyAccess table row for row. Only exact equality passes.
+//
+// Mutation check: delete the tid comparison in VerifyTOTPPendingInTenant
+// and the three rejecting rows fail.
+func TestVerifyTOTPPendingInTenant_Matrix(t *testing.T) {
+	s := pinnedService(t)
+	for _, tc := range []struct {
+		name        string
+		tokenTenant tenant.ID
+		routeTenant tenant.ID
+		wantOK      bool
+	}{
+		{"single-tenant token, single-tenant route", tenant.Single, tenant.Single, true},
+		// A route that names a tenant cannot accept a token that names
+		// none: absence is not a match.
+		{"single-tenant token, tenanted route", tenant.Single, tenant.New("acme"), false},
+		{"tenanted token, single-tenant route", tenant.New("acme"), tenant.Single, false},
+		{"matching", tenant.New("acme"), tenant.New("acme"), true},
+		// TD-10 itself: the password step ran in globex, the token is
+		// replayed at acme's verify endpoint.
+		{"cross tenant", tenant.New("globex"), tenant.New("acme"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tok, err := s.IssueTOTPPendingInTenant(pinnedSubject, tc.tokenTenant)
+			if err != nil {
+				t.Fatalf("issue: %v", err)
+			}
+			sub, err := s.VerifyTOTPPendingInTenant(tok, tc.routeTenant)
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("VerifyTOTPPendingInTenant: %v", err)
+				}
+				if sub != pinnedSubject {
+					t.Errorf("sub = %q, want %q", sub, pinnedSubject)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected a rejection")
+			}
+			if !errors.Is(err, ErrInvalidToken) {
+				t.Errorf("err = %v, want ErrInvalidToken", err)
+			}
+			if sub != "" {
+				t.Errorf("rejection returned a subject: %q", sub)
+			}
+		})
+	}
+}
+
+// TestVerifyTOTPPending_RejectsTenantBoundToken is the behaviour change
+// on the LEGACY entry point, stated on its own because it is the one a
+// reader could mistake for a regression. VerifyTOTPPending is now the
+// tenant.Single form, so a token minted for a tenant is refused there —
+// before the claim existed it would have been accepted on its signature
+// alone, by an entry point that could not see a tenant at all.
+func TestVerifyTOTPPending_RejectsTenantBoundToken(t *testing.T) {
+	s := pinnedService(t)
+
+	tok, err := s.IssueTOTPPendingInTenant(pinnedSubject, tenant.New("acme"))
+	if err != nil {
+		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+	}
+	sub, err := s.VerifyTOTPPending(tok)
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("VerifyTOTPPending accepted a tenant-bound token: sub=%q err=%v", sub, err)
+	}
+	if sub != "" {
+		t.Errorf("rejection returned a subject: %q", sub)
+	}
+}
+
+// TestVerifyTOTPPendingInTenant_MismatchIsIndistinguishable pins the
+// anti-oracle property for the pending token, as
+// TestVerifyAccessInTenant_MismatchIsIndistinguishable does for the
+// access token. A wrong-tenant rejection that read differently would
+// tell the holder its token is genuine and merely misaimed.
+func TestVerifyTOTPPendingInTenant_MismatchIsIndistinguishable(t *testing.T) {
+	s := pinnedService(t)
+	acme, globex := tenant.New("acme"), tenant.New("globex")
+
+	pending, err := s.IssueTOTPPendingInTenant(pinnedSubject, globex)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	_, crossErr := s.VerifyTOTPPendingInTenant(pending, acme)
+	if crossErr == nil {
+		t.Fatal("cross-tenant pending token verified")
+	}
+	if !errors.Is(crossErr, ErrInvalidToken) {
+		t.Fatalf("cross-tenant err = %v, want ErrInvalidToken", crossErr)
+	}
+
+	// The reference is VerifyAccess's own cross-tenant rejection, which
+	// already carries this property. The two must read the same down to
+	// the text, not merely share a sentinel — "mirrors VerifyAccess" is
+	// then a fact a test holds rather than a sentence in a comment.
+	access, err := s.IssueAccess(pinnedSubject, globex, pinnedAuthAt, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	_, accessErr := s.VerifyAccess(access, acme)
+	if accessErr == nil {
+		t.Fatal("cross-tenant access token verified")
+	}
+	if crossErr.Error() != accessErr.Error() {
+		t.Errorf("pending cross-tenant message %q differs from VerifyAccess's %q", crossErr, accessErr)
+	}
+
+	// And it names neither tenant, nor the claim, nor the comparison.
+	msg := strings.ToLower(crossErr.Error())
+	for _, leak := range []string{"acme", "globex", "tenant", "tid", "mismatch"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("cross-tenant error discloses %q: %s", leak, msg)
+		}
+	}
+}
+
+// TestTOTPPendingInTenant_DeniesUnsetTenant: the zero tenant.ID is what
+// a caller who forgot to thread the tenant produces, and both halves of
+// the pair refuse it rather than reading it as tenant.Single.
+//
+// On the verify side the gate must precede the parse, so a wiring bug
+// reports identically whatever token arrived. On the issue side the
+// alternative would be a tid-less token minted for a caller who never
+// said single-tenant.
+//
+// Mutation check: delete either Valid() gate and this fails.
+func TestTOTPPendingInTenant_DeniesUnsetTenant(t *testing.T) {
+	s := pinnedService(t)
+	var unset tenant.ID
+
+	tok, err := s.IssueTOTPPendingInTenant(pinnedSubject, unset)
+	if !errors.Is(err, ErrTenantRequired) {
+		t.Errorf("issue: err = %v, want ErrTenantRequired", err)
+	}
+	if tok != "" {
+		t.Errorf("issue: a REFUSED mint returned a token: %s", tok)
+	}
+	// The tenant gate outranks the subject check, for the same reason it
+	// outranks the parse on the verify side.
+	if _, err := s.IssueTOTPPendingInTenant("", unset); !errors.Is(err, ErrTenantRequired) {
+		t.Errorf("issue with empty sub: err = %v, want ErrTenantRequired", err)
+	}
+
+	valid, err := s.IssueTOTPPendingInTenant(pinnedSubject, tenant.New("acme"))
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	for _, in := range []string{valid, pinnedPreTD10PendingToken, "", "not-a-jwt", "a.b.c"} {
+		sub, err := s.VerifyTOTPPendingInTenant(in, unset)
+		if !errors.Is(err, ErrTenantRequired) {
+			t.Errorf("verify %q: err = %v, want ErrTenantRequired (the tenant gate must precede the parse)", in, err)
+		}
+		if sub != "" {
+			t.Errorf("verify %q: rejection returned a subject: %q", in, sub)
+		}
+	}
+}
+
+// TestTOTPPendingInTenant_RejectionsUnchanged: adding the tenant must not
+// weaken a check the pair already made.
+func TestTOTPPendingInTenant_RejectionsUnchanged(t *testing.T) {
+	s := pinnedService(t)
+	acme := tenant.New("acme")
+
+	if _, err := s.IssueTOTPPendingInTenant("", acme); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("empty sub: err = %v, want ErrInvalidToken", err)
+	}
+	for _, tok := range []string{"", "not-a-jwt", "a.b.c"} {
+		if _, err := s.VerifyTOTPPendingInTenant(tok, acme); !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("token %q: err = %v, want ErrInvalidToken", tok, err)
+		}
+	}
+
+	// Expiry: the five-minute lifetime is not extended by the binding.
+	tok, err := s.IssueTOTPPendingInTenant(pinnedSubject, acme)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	s.Testing().SetNow(func() time.Time { return time.Unix(pinnedNow, 0).UTC().Add(5*time.Minute + time.Second) })
+	if _, err := s.VerifyTOTPPendingInTenant(tok, acme); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("expired pending token: err = %v, want ErrInvalidToken", err)
+	}
+}
+
+// TestTOTPPendingInTenant_PurposeStaysBidirectional: the two token shapes
+// now share a `tid` claim as well as a secret, so the purpose check is
+// the ONLY thing separating a tenant-bound pending token from a
+// tenant-bound access token. A matching tenant must not be enough to
+// cross over in either direction — one way is a 2FA bypass, the other
+// lets a leaked access token stand in for the password step.
+func TestTOTPPendingInTenant_PurposeStaysBidirectional(t *testing.T) {
+	s := pinnedService(t)
+	acme := tenant.New("acme")
+
+	pending, err := s.IssueTOTPPendingInTenant(pinnedSubject, acme)
+	if err != nil {
+		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+	}
+	if _, err := s.VerifyAccess(pending, acme); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("VerifyAccess accepted a tenant-bound pending token in its own tenant — 2FA bypass: %v", err)
+	}
+	if _, err := s.ParseAccess(pending); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("ParseAccess accepted a tenant-bound pending token: %v", err)
+	}
+
+	access, err := s.IssueAccess(pinnedSubject, acme, pinnedAuthAt, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	if _, err := s.VerifyTOTPPendingInTenant(access, acme); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("VerifyTOTPPendingInTenant accepted an access token in its own tenant: %v", err)
+	}
+}

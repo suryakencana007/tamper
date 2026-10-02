@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	tamper "github.com/suryakencana007/tamper"
 	"github.com/suryakencana007/tamper/crypto"
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
@@ -27,12 +28,25 @@ import (
 // tenant.WithTenant documents why: an implicit tenant is a cross-tenant
 // leak waiting for one missing middleware call, and it fails OPEN.
 type tenantIdentity struct {
-	core     *identity.Core
-	store    *tenantStore
+	core  *identity.Core
+	store *tenantStore
+	// jwt mints and verifies the totp-pending token. It is the SAME
+	// service the Core signs access tokens with (the Provider's), so the
+	// ceremony token and the session it leads to share one key.
+	jwt      *crypto.JWTService
 	tenantID string
 }
 
 var _ tamperespresso.IdentityService = tenantIdentity{}
+
+// newTenantIdentity binds one tenant's adapter to the shared Provider.
+// A constructor rather than a struct literal at the mount site so that
+// the wiring the routes get is the wiring the tests exercise: the JWT
+// service is only reached on the TOTP leg, and a literal that forgot it
+// would pass every other test and fail on the first 2FA login.
+func newTenantIdentity(p *tamper.Provider, store *tenantStore, tenantID string) tenantIdentity {
+	return tenantIdentity{core: p.Identity, store: store, jwt: p.JWT, tenantID: tenantID}
+}
 
 func (t tenantIdentity) Register(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
 	u, tok, err := t.core.Register(ctx, tenant.New(t.tenantID), email, password)
@@ -101,6 +115,20 @@ func (t tenantIdentity) Logout(ctx context.Context, refreshToken string) error {
 	return t.core.Logout(ctx, refreshToken)
 }
 
+// IssueTokensForUser is the mint at the end of the TOTP second leg, and
+// the port hands it nothing but a user id. The tenant therefore comes
+// from the adapter, and it is checked against the user's STORED row
+// twice over — here, and again inside IssueTokensForUserInTenant.
+//
+// It mints through the InTenant entry point, not Core.IssueTokensForUser.
+// That shim mints for tenant.Single: the token would carry no `tid`, and
+// a user who had just cleared 2FA would hold a session that every
+// tenant-pinned verifier refuses.
+//
+// The comparison below stays even though the Core now makes the same
+// one. The row is loaded here regardless — the port returns the user —
+// and an adapter that leans on a check it cannot see is one refactor
+// away from having none.
 func (t tenantIdentity) IssueTokensForUser(ctx context.Context, userID string) (tamperespresso.AuthResult, error) {
 	u, err := t.store.UserByID(ctx, userID)
 	if err != nil {
@@ -109,7 +137,9 @@ func (t tenantIdentity) IssueTokensForUser(ctx context.Context, userID string) (
 	if u.TenantID != t.tenantID {
 		return tamperespresso.AuthResult{}, identity.ErrNotFound
 	}
-	tok, err := t.core.IssueTokensForUser(ctx, userID)
+	// authTime 0 and acr "" are the shim's own arguments: fresh auth_time,
+	// the Core's default ACR.
+	tok, err := t.core.IssueTokensForUserInTenant(ctx, userID, tenant.New(t.tenantID), 0, "")
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
@@ -136,10 +166,25 @@ func (t tenantIdentity) DisableTOTP(ctx context.Context, userID, code string) er
 	return t.core.DisableTOTP(ctx, userID, code)
 }
 
-var errNoSessionTOTP = errors.New("multitenant: session-token TOTP is app policy — not implemented in this example")
+// IssueTOTPPending binds the pending token to THIS tenant. The routes
+// call it straight after a Login that already ran in this tenant, so the
+// user id it is handed belongs here; the `tid` claim records that fact
+// in the one credential the second leg will present.
+func (t tenantIdentity) IssueTOTPPending(userID string) (string, error) {
+	return t.jwt.IssueTOTPPendingInTenant(userID, tenant.New(t.tenantID))
+}
 
-func (t tenantIdentity) IssueTOTPPending(string) (string, error)  { return "", errNoSessionTOTP }
-func (t tenantIdentity) VerifyTOTPPending(string) (string, error) { return "", errNoSessionTOTP }
+// VerifyTOTPPending is where a pending token minted under another
+// tenant's prefix is refused — before any code is checked and before
+// anything is minted. The plain VerifyTOTPPending would be wrong here in
+// both directions: it rejects every tenant-bound token, and the tid-less
+// ones it does accept say nothing about where the password step ran.
+func (t tenantIdentity) VerifyTOTPPending(sessionToken string) (string, error) {
+	return t.jwt.VerifyTOTPPendingInTenant(sessionToken, tenant.New(t.tenantID))
+}
+
+var errNoSessionTOTP = errors.New("multitenant: session-token TOTP enrollment is app policy — not implemented in this example")
+
 func (t tenantIdentity) EnrollTOTPViaSession(context.Context, string, string) (*tamperespresso.TOTPEnrollment, *tamperespresso.AuthResult, error) {
 	return nil, nil, errNoSessionTOTP
 }

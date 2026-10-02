@@ -165,13 +165,24 @@ func RequireAuth(jwt *crypto.JWTService) func(http.Handler) http.Handler {
 // RequireAuthWS share: user id, typed claims, and the audit Actor so
 // service-layer emissions that go through audit.ActorFromContext
 // inherit the authenticated user's id.
+//
+// The actor also carries the token's `tid` as Actor.TenantID — the
+// tenant the credential was minted for, which is a fact the signature
+// vouches for and therefore safe to record before RequireTenant has
+// run. It is the actor's HOME tenant and nothing more: it is NOT the
+// row's scope (audit.Event.TenantID), which only the routed tenant may
+// fill, because a scope read out of the credential would let the token
+// decide whose log its own actions land in. A token with no `tid`
+// leaves the field "", so the single-tenant actor is the one this
+// function always stashed.
 func decorateAuthed(ctx context.Context, claims *crypto.AccessClaims) context.Context {
 	userID := claims.Subject
 	ctx = context.WithValue(ctx, userIDKey{}, userID)
 	ctx = context.WithValue(ctx, accessClaimsKey{}, claims)
 	return audit.WithActor(ctx, audit.Actor{
-		Type:   audit.ActorTypeUser,
-		UserID: userID,
+		Type:     audit.ActorTypeUser,
+		UserID:   userID,
+		TenantID: claims.TenantID,
 	})
 }
 

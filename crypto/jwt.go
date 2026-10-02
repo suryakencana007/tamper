@@ -19,7 +19,9 @@ import (
 var ErrInvalidToken = errors.New("auth: invalid token")
 
 // ErrTenantRequired — [JWTService.VerifyAccess] was handed an UNSET
-// tenant id (the zero [tenant.ID], not [tenant.Single]).
+// tenant id (the zero [tenant.ID], not [tenant.Single]). The
+// tenant-bound totp-pending pair ([JWTService.IssueTOTPPendingInTenant],
+// [JWTService.VerifyTOTPPendingInTenant]) returns it on the same terms.
 //
 // This is the crypto-side twin of identity's error of the same name,
 // and it exists for the same reason: tenant.ID distinguishes "I forgot
@@ -472,6 +474,22 @@ func (j *JWTService) keyFunc(t *jwt.Token) (any, error) {
 // authenticate anything on its own.
 type totpPendingClaims struct {
 	Purpose string `json:"purpose"`
+	// TenantID names the tenant whose password step minted this token,
+	// and it is what stops the token being finished somewhere else.
+	//
+	// Without it the pending token says only WHO cleared the password
+	// check, not WHERE. In a pooled deployment that is half an answer: a
+	// user of tenant B could carry the token to tenant A's totp-verify
+	// endpoint, and nothing in the token would object — the second leg
+	// of a login would complete in a tenant the first leg never ran in.
+	// VerifyTOTPPendingInTenant compares this claim against the routed
+	// tenant for exact equality, the same single rule VerifyAccess
+	// applies to an access token's `tid`.
+	//
+	// omitempty is load-bearing here for the reason it is on
+	// AccessClaims.TenantID: a single-tenant pending token must be
+	// byte-identical to one minted before this claim existed.
+	TenantID string `json:"tid,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -479,13 +497,48 @@ type totpPendingClaims struct {
 // id + Purpose="totp_pending". Returned to the SPA after a successful
 // password check on a 2FA-enrolled account; the SPA submits it back
 // on /api/auth/totp/verify alongside the 6-digit code.
+//
+// This is the [tenant.Single] form of [JWTService.IssueTOTPPendingInTenant]
+// — a one-line delegation for the same reason Issue delegates to
+// IssueAccess: two mint paths would be two chances for them to drift.
+// The token carries no `tid` and is byte-identical to one minted before
+// the claim existed. A pooled deployment calls the InTenant form.
 func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
+	return j.IssueTOTPPendingInTenant(userID, tenant.Single)
+}
+
+// IssueTOTPPendingInTenant is IssueTOTPPending plus the tenant binding:
+// the token carries a `tid` claim naming the tenant the password step
+// ran in, and [JWTService.VerifyTOTPPendingInTenant] refuses it anywhere
+// else.
+//
+// The binding has to live in the token because nothing else on the
+// second leg can supply it. The totp-verify request is unauthenticated
+// — this token IS its credential — and the code check that follows is
+// keyed by user id alone, so a pending token with no tenant would be
+// accepted by every tenant's verify endpoint alike.
+//
+// An UNSET tenant denies with [ErrTenantRequired] rather than minting a
+// tid-less token. IssueAccess does not make that check and this does,
+// deliberately: a caller who reached for the InTenant form is asserting
+// it has a tenant, so an unset one means the tenant-resolving step did
+// not run, and a token quietly minted for [tenant.Single] would be one
+// the caller never asked for. A deployment that means single-tenant says
+// so by passing Single, or by calling IssueTOTPPending.
+//
+// tenantID is otherwise NOT validated, exactly as in IssueAccess:
+// deciding that a tenant is real is the application's job.
+func (j *JWTService) IssueTOTPPendingInTenant(userID string, tenantID tenant.ID) (string, error) {
+	if !tenantID.Valid() {
+		return "", ErrTenantRequired
+	}
 	if userID == "" {
 		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
 	}
 	now := j.now()
 	claims := totpPendingClaims{
-		Purpose: purposeTOTPPending,
+		Purpose:  purposeTOTPPending,
+		TenantID: tenantID.String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
@@ -504,7 +557,54 @@ func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
 // and returns the subject (user id). Rejects any token whose Purpose
 // claim isn't "totp_pending" — guards against access JWTs being
 // submitted to the totp-verify endpoint.
+//
+// This is the [tenant.Single] form of
+// [JWTService.VerifyTOTPPendingInTenant], the way Verify wraps
+// VerifyAccess. It therefore REJECTS a pending token that carries a
+// `tid`: such a token was minted for a tenant, and an entry point that
+// names none is not that tenant. Before the claim existed this method
+// could not see a tenant at all, so a tenant-bound token would have
+// been accepted here on the strength of its signature alone — the
+// wildcard read deny-by-default forbids. A token minted by
+// IssueTOTPPending carries no tid and verifies exactly as before.
 func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
+	return j.VerifyTOTPPendingInTenant(tokenStr, tenant.Single)
+}
+
+// VerifyTOTPPendingInTenant is VerifyTOTPPending plus the tenant pin:
+// the token's `tid` claim must equal tenantID EXACTLY, and every other
+// outcome is a rejection. It is the pending-token twin of VerifyAccess
+// and follows the same table:
+//
+//	route ""     token ""        allow  — single-tenant, byte-identical to before
+//	route ""     token "acme"    REJECT — a tenant token on an untenanted route
+//	route "acme" token ""        REJECT — an absent tid is not a match
+//	route "acme" token "acme"    allow
+//	route "acme" token "globex"  REJECT — the cross-tenant case
+//
+// The last row is the reason this method exists. The pending token is
+// the only credential the totp-verify endpoint sees, and the code check
+// behind it is keyed by user id alone — so without the pin, a globex
+// user's pending token finishes its login at acme's endpoint, and
+// whatever mints the session next is the only thing left to notice.
+//
+// The third row has no legacy tolerance to weigh, unlike an access
+// token's: a pending token lives five minutes, so the only tid-less
+// ones a tenant route can meet were minted moments ago by a caller that
+// did not bind them.
+//
+// An UNSET tenant denies with [ErrTenantRequired] BEFORE parsing, and a
+// mismatch collapses onto ErrInvalidToken with the same generic message
+// VerifyAccess gives its own mismatch — both for the reasons recorded
+// there. A distinguishable "wrong tenant" would tell the holder its
+// token is genuine and merely misaimed, which is a tenant-existence
+// oracle.
+func (j *JWTService) VerifyTOTPPendingInTenant(tokenStr string, tenantID tenant.ID) (string, error) {
+	// Checked first so a wiring bug reports identically whatever token
+	// happened to arrive — see VerifyAccess.
+	if !tenantID.Valid() {
+		return "", ErrTenantRequired
+	}
 	claims := &totpPendingClaims{}
 	if err := j.parseClaims(tokenStr, claims); err != nil {
 		return "", err
@@ -514,6 +614,10 @@ func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
 	}
 	if claims.Subject == "" {
 		return "", fmt.Errorf("%w: sub is missing", ErrInvalidToken)
+	}
+	if claims.TenantID != tenantID.String() {
+		// Deliberately the SAME message the generic invalid branch uses.
+		return "", fmt.Errorf("%w: token not valid", ErrInvalidToken)
 	}
 	return claims.Subject, nil
 }

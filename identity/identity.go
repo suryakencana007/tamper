@@ -35,8 +35,16 @@ type User struct {
 	// TenantID is opaque and app-defined; "" is a single-tenant
 	// deployment. tamper never validates, parses, namespaces or
 	// canonicalizes it — it compares for equality and passes it through,
-	// the same shape ACR already has (sketch §4.1). Nothing in the core
-	// BRANCHES on this field; it is carried, not read.
+	// the same shape ACR already has (sketch §4.1).
+	//
+	// The core carries this field and, with ONE exception, never
+	// branches on it. The exception is IssueTokensForUserInTenant
+	// (TD-10), which refuses to mint unless the tenant on the row
+	// Store.UserByID returns equals the tenant it was asked for. So a
+	// Store MUST hand this field back on every read of the user, by id
+	// as much as by email: a by-id query that leaves it out returns ""
+	// here, "" reads as the single tenant, and every mint for a real
+	// tenant is then refused. The leak suite checks the round trip.
 	TenantID     string
 	Email        string
 	PasswordHash string // "" = federated-only account: password login always rejects

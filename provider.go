@@ -68,6 +68,36 @@ type AuditConfig struct {
 	// carrying a user id but no email) at Log time. Its signature matches
 	// audit.SQLiteLoggerOptions.EmailLookup exactly. Optional.
 	EmailLookup func(ctx context.Context, userID string) (email string, ok bool)
+	// Tenancy switches the logger to the canonical_version=4 encoder: the
+	// tenant enters the hashed payload, and PII moves to per-row salted
+	// commitments — the only encoding audit.SQLiteLogger.RedactEvent can
+	// erase. It is passed to audit.SQLiteLoggerOptions.Tenancy, and it is
+	// the single switch for both capabilities.
+	//
+	// The flag is all New does. It writes NO chain anchor. Verify hashes
+	// every row under that row's own canonical_version, so a v4 row is
+	// verified as v4 wherever it sits — behind an older anchor, after v3
+	// rows, or with no anchor in the DB at all. An anchor is therefore not
+	// needed for a clean chain, and it has a cost: Verify starts at the
+	// newest anchor, so one written here would drop the whole history
+	// before the switch out of Verify's walk.
+	//
+	// False is the default and is byte-identical to today: v3 rows, v3
+	// hashes. Despite the name, true is legal for a single-tenant
+	// deployment that wants erasure — leave TenantID empty on every event.
+	//
+	// It applies to rows written from here on and it is not a one-way
+	// switch. Existing rows keep their own version and hash. Turning it
+	// off again writes v3 rows after the v4 ones, which is also what a
+	// rolling deploy does while replicas disagree, and the mixed chain
+	// verifies. What off costs is the two capabilities, for the rows
+	// written while it is off: no erasure, and no tenant in the hash —
+	// Verify does not flag those rows, and their tenant can be changed
+	// without it noticing. Keep every writer on the same setting.
+	//
+	// Requires DBPath. New rejects Tenancy with an empty DBPath instead of
+	// handing a NoopLogger to a caller that asked for a tenant-hashed log.
+	Tenancy bool
 }
 
 // IdentityConfig configures the identity Core. Store is required (New
@@ -149,6 +179,13 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.SAML != nil && cfg.SAML.SPMetadataURL == nil {
 		return nil, errors.New("tamper: Config.SAML.SPMetadataURL is required when SAML is set")
 	}
+	// Tenancy without a DBPath would select the NoopLogger: the caller asked
+	// for a tenant-hashed, redactable log and would get one that records
+	// nothing, with no error anywhere. A tenancy misconfiguration fails here
+	// at wiring, not as rows that are silently never written.
+	if cfg.Audit.Tenancy && cfg.Audit.DBPath == "" {
+		return nil, errors.New("tamper: Config.Audit.DBPath is required when Audit.Tenancy is set")
+	}
 	// Tenancy boot guard. The optional-interface upgrade is checked once,
 	// here, and the message names the concrete type that failed it —
 
@@ -166,6 +203,7 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.Audit.DBPath != "" {
 		auditLogger, err = audit.NewSQLiteLogger(cfg.Audit.DBPath, audit.SQLiteLoggerOptions{
 			EmailLookup: cfg.Audit.EmailLookup,
+			Tenancy:     cfg.Audit.Tenancy,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("tamper: audit: %w", err)

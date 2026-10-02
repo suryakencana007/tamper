@@ -20,6 +20,28 @@ chose these limits deliberately. Six items are **sharp edges that exist
 today**, with or without a platform admin: TD-08, TD-09, TD-10, TD-15, TD-16,
 and TD-17.
 
+**Fix status (2026-10-02).**
+
+| Item | Pull request | State |
+|---|---|---|
+| TD-15 | #39 | Merged. Guard with an explicit opt-out. |
+| TD-10 | #40 | Merged. Contains behaviour changes. |
+| TD-08 | #43 | Merged. |
+| TD-16 | #45 | Open. `Verify` hashes each row under its own version. Replaces #41, which is closed. |
+| TD-09 | #42 | Open. Merge after #45. |
+
+TD-17 is not fixed. Eight more items (TD-18 to TD-25) were found while the
+fixes were written and reviewed. They are listed after TD-17, and four of them
+(TD-18, TD-20, TD-21, TD-23) are also sharp edges that exist today.
+
+Every fix had a code review, and the reviews changed the fixes:
+
+- #39 and #40: see the **Fix** paragraphs of TD-15 and TD-10. The findings
+  that were not fixed are recorded in TD-18, TD-20 and TD-23.
+- #41 and #42: the review found that both worked around one root cause. #41
+  was closed and replaced by #45, and #42 was reduced. See the **Fix**
+  paragraphs of TD-16 and TD-09.
+
 All six sharp edges, and the refresh-session problem in TD-02, were
 **reproduced with tests on 2026-10-02**. The test sources and their output are
 in [`tech-debt-proofs.md`](tech-debt-proofs.md). The tests are not in the Go
@@ -43,8 +65,16 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-13 | Second-factor policy cannot be set per role | gap | P2 | Tamper |
 | TD-14 | The per-tenant route mounting pattern is static | gap | P2 | example + docs |
 | TD-15 | SCIM tenant scoping is off by default | sharp edge | P1 | Tamper |
-| TD-16 | `BootstrapChainV4` is skipped after any v4 row | sharp edge | P1 | Tamper |
+| TD-16 | `Verify` reports tamper on a mixed-version chain | sharp edge | P1 | Tamper |
 | TD-17 | `audit.Filter` fields are ignored by `List` | sharp edge | P2 | Tamper |
+| TD-18 | A not-found from the TOTP mint is a 500 on the wire | sharp edge | P2 | Tamper |
+| TD-19 | `Refresh` does not re-check the session's tenant | gap | P1 | Tamper |
+| TD-20 | Step-up-denied audit rows carry no tenant | sharp edge | P2 | Tamper |
+| TD-21 | `HasChainRestartV2` / `V3` / `V4` count rows, not anchors | sharp edge | P2 | Tamper |
+| TD-22 | The multitenant example is out of date | gap | P2 | example |
+| TD-23 | A wrong-tenant token error has its own text | sharp edge | P2 | Tamper |
+| TD-24 | A v3 row in a v4 deployment is not flagged | gap | P1 | Tamper |
+| TD-25 | `VerifyLegacy` reports tamper on a mixed-version chain | sharp edge | P2 | Tamper |
 
 P0 = the feature cannot be built safely without this. P1 = the application can
 work around it, but mistakes are easy. P2 = convenience and completeness.
@@ -106,6 +136,11 @@ refresh token. `Refresh` then succeeded and returned a new token with
 `Provider.JWT.IssueAccess(userID, tenant, authTime, acr)` directly. It mints
 only a short-lived access token and stores no refresh session. When the token
 expires, the admin enters the tenant again and the right is checked again.
+
+**Partly fixed by #40.** `IssueTokensForUserInTenant` now refuses a tenant
+that differs from the user's stored tenant, so it can no longer create a
+cross-tenant session. Use `Provider.JWT.IssueAccess` for the workaround above.
+The refresh part is still open; see TD-19.
 
 **What not to do.** A wildcard token (an empty `tid`, or `*`, accepted in every
 tenant). It breaks standing rule 2 (deny by default). It also brings back the
@@ -254,6 +289,11 @@ HTTP adapter does not fill them in.
 This changes the content of audit rows, so it must be proven that the bytes on
 the `tenant.Single` path do not change (standing rule 1).
 
+**Fix: #43.** All three changes, as proposed. The row's scope is the routed
+tenant; there is no fallback to the actor's tenant. The single-tenant event is
+unchanged. Rows written before the fix are not migrated. On a v3 logger the
+tenant is stored but not hashed.
+
 **Proof.** `TestTD08_AuditorStampsTenant`. A request with an `acme` token went
 through `RequireAuth` → `RequireTenant` → `Auditor.Mutation` into a v4 logger.
 The row was written with `canonical_version=4`, `Event.TenantID=""`, and
@@ -270,14 +310,22 @@ The row was written with `canonical_version=4`, `Event.TenantID=""`, and
 `canonical_version=3`. The tenant is not in the hash, and PII cannot be
 redacted. A pooled application must build its own logger outside `tamper.New`.
 
-**Proposal for Tamper.** A field `AuditConfig.Tenancy`, default `false` so
-current behaviour does not change. Passing the flag through is **not enough**.
-When the flag is on, `New` must also call `BootstrapChainV4` before it returns,
-so the anchor is written before any application event. That method is on
-`*SQLiteLogger` and is not part of the `audit.Logger` interface that
-`Provider.Audit` exposes, so the application cannot easily call it through the
-`Provider` either. TD-16 explains what goes wrong when the anchor is missing or
-late.
+**Proposal for Tamper (first version, now replaced).** A field
+`AuditConfig.Tenancy`, default `false`, plus a call to `BootstrapChainV4` in
+`New` so that the anchor is written before any application event. The second
+half turned out to be wrong; see the fix below.
+
+**Fix: #42.** `AuditConfig.Tenancy` exists and is passed to the logger. `New`
+rejects it with an empty `DBPath`. `New` writes **no** anchor.
+
+The first version of #42 did write the v4 anchor in `New`. Code review showed
+what that cost: on a DB with history and no anchor it dropped every earlier row
+out of `Verify`; it made `Tenancy` a one-way switch; and every process that
+built a `Provider` wrote to the audit chain. All of that existed only to work
+around the `Verify` behaviour that #45 removes. With #45, `Tenancy` can be
+turned off again, and a rolling deploy with mixed configs verifies clean.
+
+Merge #42 after #45.
 
 **Proof.** `TestTD09_NewCanWriteAuditV4`. A row logged through a logger built
 by `tamper.New` had `canonical_version=3`. On that logger `BootstrapChainV4`
@@ -317,6 +365,16 @@ through `IssueTokensForUser`, so its token still has no `tid`.
 and check it in `VerifyTOTPPending`. Also change the port signature to carry
 the tenant, so a missing tenant fails at compile time.
 
+**Fix: #40.** `IssueTokensForUserInTenant` refuses a tenant that differs from
+the user's stored tenant, with the same `ErrNotFound` as a missing user. It
+also refuses a deactivated user with `ErrUserInactive`, after the tenant check.
+Because the check reads the row from `UserByID`, that method must return the
+user's tenant; the leak suite now has a `UserByID` case for it. New
+`IssueTOTPPendingInTenant` / `VerifyTOTPPendingInTenant` put the tenant in the
+pending token. The example adapter uses both. The port signature is not
+changed, so an adapter that forwards `IssueTokensForUser` straight to `Core`
+still gets a token with no `tid`; the port's doc comments now say so.
+
 **Proof.** Two tests.
 
 - *Fails closed:* `TestTD10_PostTOTPMintCarriesTheUsersTenant`. For a user in
@@ -351,6 +409,23 @@ does not implement the scoped interface.
 `scim.GroupStore`, the same way v0.4.0 did for the other ports. A
 single-tenant deployment then passes `tenant.Single` explicitly.
 
+**Fix: #39.** Not the fold. A guard: with `Tenancy` off, a principal that
+carries a tenant is refused with a 500 `CONFIG_ERROR` before any store call. A
+single-tenant principal is unchanged.
+
+- The guard is one wrapper around each unscoped store, built in
+  `NewSCIMRoutes`. No code in the package can reach an unscoped store method
+  without passing it.
+- There is an explicit opt-out, `SCIMConfig.TenantBoundStores`, for a
+  deployment whose unscoped stores are already confined to one tenant (one
+  `SCIMRoutes` per tenant, or stores that scope themselves). Tamper cannot
+  verify that claim. `Tenancy` and `TenantBoundStores` together fail at
+  `NewSCIMRoutes`.
+- The guard fails per request, not at `New`, because `NewSCIMRoutes` never
+  sees the validator.
+
+The fold stays the long-term fix.
+
 **Proof.** `TestTD15_SCIMDefaultConfigIsTenantScoped`. With the default
 config, a principal of tenant A got `200` on `GET` of tenant B's user, `204` on
 `DELETE` of tenant B's group, and `200` on the user list. Every store call was
@@ -358,7 +433,11 @@ the unscoped method. The principal's tenant never reached the store. (The test
 store returns fixed data from its unscoped methods, so the proof is about which
 method was called, not about the data returned.)
 
-### TD-16 — `BootstrapChainV4` is skipped after any v4 row *(sharp edge)*
+### TD-16 — `Verify` reports tamper on a mixed-version chain *(sharp edge)*
+
+This item was first reported as "`BootstrapChainV4` is skipped after any v4
+row". That is how it was found. The text below keeps the original evidence and
+then gives the root cause.
 
 **Evidence.** `BootstrapChainV4` is idempotent through `HasChainRestartV4`
 (`audit/bootstrap_v4.go:31`). That function calls `CountChainRestartV2` with
@@ -385,14 +464,48 @@ What happens next depends on the database:
 In the second case `VerifyChainPostMigration`, the boot check, still returns no
 error. So the boot guard stays green while `Verify` reports tamper.
 
-**Workaround in the application.** Call `BootstrapChainV4` at boot, before the
-first `Log` call, on every boot. It does nothing when the anchor exists.
+**Workaround in the application, until #45 is merged.** Call
+`BootstrapChainV4` at boot, before the first `Log` call, on every boot. It
+does nothing when the anchor exists.
 
-**Proposal for Tamper.** Count anchors, not rows: filter on
-`action = 'system.audit.chain_restart'` and the version (the query
-`GetLatestChainRestartAtVersion` already does this). Consider writing the
-anchor inside `NewSQLiteLogger` when `Tenancy` is on, so the order cannot be
-wrong.
+**Proposal for Tamper (first version, now replaced).** Count anchors, not
+rows, so that a late bootstrap can still write the anchor. This treats the
+symptom; see the root cause below.
+
+**Root cause, found in code review.** The row count in `HasChainRestartV4`
+is only half of the problem. The false tamper itself comes from `Verify`: on
+the anchored path it took the newest anchor's `canonical_version` and applied
+it to every later row, overriding each row's own column
+(`audit/audit_sqlite.go`, `verifyRows` and `walkChain`). The same override
+also reported tamper for a v3 row behind a v4 anchor (a rolling deploy, or
+`Tenancy` turned off and on) and for an older anchor written after the v4
+one. The boot guard, `VerifyChainPostMigration`, never had the override.
+
+**Fix: #45.** `Verify` hashes each row under its own version. The anchor only
+chooses where the walk starts. The three chains above verify clean with no
+anchor and no repair. Edits are still caught, including a change to a row's
+version column. No existing test had to change. The design documents are
+amended in the same pull request (`PHASE7-MULTITENANCY-SKETCH.md` §8 item 1).
+
+A first attempt, #41, kept the override and made `BootstrapChainV4` decide
+from the newest anchor so that a late call could repair the DB. It was closed:
+each rule it added still left a state it could not repair.
+
+#45 also gives one thing up. The old behaviour flagged a v3 row written
+behind a v4 anchor, as part of the false tamper report. That signal is gone;
+see TD-24.
+
+Still open after #45:
+
+- `HasChainRestartV4` and `BootstrapChainV4` are unchanged, so the bootstrap
+  is still skipped after any v4 row. That is now harmless for `Verify`. See
+  TD-21.
+- An anchor moves `Verify`'s start forward. `BootstrapChainV4` on a DB with
+  history takes the earlier rows out of `Verify`'s walk. They stay covered by
+  `VerifyChainPostMigration`.
+- The real Barista audit DB was not available. A DB that passes the boot
+  guard cannot read differently under the new `Verify`, but that should be
+  run once on a machine that has it.
 
 **Proof.** `TestTD09_TenancyWithoutBootstrap`. On a DB with a v3 anchor,
 switching `Tenancy` on and logging one row gave
@@ -477,6 +590,158 @@ TD-11.
 `List(Filter{Action: "td.proof.mutation"})` returned 2 rows. Only 1 had that
 action; the other was the chain anchor.
 
+### TD-18 — A not-found from the TOTP mint is a 500 on the wire *(sharp edge)*
+
+**Evidence.** `mapAuthWireError` has no case for `identity.ErrNotFound`
+(`espresso/wire.go:142`). The error falls to the default branch, which is a
+500. After #40, `IssueTokensForUserInTenant` returns `ErrNotFound` for a
+missing user and for a tenant mismatch.
+
+**Impact.** With tenant-bound pending tokens the cross-tenant case stops
+earlier, at `VerifyTOTPPending`, with a 401. The 500 remains for a user deleted
+in the middle of the ceremony, and for an adapter that does not bind the
+pending token. Standing rule 3 wants a deny and a miss to look the same.
+
+The refusal also comes late. `AuthRoutes.VerifyTOTP` checks the code first and
+mints after (`espresso/authroutes.go`). So when the mint is refused, a
+single-use recovery code has already been spent.
+
+**Proposal for Tamper.** Map `ErrNotFound` on this path to the same 401 as
+invalid credentials. This also changes the single-tenant path (a user deleted
+during the ceremony gets 401 instead of 500), so it is its own change.
+
+### TD-19 — `Refresh` does not re-check the session's tenant
+
+**Evidence.** `Core.Refresh` rotates a session after checking only
+`user.Active` (`identity/core.go:347`). It does not compare
+`session.TenantID` with the user's stored tenant.
+
+**Impact.** This is the rest of TD-02. After #40 the library no longer creates
+a session whose tenant differs from the user's. But a row that already exists,
+or one written by the application, keeps rotating.
+
+**Proposal for Tamper.** Compare the two in `Refresh`, and revoke the session
+on a mismatch. This is a behaviour change and needs its own entry in the
+changelog.
+
+### TD-20 — Two kinds of audit rows still carry no scope *(sharp edge)*
+
+**Evidence.** #43 fills the tenant for user requests that pass `RequireTenant`
+or `PinTenant`. Two emitters are not covered:
+
+- `emitStepUpDenied` builds its own `audit.Actor` and `audit.Event`
+  (`espresso/stepup.go:232`, `:256`). Neither gets a tenant. It does not go
+  through `captureActor`, although its comment says it does.
+- An `Auditor` route behind `RequireServiceAccount`. The actor carries the
+  service account's tenant, but no tenant is pinned in the context, so
+  `Event.TenantID` stays empty.
+
+**Impact.** The same as TD-08 for those rows: they are missing from
+`ExportForTenant` of the real tenant.
+
+**Proposal for Tamper.** One shared event builder for both emitters. For
+service accounts, decide whether `RequireServiceAccount` should pin the
+principal's tenant as the routed tenant. That is a design decision: #43
+deliberately has no fallback from the actor's tenant to the row's scope.
+
+### TD-21 — `HasChainRestartV2` / `V3` / `V4` count rows, not anchors *(sharp edge)*
+
+**Evidence.** All three call `CountChainRestartV2`, whose SQL is
+`SELECT COUNT(*) FROM events WHERE canonical_version = ?`
+(`audit/audit_sqlite.go:903`, `:916`, `audit/bootstrap_v4.go:31`). The name
+says "chain restart"; the query counts every row at that version.
+
+**Impact.** After #45 this no longer causes a false tamper report. What
+remains:
+
+- The answer is wrong in both directions. It is true when ordinary rows exist
+  and no anchor does, and false again once retention has removed every row at
+  that version.
+- An application that uses the answer to decide whether to emit its anchor can
+  therefore skip an anchor it wanted, or emit a second one later. A second
+  anchor moves `Verify`'s start forward and takes earlier rows out of its
+  walk.
+
+**Proposal for Tamper.** Ask for the anchor row itself (action and version;
+the query `GetLatestChainRestartAtVersion` exists). This changes what three
+exported methods answer, and other consumers' boot paths depend on the current
+answer, so fix it together with those consumers.
+
+### TD-22 — The multitenant example is out of date
+
+**Evidence.** In `examples/multitenant`, the `/me` route uses `RequireAuth`
+without `RequireTenant` (`main.go:143`). The cross-tenant check for that route
+lives in the adapter instead: `tenantIdentity.Me` compares the user's stored
+tenant with its own (`identity_adapter.go:68`). Comments in
+`identity_adapter.go` and `main.go` still describe `tid` and `RequireTenant`
+as future work, and mention `Tenancy.Enabled`, which no longer exists.
+
+**Impact.** `/me` itself is protected, by the adapter. But the example is the
+proving ground for pooled tenancy, and people copy it. An authenticated route
+added next to `/me` gets no tenant check at all, because the pattern shown
+puts the check in one handler's adapter and not in a gate on the route.
+
+**Proposal.** Add `RequireTenant` to the authenticated routes and update the
+comments.
+
+### TD-23 — A wrong-tenant token error has its own text *(sharp edge)*
+
+**Evidence.** `VerifyAccess` and `VerifyTOTPPendingInTenant` return
+`ErrInvalidToken` with the text "token not valid" on a tenant mismatch
+(`crypto/jwt.go`). Other failures on the default HS256 path include the JWT
+library's own text, for example for an expired token. `errors.Is` cannot tell
+them apart, but `err.Error()` can.
+
+**Impact.** The comments say a mismatch is indistinguishable from an ordinary
+invalid token. That holds on the wire, because the built-in routes answer with
+a generic 401. It does not hold for an adapter or a log line that shows the
+error text: "token not valid" then means "a real token, aimed at the wrong
+tenant".
+
+**Proposal for Tamper.** Return one fixed text for every `ErrInvalidToken`
+case, and keep the detail for a debug log.
+
+### TD-24 — A v3 row in a v4 deployment is not flagged
+
+**Evidence.** A v3 hash does not cover `tenant_id` (the tenant enters the
+payload at `canonical_version=4`). After #45, `Verify` hashes a v3 row as v3
+wherever it sits, so a v3 row written after `Tenancy` was switched on verifies
+clean. Three things write such a row: a replica still on the old config, a
+deployment that turned `Tenancy` off, and an explicit older `CanonicalVersion`
+on an event (the `Log` guard only refuses an explicit v4 on a logger without
+`Tenancy`, not the other direction).
+
+**Impact.** The row's `tenant_id` can be changed without `Verify` noticing,
+and `ExportForTenant` returns the row under the new tenant. The export's own
+comment says attribution cannot have been reassigned; that holds for v4 rows
+only. Before #45 such a row was reported as tamper. That was a false report
+for an untouched row, but it was also the only signal.
+`TestVerify_KnownLimit_V3RowTenantIsNotHashed` pins the current behaviour.
+
+**Workaround in the application.** Keep every writer of one audit DB on the
+same `Tenancy` setting, and do not turn it off once it is on.
+
+**Proposal for Tamper.** An explicit check instead of a side effect. For
+example: a report of rows below version 4 that were written after the first v4
+row, and a marker in `TenantExport` for rows whose tenant is not
+hash-protected.
+
+### TD-25 — `VerifyLegacy` reports tamper on a mixed-version chain *(sharp edge)*
+
+**Evidence.** `VerifyLegacy(N, "")` loads only the rows at version N and
+checks that each one links to the one before it (`audit/audit_sqlite.go`).
+On a chain where versions are interleaved, the previous row of a version-N
+row can be a row at another version, so the link check fails.
+
+**Impact.** On the chains that #45 makes legal (a v3 row between v4 rows, or
+an older anchor between v4 rows), `VerifyLegacy(4, "")` reports tamper on rows
+nobody changed. `Verify` and `VerifyChainPostMigration` are clean on the same
+chain. This is existing behaviour; #45 does not change `VerifyLegacy`.
+
+**Proposal for Tamper.** Decide what `VerifyLegacy` means once versions can
+interleave: either walk all rows and check only the hashes of the rows at N,
+or document it as valid for single-version segments only.
+
 ## What is ready to use
 
 These are not debt, but they matter when you design the workarounds:
@@ -506,19 +771,26 @@ two cautions:
 
 Suggested slice order if this work moves into Tamper:
 
-1. **TD-15, TD-10, TD-16, TD-09, TD-08** — the sharp edges that exist today.
+1. **TD-15, TD-10, TD-08** — merged (#39, #40, #43). **TD-16, TD-09** — open
+   as #45 and #42. These were the sharp edges that existed on 2026-10-02.
    TD-15 and TD-10 can leak across tenants, so they come first. TD-16 must be
    fixed before or together with TD-09: turning on v4 through `tamper.New`
    without a safe bootstrap would produce false tamper reports. TD-08 is
    required for a correct audit trail in every other item.
-2. **TD-01 + TD-02** — the membership port and `EnterTenant`. They are one
+2. **TD-19 and TD-22** — small. TD-19 closes the cross-tenant refresh path
+   that the five fixes leave open, and TD-22 makes the example show the gate
+   that pooled routes need.
+3. **TD-01 + TD-02** — the membership port and `EnterTenant`. They are one
    design decision and must be designed together.
-3. **TD-03** — the tenant contract for `authz`, with its leak suite.
-4. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
-5. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
-6. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
+4. **TD-03** — the tenant contract for `authz`, with its leak suite.
+5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
+6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
+7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
    answered.
-7. **TD-12, TD-13, TD-14, TD-17** — the rest. TD-17 fits well with TD-11.
+8. **TD-12, TD-13, TD-14, TD-17, TD-18, TD-20, TD-21, TD-23, TD-25** — the
+   rest. TD-17 fits well with TD-11, and TD-20 with TD-08.
+9. **TD-24** — after #45 and #42 are merged. It is the check that replaces the
+   signal #45 removes.
 
 ## Process limits
 

@@ -118,11 +118,11 @@ engine only compares.
 | `NewSQLiteLogger(path, opts)`, `NewNoopLogger` | SQLite hash-chain logger. `opts.Tenancy` turns on the v4 encoder. |
 | `Logger.Log` | Appends in one `BEGIN IMMEDIATE` transaction: `hash = sha256(prevHash ‖ canonical payload)`. |
 | `List`, `ListScoped(clusterIDs, filter)` | Paged reads. Only some `Filter` fields are applied (see TD-17). |
-| `Verify`, `VerifyChainPostMigration` | Walks the chain again. Tamper does not call these by itself. The application must call `VerifyChainPostMigration` at boot. |
+| `Verify`, `VerifyChainPostMigration` | Walks the chain again. Each row is hashed under its own `canonical_version` (for `Verify`, since #45). Tamper does not call these by itself. The application must call `VerifyChainPostMigration` at boot. |
 | `ExportForTenant(tenant)` | One tenant's slice of the log, filtered on `Event.TenantID`. |
 | `Redact`, `RedactEvent`, `VerifyCommitments`, `ComputeCommitments`, `NewRowSalt` | Erases PII through salted commitments without breaking the chain. |
 | `ComputeHash` | For a `Logger` implemented over another store (for example Postgres). |
-| `BootstrapChainV4`, `PruneOlderThan` | The v4 anchor, and retention. `BootstrapChainV4` must run at boot before the first event is logged (see TD-16). |
+| `BootstrapChainV4`, `PruneOlderThan` | The v4 anchor, and retention. The anchor is optional after the fix for TD-16 (#45). It moves the start of `Verify` forward, so do not write one onto a DB with history unless you want that. |
 | `WithActor` / `ActorFromContext`, `ActorService`, `ActorSystem` | Who did it: a user, a service account, or the system. |
 
 ### `espresso` — the HTTP adapter
@@ -182,7 +182,8 @@ the application mounts the Surfaces on its own Espresso router
 
 `tamper.New` opens the audit DB but does not verify the chain. Chain
 verification at boot (`audit.VerifyChainPostMigration`) is a call the
-application must add.
+application must add. With the fix for TD-09 (#42), `AuditConfig.Tenancy`
+turns on the v4 encoder. `New` writes no chain anchor.
 
 ### 4.2 Register and password login
 
@@ -219,10 +220,12 @@ The pending token is rejected as a normal bearer token, and an access token is
 rejected at `/totp/verify`. The `purpose` claim separates the two in both
 directions.
 
-The pending token carries **no tenant**, and `Core.VerifyTOTP` is not
-tenant-scoped. So the application adapter must load the user, compare the
-user's stored tenant with the routed tenant, and only then mint. See TD-10 in
-`tech-debt.md`.
+The pending token from `IssueTOTPPending` carries **no tenant**, and
+`Core.VerifyTOTP` is not tenant-scoped. A pooled adapter must therefore use
+the tenant-bound pair `IssueTOTPPendingInTenant` / `VerifyTOTPPendingInTenant`
+and mint with `IssueTokensForUserInTenant`, which refuses a tenant that
+differs from the user's stored tenant. These arrive with the fix for TD-10
+(#40); see `tech-debt.md`.
 
 ### 4.4 Refresh and logout
 
@@ -359,8 +362,11 @@ Bearer <service account token>
 Three things to know:
 
 - **`SCIMConfig.Tenancy` is `false` by default.** With the default, the routes
-  call the unscoped store methods and never read the tenant. A pooled
-  deployment must set it to `true`. See TD-15 in `tech-debt.md`.
+  call the unscoped store methods. A pooled deployment must set it to `true`.
+  With the fix for TD-15 (#39), a principal that carries a tenant is refused
+  with a 500 while the flag is off, so a forgotten flag no longer leaks. A
+  deployment whose unscoped stores are already confined to one tenant sets
+  `SCIMConfig.TenantBoundStores` instead. See `tech-debt.md`.
 - When tenancy is on, the SCIM tenant always comes from the validated token.
   It never comes from the URL path or a header.
 - The routes pass the raw filter string and the PATCH operations to the store.
@@ -376,7 +382,8 @@ The entitlement resolver needs a small wrapper. `RequireEntitlement` wants
 ```
 write     Log(Event) ─> BEGIN IMMEDIATE ─> read the last hash ─> canonical payload (v3 | v4)
                      ─> hash = sha256(prev ‖ payload) ─> INSERT ─> COMMIT
-verify    Verify / VerifyChainPostMigration ─> walk every row ─> index of the first bad row
+verify    Verify / VerifyChainPostMigration ─> walk every row, each under its own version
+                                                  ─> index of the first bad row
 export    ExportForTenant(tenant) ─> rows where Event.TenantID == tenant
                                      {is_chain:false, completeness:"issuer-attested"}
 erase PII RedactEvent(id) ─> the row salt is set to zero; commitments stay, the hash stays valid

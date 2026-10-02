@@ -6,6 +6,126 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
+## [Unreleased]
+
+Five fixes for sharp edges in pooled deployments. Each one is a separate
+change (#39, #40, #42, #43, #45) and is described in `tech-debt.md`. Single-tenant
+deployments are unaffected unless a line below says otherwise.
+
+### ⚠️ Changed — behaviour
+
+- **`identity.Core.IssueTokensForUserInTenant` denies a mismatched tenant**
+  (#40, TD-10). It now loads the user and refuses unless the tenant on the
+  stored row equals the tenant asked for. Before, it minted for any user in
+  any tenant and only refused an unset tenant.
+
+  Four consequences:
+
+  - A user id with no row is now refused. It used to mint, because the method
+    never read the store.
+  - A mismatch and a missing user return the same `identity.ErrNotFound`, so
+    the two cannot be told apart.
+  - A deactivated user is refused with `identity.ErrUserInactive`. The tenant
+    is checked first, so an inactive user addressed from another tenant still
+    gets `ErrNotFound`.
+  - The method costs one `UserByID` read per mint.
+
+  A user stored in the single tenant, minted with `tenant.Single`, gets the
+  same tokens as before. `IssueTokensForUser` and `IssueTokensForUserWithACR`
+  are unchanged. The method can no longer be used to give a user a session in
+  a tenant they are not stored in.
+
+- **`identity.Store.UserByID` must return the user's tenant, and the leak
+  suite checks it** (#40, TD-10). The mint above compares the tenant on the
+  row `UserByID` returns, so that row must carry `User.TenantID`.
+  `tenanttest.RunLeakSuite` has a new `UserByID` case. A store whose by-id
+  query does not select the tenant column now fails the suite; fix the query,
+  because every tenant-bound mint would fail with it.
+
+- **`crypto.JWTService.VerifyTOTPPending` rejects a tenant-bound pending
+  token** (#40, TD-10). It is now the `tenant.Single` form of
+  `VerifyTOTPPendingInTenant`. A token minted by `IssueTOTPPending` carries no
+  `tid` and verifies as before.
+
+- **A tenant-bound credential on an unscoped SCIM surface is refused** (#39,
+  TD-15). With `SCIMConfig.Tenancy` off, a request whose validated principal
+  carries a non-empty `TenantID` now gets a 500 `CONFIG_ERROR` before any
+  store method runs. Before, it was served from the unscoped store, so tenant
+  A's service account could read and change tenant B's directory. A principal
+  with an empty `TenantID` is unchanged. If your validator returns a tenant,
+  set `SCIMConfig.Tenancy: true`. If your unscoped stores are already confined
+  to one tenant by other means, set `SCIMConfig.TenantBoundStores` instead
+  (see Added).
+
+- **`audit.SQLiteLogger.Verify` hashes each row under its own
+  `canonical_version`** (#45, TD-16). When a chain-restart anchor existed,
+  `Verify` used to take the anchor's version and apply it to every later row.
+  A chain that mixed versions behind one anchor then read as tamper although
+  no row had been changed. That happened when:
+
+  - `Tenancy` was switched on and a row was logged before
+    `BootstrapChainV4` ran (a v4 row behind a v3 anchor);
+  - two replicas on different configs shared one DB, or `Tenancy` was turned
+    off and on again (a v3 row behind a v4 anchor);
+  - an application emitted an older chain-restart anchor after the v4 one.
+
+  All three now verify clean. The anchor still decides where `Verify` starts.
+  Edits are still caught, including a change to a row's version column. No
+  stored byte changes, and a chain with one version reads as before.
+  `VerifyChainPostMigration` already worked this way.
+
+  One thing is given up. A v3 row written after `Tenancy` was switched on
+  used to be flagged, as part of that false tamper report. It is no longer
+  flagged. A v3 row has no tenant in its hash, so its tenant can be changed
+  without `Verify` noticing. Keep every writer of one audit DB on the same
+  `Tenancy` setting.
+
+  A v4 anchor is no longer needed for a clean chain. `BootstrapChainV4` is
+  unchanged and optional; note that an anchor moves `Verify`'s start forward,
+  so the rows before it leave `Verify`'s walk.
+
+- **Rows written by `espresso.Auditor` now carry the tenant** (#43, TD-08).
+  `Event.TenantID` is the tenant pinned by `RequireTenant` or `PinTenant`.
+  `Actor.TenantID` is the token's `tid`. Before, both were empty, so
+  `audit.ExportForTenant` never returned these rows. A request with no `tid`
+  and no pinned tenant produces the same event as before. Rows written before
+  this change are not migrated.
+
+### Added
+
+- **`tamper.AuditConfig.Tenancy`** (#42, TD-09). Turns on the
+  `canonical_version=4` encoder for the logger built by `tamper.New`: the
+  tenant enters the hash and PII becomes redactable. Default `false` is
+  byte-identical to before.
+
+  - It requires `Audit.DBPath`. `New` rejects `Tenancy` with an empty path.
+  - `New` writes no chain anchor. Existing rows keep their own version and
+    stay inside `Verify`.
+  - It applies to rows written from then on, and it can be turned off again.
+    Rows written while it is off are v3: no tenant in the hash, no erasure,
+    and `Verify` does not flag them.
+
+- **`espresso.SCIMConfig.TenantBoundStores`** (#39, TD-15). The opt-out for
+  the SCIM refusal above. Set it when the unscoped stores given to
+  `NewSCIMRoutes` are already confined to one tenant: one `SCIMRoutes` per
+  tenant over a tenant-bound store, or stores that scope themselves from the
+  principal. Tamper cannot verify this. Setting it on a store shared by
+  several tenants re-opens the leak. `Tenancy` and `TenantBoundStores`
+  together are rejected by `NewSCIMRoutes`.
+
+- **`crypto.JWTService.IssueTOTPPendingInTenant` and
+  `VerifyTOTPPendingInTenant`** (#40, TD-10). A TOTP-pending token can now
+  carry a `tid` claim, and verification pins it the same way `VerifyAccess`
+  pins an access token. A pooled adapter should use these, so a pending token
+  minted in one tenant cannot be finished in another.
+
+### Fixed
+
+- **`examples/multitenant`** (#40). The post-TOTP session now carries the
+  tenant, and the example issues tenant-bound pending tokens.
+
+---
+
 ## [0.6.0] — 2026-08-31
 
 Additive. No breaking changes, no database changes, no call-site changes.

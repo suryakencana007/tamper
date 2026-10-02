@@ -80,9 +80,7 @@ type AuditConfig struct {
 	// rows, or with no anchor in the DB at all. An anchor is therefore not
 	// needed for a clean chain, and it has a cost: Verify starts at the
 	// newest anchor, so one written here would drop the whole history
-	// before the switch out of Verify's walk. An application that wants
-	// the segment marker anyway calls audit.SQLiteLogger.BootstrapChainV4
-	// itself.
+	// before the switch out of Verify's walk.
 	//
 	// False is the default and is byte-identical to today: v3 rows, v3
 	// hashes. Despite the name, true is legal for a single-tenant
@@ -93,7 +91,9 @@ type AuditConfig struct {
 	// off again writes v3 rows after the v4 ones, which is also what a
 	// rolling deploy does while replicas disagree, and the mixed chain
 	// verifies. What off costs is the two capabilities, for the rows
-	// written while it is off: no tenant in the hash, no erasure.
+	// written while it is off: no erasure, and no tenant in the hash —
+	// Verify does not flag those rows, and their tenant can be changed
+	// without it noticing. Keep every writer on the same setting.
 	//
 	// Requires DBPath. New rejects Tenancy with an empty DBPath instead of
 	// handing a NoopLogger to a caller that asked for a tenant-hashed log.

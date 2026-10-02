@@ -344,13 +344,24 @@ func (c *Core) IssueTokensForUserWithACR(ctx context.Context, userID string, aut
 // That makes a second, smaller change: a user id with no row used to
 // mint, because this method never read the store. It is now refused.
 //
-// Nothing else about the user is consulted — not Active, not the
-// enrollment state. This is the tenant check and only that; the callers
-// that reach it have already authenticated the user by their own means.
+// A DEACTIVATED user is refused as well, with [ErrUserInactive]. The
+// row is already in hand for the tenant check, and without this the one
+// mint path that reads the user would still be the one that ignores
+// what it read: Login and Refresh both reject an inactive account, but
+// a user deactivated in the five minutes between the password step and
+// the TOTP step would walk out of this method with a full session. The
+// tenant is checked FIRST, so an inactive user of ANOTHER tenant still
+// gets the not-found answer — "inactive" is disclosed only to a caller
+// already in the right tenant.
+//
+// Nothing else about the user is consulted — not the enrollment state,
+// not the credentials. The callers that reach this method have already
+// authenticated the user by their own means.
 //
 // Single-tenant deployments keep calling the shims and are unaffected;
-// for a user stored in the single tenant this method is byte-identical
-// to IssueTokensForUserWithACR when passed [tenant.Single] explicitly.
+// for an ACTIVE user stored in the single tenant this method is
+// byte-identical to IssueTokensForUserWithACR when passed
+// [tenant.Single] explicitly.
 // The shims themselves are unchanged and still read nothing.
 func (c *Core) IssueTokensForUserInTenant(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
 	if err := c.tenantGate(tenantID); err != nil {
@@ -366,6 +377,10 @@ func (c *Core) IssueTokensForUserInTenant(ctx context.Context, userID string, te
 	// recorded fact, and must equal tenant.Single.
 	if err != nil || tenant.FromStored(user.TenantID) != tenantID {
 		return Tokens{}, fmt.Errorf("%w: user %s", ErrNotFound, userID)
+	}
+	// After the tenant check, never before: see the doc comment.
+	if !user.Active {
+		return Tokens{}, ErrUserInactive
 	}
 	return c.issueTokens(ctx, userID, tenantID, authTime, acr)
 }

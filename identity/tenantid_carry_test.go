@@ -491,6 +491,48 @@ func TestIssueTokensForUserInTenant_DeniesMismatchedTenant(t *testing.T) {
 // bound to globex, so acme's verify refuses it. And an adapter that
 // never got that far — one still on the unbound pair, minting with the
 // ROUTED tenant — is refused by the Core.
+// TestIssueTokensForUserInTenant_DeniesInactiveUser: the user is
+// deactivated between the password step and the mint. Login and Refresh
+// both refuse an inactive account; the mint that follows a second factor
+// must not be the one path that still hands out a session.
+func TestIssueTokensForUserInTenant_DeniesInactiveUser(t *testing.T) {
+	ctx := context.Background()
+	c, store := testCore(t)
+	acme, globex := tenant.New("acme"), tenant.New("globex")
+
+	user, _, err := c.Register(ctx, acme, "bob@example.com", "correct-horse")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	store.SetActive(user.ID, false)
+	before := sessionsFor(store, user.ID)
+
+	tokens, err := c.IssueTokensForUserInTenant(ctx, user.ID, acme, 0, "")
+	if !errors.Is(err, ErrUserInactive) {
+		t.Fatalf("mint for a deactivated user: err = %v, want ErrUserInactive", err)
+	}
+	if tokens != (Tokens{}) {
+		t.Errorf("a REFUSED mint returned tokens: %+v", tokens)
+	}
+	if after := sessionsFor(store, user.ID); after != before {
+		t.Fatalf("sessions %d -> %d: a REFUSED mint persisted a session", before, after)
+	}
+
+	// The tenant is checked FIRST. From another tenant the answer stays
+	// not-found, so "inactive" is never disclosed across the boundary.
+	if _, err := c.IssueTokensForUserInTenant(ctx, user.ID, globex, 0, ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("inactive user addressed from another tenant: err = %v, want ErrNotFound "+
+			"(an ErrUserInactive here tells globex that the user exists in acme)", err)
+	}
+
+	// Reactivated, the same call mints: the refusal was the flag, not
+	// something the test set up wrong.
+	store.SetActive(user.ID, true)
+	if _, err := c.IssueTokensForUserInTenant(ctx, user.ID, acme, 0, ""); err != nil {
+		t.Fatalf("mint after reactivation: %v", err)
+	}
+}
+
 func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)

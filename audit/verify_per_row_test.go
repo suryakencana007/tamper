@@ -241,3 +241,41 @@ func TestVerify_OlderAnchorAfterTheV4AnchorIsClean(t *testing.T) {
 	exec(t, l, `UPDATE events SET tenant_id = 'globex' WHERE id = ?`, "v4-after-2")
 	requireTamperAt(t, l, 2, "tenant edit behind the late v3 anchor")
 }
+
+// The limit Verify's doc comment names, pinned so that nobody reads a
+// clean result as more than it is.
+//
+// Before per-row dispatch, a v3 row behind a v4 anchor read as tamper —
+// a false alarm, but also the only thing that pointed at a row whose
+// tenant is not in its hash. That signal is gone, by design: Verify
+// reports edits, not rows it would have preferred at another version.
+// What remains true is what was always true of a v3 row: its tenant
+// can be rewritten and its hash does not notice. A v4 row in the same
+// chain is protected, which the last assertion shows.
+//
+// If this test starts failing because the tenant edit IS caught, the
+// limit has been closed: update Verify's doc comment and delete this.
+func TestVerify_KnownLimit_V3RowTenantIsNotHashed(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "audit.db")
+	base := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+
+	on := openAt(t, path, true)
+	if emitted, err := on.BootstrapChainV4(ctx, base, "v4-anchor"); err != nil || !emitted {
+		t.Fatalf("BootstrapChainV4: emitted=%v err=%v", emitted, err)
+	}
+	mustLog(t, on, "v4-row", base.Add(time.Second))
+	if err := on.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	off := openAt(t, path, false)
+	t.Cleanup(func() { _ = off.Close() })
+	mustLog(t, off, "v3-row", base.Add(2*time.Second))
+	requireClean(t, off, 3, "v4 anchor, v4 row, v3 row")
+
+	exec(t, off, `UPDATE events SET tenant_id = 'globex' WHERE id = ?`, "v3-row")
+	requireClean(t, off, 3, "after moving the v3 row to another tenant")
+
+	exec(t, off, `UPDATE events SET tenant_id = 'globex' WHERE id = ?`, "v4-row")
+	requireTamperAt(t, off, 1, "moving the v4 row to another tenant")
+}

@@ -440,15 +440,29 @@ Saying it costs nothing and closes a question every evaluator will ask.
    still moves `Verify`'s walk root forward, which is a reason not to write
    one onto a DB with history.
 
-   Nothing is given up. A row's version column is an input to the check, not a
+   **What is kept.** A row's version column is an input to the check, not a
    way around it: relabel a row and it is hashed with an encoder it was not
-   written with, so the walk reports tamper there. And a DB that passes the
-   boot guard cannot read differently under `Verify`, because the boot guard
-   already hashes every row under its own version.
+   written with, so the walk reports tamper there. Content edits and, on a v4
+   row, tenant edits are caught as before.
+
+   **What is given up.** The override had one side effect that was useful: a
+   v3 row written behind a v4 anchor read as tamper, which pointed at a row
+   whose tenant is not in its hash. `Verify` no longer says anything about
+   such a row. It verifies like any v3 row, its `tenant_id` can be changed
+   without `Verify` noticing, and `ExportForTenant` returns it. If "no v3 row
+   after tenancy was switched on" is to be checked, it needs its own explicit
+   check; a false tamper report was never the right way to say it.
+
+   **On existing DBs.** The rows in the walk and their order are the same as
+   before; only the encoder choice changes. A DB whose boot guard passes has a
+   correct version column on every row, so a row that hashed correctly under
+   the old override hashes correctly under its own version too. (The boot
+   guard and `Verify` order rows differently on an `at` tie, so "boot guard
+   passes" alone does not imply "`Verify` is clean" — that was already so.)
 
    **Not verifiable here:** the real Barista audit DB. The argument above says
-   it cannot change verdict, since its boot guard passes; that should still be
-   run once on a machine that has it (`PHASE7-HANDOFF.md` §0 has the commands).
+   a chain that verified before still verifies; that should still be run once
+   on a machine that has it (`PHASE7-HANDOFF.md` §0 has the commands).
 
    **The honest residual.** Rows written before the v4 anchor hash plaintext
    and are permanently un-redactable; they can only age out through

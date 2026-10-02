@@ -69,12 +69,13 @@ type SQLiteLoggerOptions struct {
 	// A SINGLE-TENANT DEPLOYMENT THAT WANTS ERASURE SHOULD THEREFORE SET
 	// THIS TOO (#25). The name says "tenancy" but the mechanism is the v4
 	// encoder, and it is perfectly at home with no tenants: leave
-	// TenantID empty on every event, call [SQLiteLogger.BootstrapChainV4]
-	// once at boot, and redaction works — the tenant fields simply encode
-	// as empty strings. Do NOT reach for an explicit CanonicalVersion on
-	// the event instead; Log rejects that when this flag is off, so that
-	// v4 stays a decision made once per logger rather than per event
-	// (see the guard in Log).
+	// TenantID empty on every event and redaction works — the tenant
+	// fields simply encode as empty strings. No chain anchor is needed:
+	// [SQLiteLogger.BootstrapChainV4] is optional, and on a DB with
+	// history it moves Verify's start past the existing rows. Do NOT
+	// reach for an explicit CanonicalVersion on the event instead; Log
+	// rejects an explicit v4 when this flag is off (see the guard in
+	// Log).
 	//
 	// FALSE IS THE DEFAULT AND IT IS BYTE-IDENTICAL TO PRE-7i-1. A
 	// deployment that wants neither capability keeps writing v3 rows with
@@ -158,21 +159,15 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 			e.CanonicalVersion = CanonicalVersion3
 		}
 	} else if e.CanonicalVersion == CanonicalVersion4 && !l.opts.Tenancy {
-		// v4 is opted into per LOGGER, never per event (#25). The
-		// encoder is one switch for two capabilities — the tenant in
-		// the hash and redactable PII — and a deployment either has
-		// both on every new row or on none. A v4 row slipped into a
-		// logger that was built without Tenancy would be a row the rest
-		// of that deployment does not know how to treat: its neighbours
-		// hash plaintext, it hashes commitments.
+		// An explicit v4 event on a logger built without Tenancy is
+		// refused (#25): v4 is switched on for the logger, and the caller
+		// is told to set the option instead of forcing the version.
 		//
-		// This guard was first written for a harder reason, which no
-		// longer applies. Verify used to hash every row behind a
-		// chain-restart anchor under the ANCHOR's version, so a v4 row
-		// behind a v3 anchor read as forged. Verify now hashes each row
-		// under its own version (see Verify), and such a row would
-		// verify. The guard stays for the reason above; lifting it is a
-		// separate decision.
+		// The check is ONE-DIRECTIONAL. An explicit OLDER version on a
+		// Tenancy logger is accepted, because that is how an
+		// application's boot step writes a v2 or v3 chain-restart
+		// anchor. Such a row is a v3 row in every respect: plaintext
+		// PII, no tenant in its hash.
 		return Event{}, errors.New(
 			"audit: event requests canonical_version=4 but the logger was built " +
 				"without SQLiteLoggerOptions.Tenancy — v4 is a per-logger setting, " +
@@ -649,25 +644,23 @@ func (l *SQLiteLogger) List(ctx context.Context, f Filter) (Page, error) {
 // row 0.
 //
 // EVERY ROW IS HASHED UNDER ITS OWN `canonical_version`, on both paths.
-// The anchored path used to do something else: it took the ANCHOR's
-// version and applied it to every later row, overriding each row's own
-// column. That held while a segment could only ever contain one
-// version. It stopped holding the day a segment could contain two: a
-// v4 row written behind a v3 anchor — Tenancy switched on before the v4
-// anchor was written, or by one replica while another still ran the old
-// config — was re-hashed as v3 and reported as TAMPER, on a row nobody
-// had touched. Every rule about anchor ORDER that followed (write the
-// v4 anchor before the first v4 row; never turn Tenancy off again;
-// never let a legacy bootstrap emit an older anchor afterwards) existed
-// only to keep that override from firing, and each of them left some
-// boot sequence it could not repair.
+// The anchor's version is not applied to the rows after it. A segment
+// can hold more than one version — a v4 row behind a v3 anchor when
+// Tenancy is switched on, a v3 row behind a v4 anchor while one replica
+// still runs the old config, an older anchor written after the v4 one —
+// and a row hashed under any version but its own would read as tamper
+// although nobody touched it.
 //
-// Nothing is given up by dropping the override. A row's column is not
-// trusted more than before: change it and the row is hashed under an
-// encoder it was not written with, so the recomputed hash no longer
-// matches and the walk reports tamper there. And the boot guard,
-// VerifyChainPostMigration, has always walked every row under its own
-// version; a DB that boots clean cannot read differently here.
+// The version column is an input to this check, not a way around it:
+// relabel a row and it is hashed with an encoder it was not written
+// with, so the recomputed hash no longer matches.
+//
+// KNOWN LIMIT. A clean result says every row matches its own hash and
+// links to its predecessor. It does NOT say every row behind a v4
+// anchor is a v4 row. A v3 row there verifies like any v3 row, and a v3
+// hash does not cover the tenant: its tenant_id can be changed without
+// Verify noticing, and ExportForTenant will return it under the new
+// tenant. Only v4 rows have a hash-protected tenant.
 //
 // The first event's PrevHash is taken as the chain baseline rather
 // than insisted upon — for an unpruned chain it equals HashSize zero
@@ -682,8 +675,8 @@ func (l *SQLiteLogger) Verify(ctx context.Context) (VerifyResult, error) {
 	if err != nil {
 		return VerifyResult{}, fmt.Errorf("audit: verify list: %w", err)
 	}
-	// 0 = per-row dispatch. See the doc comment: the anchor roots the
-	// walk, it does not choose the encoder.
+	// 0 = per-row dispatch: the anchor roots the walk, it does not
+	// choose the encoder.
 	return walkChain(rows, 0), nil
 }
 
@@ -774,11 +767,6 @@ func (l *SQLiteLogger) VerifyLegacy(ctx context.Context, canonicalVersion int, f
 // verifyRows picks the chain segment Verify walks. When a chain-restart
 // row exists, returns rows from the most-recent restart row forward
 // (inclusive) in chain-asc order; otherwise every row in the table.
-//
-// It returns rows and nothing else. It used to return the anchor's
-// canonical_version as well, for Verify to hash the whole segment
-// under; Verify now hashes each row under its own version, so the
-// anchor's version is no longer an input to anything.
 func (l *SQLiteLogger) verifyRows(ctx context.Context) ([]sqlitestore.Event, error) {
 	restart, err := l.store.Queries.GetLatestChainRestart(ctx, string(ActionAuditChainRestart))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -806,11 +794,7 @@ func (l *SQLiteLogger) verifyRows(ctx context.Context) ([]sqlitestore.Event, err
 // specific encoder. That is the only caller that overrides.
 //
 // When canonicalVersion is 0, per-row dispatch is honoured — used by
-// Verify on both of its paths. The anchored path used to pass the
-// anchor's version here; this comment already named the case where
-// that would stop being right ("any future mixed-version DB shape
-// where the chain-restart row no longer pins a single version across
-// the segment"), and canonical_version=4 was that shape.
+// Verify, with or without a chain-restart anchor.
 //
 // FirstBadIndex distinguishes the failure modes:
 //

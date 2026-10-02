@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/suryakencana007/tamper/audit"
 	"github.com/suryakencana007/tamper/authz"
 	"github.com/suryakencana007/tamper/crypto"
@@ -76,24 +74,26 @@ type AuditConfig struct {
 	// erase. It is passed to audit.SQLiteLoggerOptions.Tenancy, and it is
 	// the single switch for both capabilities.
 	//
-	// The flag alone is not enough, so New also writes the v4 chain anchor
-	// (audit.SQLiteLogger.BootstrapChainV4) before it returns. The anchor
-	// has to precede the first v4 row — Verify takes its encoder from the
-	// newest anchor, and a v4 row behind an older one reads as tamper — and
-	// the method is not on the audit.Logger interface Provider.Audit
-	// exposes, so "the application calls it at boot" is an instruction New
-	// can keep and a caller can miss. The bootstrap is idempotent: every
-	// boot asks, only the first writes a row.
+	// The flag is all New does. It writes NO chain anchor. Verify hashes
+	// every row under that row's own canonical_version, so a v4 row is
+	// verified as v4 wherever it sits — behind an older anchor, after v3
+	// rows, or with no anchor in the DB at all. An anchor is therefore not
+	// needed for a clean chain, and it has a cost: Verify starts at the
+	// newest anchor, so one written here would drop the whole history
+	// before the switch out of Verify's walk. An application that wants
+	// the segment marker anyway calls audit.SQLiteLogger.BootstrapChainV4
+	// itself.
 	//
 	// False is the default and is byte-identical to today: v3 rows, v3
-	// hashes, no anchor. Despite the name, true is legal for a single-tenant
+	// hashes. Despite the name, true is legal for a single-tenant
 	// deployment that wants erasure — leave TenantID empty on every event.
 	//
-	// It is a one-way switch, for the same newest-anchor reason. Turning it
-	// back off writes v3 rows behind the v4 anchor, and an application boot
-	// step that emits an older (v2/v3) chain-restart anchor after New puts
-	// that anchor in front of every later v4 row; either way Verify reports
-	// tamper on a chain nobody touched.
+	// It applies to rows written from here on and it is not a one-way
+	// switch. Existing rows keep their own version and hash. Turning it
+	// off again writes v3 rows after the v4 ones, which is also what a
+	// rolling deploy does while replicas disagree, and the mixed chain
+	// verifies. What off costs is the two capabilities, for the rows
+	// written while it is off: no tenant in the hash, no erasure.
 	//
 	// Requires DBPath. New rejects Tenancy with an empty DBPath instead of
 	// handing a NoopLogger to a caller that asked for a tenant-hashed log.
@@ -208,16 +208,6 @@ func New(cfg Config) (*Provider, error) {
 		if err != nil {
 			return nil, fmt.Errorf("tamper: audit: %w", err)
 		}
-		// The v4 anchor goes in HERE, before the logger is reachable by
-		// anything that could log through it. Once New returns, the first
-		// application event may already be a v4 row, and an anchor written
-		// after it is too late (see AuditConfig.Tenancy).
-		if cfg.Audit.Tenancy {
-			if berr := bootstrapAuditV4(auditLogger); berr != nil {
-				_ = auditLogger.Close()
-				return nil, fmt.Errorf("tamper: audit: %w", berr)
-			}
-		}
 	} else {
 		auditLogger = audit.NewNoopLogger()
 	}
@@ -270,32 +260,6 @@ func New(cfg Config) (*Provider, error) {
 	}
 
 	return p, nil
-}
-
-// chainV4Bootstrapper is the one method New needs that audit.Logger does not
-// carry. *audit.SQLiteLogger implements it; the NoopLogger does not.
-type chainV4Bootstrapper interface {
-	BootstrapChainV4(ctx context.Context, at time.Time, id string) (emitted bool, err error)
-}
-
-// bootstrapAuditV4 writes the v4 chain anchor through l, once. It runs on
-// every boot of a tenancy-configured Provider and is a no-op when the anchor
-// already exists (BootstrapChainV4 is idempotent), so the fresh id below is
-// only ever stored on the boot that actually emits the row.
-//
-// A logger that cannot bootstrap is an ERROR, never a skip. An `if ok`
-// around the call would let a tenancy-configured Provider boot with no
-// anchor and say nothing — the same quiet optional-interface miss that
-// disabled the exit-3 chain guard in Phase 0c.
-func bootstrapAuditV4(l audit.Logger) error {
-	b, ok := l.(chainV4Bootstrapper)
-	if !ok {
-		return fmt.Errorf("logger %T cannot write the v4 chain anchor that Audit.Tenancy requires", l)
-	}
-	if _, err := b.BootstrapChainV4(context.Background(), time.Now().UTC(), uuid.NewString()); err != nil {
-		return fmt.Errorf("bootstrap v4 chain: %w", err)
-	}
-	return nil
 }
 
 // Close releases resources the Provider owns — today the audit DB handle

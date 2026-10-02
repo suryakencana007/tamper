@@ -118,11 +118,11 @@ engine only compares.
 | `NewSQLiteLogger(path, opts)`, `NewNoopLogger` | SQLite hash-chain logger. `opts.Tenancy` turns on the v4 encoder. |
 | `Logger.Log` | Appends in one `BEGIN IMMEDIATE` transaction: `hash = sha256(prevHash ‖ canonical payload)`. |
 | `List`, `ListScoped(clusterIDs, filter)` | Paged reads. Only some `Filter` fields are applied (see TD-17). |
-| `Verify`, `VerifyChainPostMigration` | Walks the chain again. Tamper does not call these by itself. The application must call `VerifyChainPostMigration` at boot. |
+| `Verify`, `VerifyChainPostMigration` | Walks the chain again. Each row is hashed under its own `canonical_version` (for `Verify`, since #45). Tamper does not call these by itself. The application must call `VerifyChainPostMigration` at boot. |
 | `ExportForTenant(tenant)` | One tenant's slice of the log, filtered on `Event.TenantID`. |
 | `Redact`, `RedactEvent`, `VerifyCommitments`, `ComputeCommitments`, `NewRowSalt` | Erases PII through salted commitments without breaking the chain. |
 | `ComputeHash` | For a `Logger` implemented over another store (for example Postgres). |
-| `BootstrapChainV4`, `PruneOlderThan` | The v4 anchor, and retention. `BootstrapChainV4` must run at boot before the first event is logged (see TD-16). |
+| `BootstrapChainV4`, `PruneOlderThan` | The v4 anchor, and retention. The anchor is optional after the fix for TD-16 (#45). It moves the start of `Verify` forward, so do not write one onto a DB with history unless you want that. |
 | `WithActor` / `ActorFromContext`, `ActorService`, `ActorSystem` | Who did it: a user, a service account, or the system. |
 
 ### `espresso` — the HTTP adapter
@@ -183,7 +183,7 @@ the application mounts the Surfaces on its own Espresso router
 `tamper.New` opens the audit DB but does not verify the chain. Chain
 verification at boot (`audit.VerifyChainPostMigration`) is a call the
 application must add. With the fix for TD-09 (#42), `AuditConfig.Tenancy`
-turns on the v4 encoder and `New` writes the v4 anchor.
+turns on the v4 encoder. `New` writes no chain anchor.
 
 ### 4.2 Register and password login
 
@@ -382,7 +382,8 @@ The entitlement resolver needs a small wrapper. `RequireEntitlement` wants
 ```
 write     Log(Event) ─> BEGIN IMMEDIATE ─> read the last hash ─> canonical payload (v3 | v4)
                      ─> hash = sha256(prev ‖ payload) ─> INSERT ─> COMMIT
-verify    Verify / VerifyChainPostMigration ─> walk every row ─> index of the first bad row
+verify    Verify / VerifyChainPostMigration ─> walk every row, each under its own version
+                                                  ─> index of the first bad row
 export    ExportForTenant(tenant) ─> rows where Event.TenantID == tenant
                                      {is_chain:false, completeness:"issuer-attested"}
 erase PII RedactEvent(id) ─> the row salt is set to zero; commitments stay, the hash stays valid

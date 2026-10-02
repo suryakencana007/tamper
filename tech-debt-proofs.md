@@ -36,8 +36,11 @@ nothing also exits with success (see `PHASE7-HANDOFF.md`).
 
 ## Re-run against the fixes
 
-On 2026-10-02 the same six tests were run again on a branch that merges the
-five fix branches (#39 to #43). The tests were not changed.
+On 2026-10-02 the same six tests were run again against the fixes. The tests
+were not changed. Five results below are from a branch that merged #39, #40,
+#43 and the first versions of the two audit fixes. The audit fixes were then
+redone (#45 replaces #41, and #42 was reduced), and the last row is from a
+run with the `Verify` change of #45.
 
 | Test | Result with the fixes | Why |
 |---|---|---|
@@ -46,7 +49,7 @@ five fix branches (#39 to #43). The tests were not changed.
 | `TestTD10_PendingTokenCannotMintIntoAnotherTenant` | PASS | The mint is refused with `identity: not found`. |
 | `TestTD10_PostTOTPMintCarriesTheUsersTenant` | still FAIL, expected | It calls the `tenant.Single` shim `Core.IssueTokensForUser`, which stays tenant-less by design. The fix is in the adapter, which must call `IssueTokensForUserInTenant`. The regression tests in #40 check that path. |
 | `TestTD09_NewCanWriteAuditV4` | still FAIL, expected | It uses the default config. v4 is opt-in through `Audit.Tenancy: true`. The regression tests in #42 set the flag. |
-| `TestTD09_TenancyWithoutBootstrap` | still FAIL, expected | The late bootstrap now repairs the DB: `emitted=true`, and `Verify` is clean afterwards. The test still fails because it also checks the state **before** the late bootstrap, and that state is still tamper. |
+| `TestTD09_TenancyWithoutBootstrap` | PASS with #45 | `Verify` hashes each row under its own version, so every case verifies clean with no anchor and no repair: the anchored v3 DB with a v4 row gives `tamper=false`. `HasChainRestartV4` still answers `true` and the late bootstrap still returns `emitted=false`; neither matters for `Verify` any more (TD-21). |
 
 So the output below shows the state **before** the fixes.
 

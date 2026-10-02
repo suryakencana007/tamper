@@ -1054,6 +1054,11 @@ design_ref: "§5 M5, §8 open item 1"
 > `walkChain` uses it to OVERRIDE every row's own column, so v4 rows sitting
 > after a v3 anchor read as tamper.
 >
+> **AMENDED 2026-10-02.** The last sentence describes the override that was
+> removed. `Verify` now hashes every row under its own `canonical_version`,
+> so a v4 row behind a v3 anchor verifies clean and the anchor's position is
+> no longer a correctness rule. See `PHASE7-MULTITENANCY-SKETCH.md` §8 item 1.
+>
 > **A tenant-filtered export may claim** per-row authenticity and position —
 > each row ships its own prev_hash/hash, recomputable without access to anyone
 > else's data, and attribution cannot have been reassigned after the fact

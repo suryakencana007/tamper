@@ -767,17 +767,17 @@ func computeHash(prevHash []byte, e Event, version int) []byte {
 // At needs its own Logger to enforce monotonicity before this is
 // called.
 //
-// A CanonicalVersion4 CHAIN NEEDS AN ANCHOR BEFORE ITS FIRST ROW.
-// SQLiteLogger's equivalent is BootstrapChainV4, gated on
-// SQLiteLoggerOptions.Tenancy (issue #25: an explicit v4 row written
-// before that anchor exists verifies fine in isolation today and reads
-// as forged on the next chain walk, because Verify determines ONE
-// canonical_version for the whole segment from its newest chain-restart
-// anchor and applies it to every row, overriding each row's own stored
-// column — see walkChain in audit_sqlite.go). A from-scratch store
-// needs the same two-part invariant: an anchor establishing where the
-// v4 segment starts, and a verify pass that honours it the same way,
-// before this is called for a real v4 event.
+// VERIFY EACH ROW UNDER ITS OWN CanonicalVersion. A chain can hold
+// rows at more than one version — v3 rows, then v4 rows once a
+// deployment turns on SQLiteLoggerOptions.Tenancy, and v3 rows again if
+// one replica still runs the old config. A from-scratch store's verify
+// pass must read the version off each row and recompute that row's
+// hash with it. SQLiteLogger.Verify once took a single version for a
+// whole segment from the newest chain-restart anchor instead, and a v4
+// row behind a v3 anchor then read as forged; that is the mistake not
+// to repeat. An anchor (SQLiteLogger's is BootstrapChainV4) marks where
+// a segment starts. It is optional, and it must never decide which
+// encoder a later row is checked with.
 //
 // RUN VerifyCommitments ALONGSIDE WHATEVER VERIFIES THE CHAIN. The
 // chain hash covers the commitments, not the PII plaintext beside them

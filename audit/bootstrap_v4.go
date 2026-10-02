@@ -17,13 +17,20 @@ import (
 // is emitted through Logger.Log — the one path that reads the latest
 // hash under the write lock.
 //
-// WHY IT MUST LAND BEFORE THE FIRST v4 ROW. verifyRows selects the walk
-// root from the most recent anchor and takes the ENCODER VERSION from
-// it, overriding each row's own column. A v4 row sitting after a v3
-// anchor is therefore re-hashed under the v3 encoder and reads as
-// tamper. Emitting the anchor first is not tidiness; it is the
-// difference between a clean boot and a chain that reports itself
-// forged.
+// WHAT THE ANCHOR IS FOR NOW. It marks where the v4 segment begins and
+// becomes Verify's walk root. It is no longer needed for a clean
+// verify. When this file was written, Verify took the encoder version
+// from the newest anchor and applied it to every later row, so a v4 row
+// behind a v3 anchor was re-hashed as v3 and read as tamper; the anchor
+// had to land before the first v4 row or the chain reported itself
+// forged. Verify now hashes each row under its own version (see
+// Verify), so a late anchor, a missing one, and a v3 row written after
+// it all verify clean.
+//
+// The cost of an anchor is unchanged and worth knowing before calling
+// this on a DB with history: Verify starts at the newest anchor, so the
+// rows before it leave Verify's walk. They stay covered by
+// VerifyChainPostMigration and VerifyLegacy.
 
 // HasChainRestartV4 reports whether the DB already carries a v4
 // chain-restart anchor. The idempotency key for BootstrapChainV4 —

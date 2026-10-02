@@ -117,12 +117,12 @@ engine only compares.
 |---|---|
 | `NewSQLiteLogger(path, opts)`, `NewNoopLogger` | SQLite hash-chain logger. `opts.Tenancy` turns on the v4 encoder. |
 | `Logger.Log` | Appends in one `BEGIN IMMEDIATE` transaction: `hash = sha256(prevHash ‖ canonical payload)`. |
-| `List`, `ListScoped(clusterIDs, filter)` | Paged reads. |
+| `List`, `ListScoped(clusterIDs, filter)` | Paged reads. Only some `Filter` fields are applied (see TD-17). |
 | `Verify`, `VerifyChainPostMigration` | Walks the chain again. Tamper does not call these by itself. The application must call `VerifyChainPostMigration` at boot. |
 | `ExportForTenant(tenant)` | One tenant's slice of the log, filtered on `Event.TenantID`. |
 | `Redact`, `RedactEvent`, `VerifyCommitments`, `ComputeCommitments`, `NewRowSalt` | Erases PII through salted commitments without breaking the chain. |
 | `ComputeHash` | For a `Logger` implemented over another store (for example Postgres). |
-| `BootstrapChainV4`, `PruneOlderThan` | The v4 anchor, and retention. |
+| `BootstrapChainV4`, `PruneOlderThan` | The v4 anchor, and retention. `BootstrapChainV4` must run at boot before the first event is logged (see TD-16). |
 | `WithActor` / `ActorFromContext`, `ActorService`, `ActorSystem` | Who did it: a user, a service account, or the system. |
 
 ### `espresso` — the HTTP adapter

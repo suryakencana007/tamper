@@ -118,7 +118,7 @@ engine only compares.
 | `NewSQLiteLogger(path, opts)`, `NewNoopLogger` | SQLite hash-chain logger. `opts.Tenancy` turns on the v4 encoder. |
 | `Logger.Log` | Appends in one `BEGIN IMMEDIATE` transaction: `hash = sha256(prevHash ‖ canonical payload)`. |
 | `List`, `ListScoped(clusterIDs, filter)` | Paged reads. |
-| `Verify`, `VerifyChainPostMigration` | Walks the chain again. Also runs at boot. |
+| `Verify`, `VerifyChainPostMigration` | Walks the chain again. Tamper does not call these by itself. The application must call `VerifyChainPostMigration` at boot. |
 | `ExportForTenant(tenant)` | One tenant's slice of the log, filtered on `Event.TenantID`. |
 | `Redact`, `RedactEvent`, `VerifyCommitments`, `ComputeCommitments`, `NewRowSalt` | Erases PII through salted commitments without breaking the chain. |
 | `ComputeHash` | For a `Logger` implemented over another store (for example Postgres). |
@@ -180,6 +180,10 @@ Provider + RouteConfig ─> espresso.Routes ─> Surfaces{Auth, Federation, SAML
 the application mounts the Surfaces on its own Espresso router
 ```
 
+`tamper.New` opens the audit DB but does not verify the chain. Chain
+verification at boot (`audit.VerifyChainPostMigration`) is a call the
+application must add.
+
 ### 4.2 Register and password login
 
 ```
@@ -215,6 +219,11 @@ The pending token is rejected as a normal bearer token, and an access token is
 rejected at `/totp/verify`. The `purpose` claim separates the two in both
 directions.
 
+The pending token carries **no tenant**, and `Core.VerifyTOTP` is not
+tenant-scoped. So the application adapter must load the user, compare the
+user's stored tenant with the routed tenant, and only then mint. See TD-10 in
+`tech-debt.md`.
+
 ### 4.4 Refresh and logout
 
 ```
@@ -242,10 +251,11 @@ GET /oidc/start/{provider}
       └─ StartOIDCFlow ─> PKCE + nonce + signed state cookie ─> redirect to the IdP
 
 GET /oidc/callback/{provider}
-  └─ FederationRoutes.Callback ─> redirect to the SPA, code + state in the URL fragment
+  └─ PinTenant ─> FederationRoutes.Callback
+      └─ redirect to the SPA, code + state in the URL fragment
 
 POST /oidc/exchange {code, state, provider}
-  └─ FederationRoutes.Exchange
+  └─ PinTenant ─> FederationRoutes.Exchange
       ├─ VerifyOIDCCallback ─> check state cookie, exchange code, VerifyIDToken ─> OIDCVerified
       └─ FederationHooks.OnFederatedExchange   (owned by the app; returns FederationOutcome)
           ├─ Core.ResolveByIdentity(tenant, provider, subject)       already linked
@@ -253,12 +263,18 @@ POST /oidc/exchange {code, state, provider}
           └─ Core.IssueTokensForUserInTenant(user, tenant, authTime, acr)
 ```
 
+`PinTenant` is needed on **all three** routes, not only on start. `Start`,
+`Callback`, and `Exchange` all look up the provider through
+`TenantFromContext`. Without a pinned tenant they return 404
+(`OIDC_PROVIDER_NOT_FOUND`).
+
 Tamper owns the verification part. Everything after verification (resolve,
 provision, the email-collision check, minting tokens) happens inside the
 application's hook.
 
 SAML has the same shape: `SAMLRoutes.Login` → IdP → `SAMLRoutes.ACS`, with a
-defence against assertion replay.
+defence against assertion replay. The SAML routes (`Login`, `ACS`, `Metadata`)
+need `PinTenant` for the same reason.
 
 ### 4.6 Invitations
 
@@ -290,10 +306,23 @@ Authorization: Bearer <access>
   └─ Auditor.For          after 2xx ─> audit.Logger.Log(Event)
 ```
 
-The application chooses this order. Tamper does not force it. `RequireTenant`
-is the only middleware that puts a tenant in the context. So a handler that
-reads `TenantFromContext` without that gate gets `(zero, false)`, not a wrong
-answer.
+The application chooses this order. Tamper does not force it.
+
+Two middlewares put a tenant in the context, and they give different
+guarantees:
+
+- `RequireTenant` sets it **after** checking the token `tid` against the
+  route.
+- `PinTenant` sets it with **no** token check. It is for routes before login.
+
+So `TenantFromContext` returning `ok=true` does not prove that the token was
+checked. On an authenticated route, only `RequireTenant` gives that guarantee.
+If `PinTenant` is mounted globally, authenticated routes still need
+`RequireTenant`. With neither middleware, a handler gets `(zero, false)`.
+
+(The comment at `espresso/tenantgate.go:31` still says this gate is the only
+one that sets the tenant. That comment was written before `PinTenant`
+existed.)
 
 ### 4.8 Authorization decision
 
@@ -319,13 +348,28 @@ PermissionSet
 Bearer <service account token>
   ├─ RequireServiceAccount ─> Validator.Validate ─> Principal{ID, TenantID}
   │                            ─> audit.ActorService(id, name, tenant)
-  ├─ RequireEntitlement(CapabilitySCIM, TenantFromServiceAccount)
+  ├─ RequireEntitlement(store, CapabilitySCIM, resolver)
   ├─ Throttled(ThrottleKeyByServiceAccount)
-  └─ SCIMRoutes ─> scim.Parse + Translate | scim.Apply ─> UserStore / GroupStore per tenant
+  └─ SCIMRoutes
+      ├─ SCIMConfig.Tenancy = true  ─> TenantScopedUserStore / TenantScopedGroupStore
+      │                                 (…InTenant methods, tenant from the Principal)
+      └─ SCIMConfig.Tenancy = false ─> UserStore / GroupStore (no tenant filter)
 ```
 
-The SCIM tenant always comes from the validated token. It never comes from the
-URL path or a header.
+Three things to know:
+
+- **`SCIMConfig.Tenancy` is `false` by default.** With the default, the routes
+  call the unscoped store methods and never read the tenant. A pooled
+  deployment must set it to `true`. See TD-15 in `tech-debt.md`.
+- When tenancy is on, the SCIM tenant always comes from the validated token.
+  It never comes from the URL path or a header.
+- The routes pass the raw filter string and the PATCH operations to the store.
+  The store implementation is the one that calls `scim.Parse`,
+  `scim.Translate`, and `scim.Apply`.
+
+The entitlement resolver needs a small wrapper. `RequireEntitlement` wants
+`func(*http.Request) (tenant.ID, bool)`, but `TenantFromServiceAccount` returns
+`(string, bool)`. No code in the repository wires these two together yet.
 
 ### 4.10 Audit
 
@@ -343,15 +387,29 @@ An event has two tenant fields with different meanings. `Event.TenantID` is the
 scope of the row (whose log it belongs to). `Actor.TenantID` is the tenant the
 actor comes from. The export filters on the first one.
 
-## 5. Invariants that hold in every flow
+## 5. Rules that shape the flows
+
+### Standing rules
+
+These five come from `CLAUDE.md` and `PHASE7-MULTITENANCY-SKETCH.md` §6. The
+numbers match those documents.
 
 1. `tenant.Single` behaves byte-for-byte the same as before tenancy existed.
 2. A tenant that is missing, empty, or different means deny.
 3. A cross-tenant miss is a 404, never a 403.
 4. A tenancy misconfiguration fails at `New`, not as a per-request denial.
 5. Tamper names no table.
-6. The tenant is always an explicit argument on a port. It is never read
-   silently from the context.
-7. Refresh rotation copies the tenant, `auth_time`, and `acr` unchanged.
 
-Source: `CLAUDE.md`, `PHASE7-MULTITENANCY-SKETCH.md` §6.
+### Patterns seen in the code
+
+These are observations from reading the code. They are not numbered rules in
+the design documents.
+
+- **Tenant-scoped port methods take the tenant as an explicit argument.**
+  `tenant.WithTenant` documents why: a tenant read from the context fails open
+  when one middleware call is missing. This holds for `identity.Store`,
+  `oidc.ProviderStore`, `saml.ProviderStore`, and `tenant.EntitlementStore`.
+  It does **not** hold everywhere: the `authz` ports and
+  `espresso.IdentityService` take no tenant at all, and lookups by id or by
+  token hash (`UserByID`, `RefreshSessionByHash`) are not tenant-scoped.
+- **Refresh rotation copies the tenant, `auth_time`, and `acr` unchanged.**

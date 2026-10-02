@@ -16,10 +16,10 @@ one tenant" and "one token = one tenant", on purpose. The tenant hierarchy is
 only a reserved field today.
 
 Most items below are **gaps against a new requirement**, not bugs. Phase 7
-chose these limits deliberately. Three items are **sharp edges that exist
+chose these limits deliberately. Four items are **sharp edges that exist
 today** in a pooled deployment, with or without a platform admin: TD-08,
-TD-09, and TD-10. These three come from reading the code. They are not yet
-proven by a failing test.
+TD-09, TD-10, and TD-15. These four come from reading the code. They are not
+yet proven by a failing test.
 
 | ID | Title | Kind | Priority | Change in |
 |---|---|---|---|---|
@@ -37,6 +37,7 @@ proven by a failing test.
 | TD-12 | A service account has only one tenant | gap | P2 | Tamper |
 | TD-13 | Second-factor policy cannot be set per role | gap | P2 | Tamper |
 | TD-14 | The per-tenant route mounting pattern is static | gap | P2 | example + docs |
+| TD-15 | SCIM tenant scoping is off by default | sharp edge | P1 | Tamper |
 
 P0 = the feature cannot be built safely without this. P1 = the application can
 work around it, but mistakes are easy. P2 = convenience and completeness.
@@ -79,6 +80,19 @@ that the user has a right to that tenant.
 **Impact.** The building block for "enter tenant X" exists, but the caller
 must do the whole rights check. One call without the check is a cross-tenant
 grant.
+
+There is a second problem. When the refresh TTL is above zero,
+`IssueTokensForUserInTenant` also stores a refresh session with the target
+tenant (`issueTokens`, `identity/core.go:481`). `Core.Refresh` then rotates
+that session and checks only `user.Active` (`identity/core.go:347`). It does
+not check the right again. So an admin whose cross-tenant right was removed can
+keep getting new tokens for tenant X until the session expires.
+
+**Workaround in the application.** To enter a tenant, do not use
+`IssueTokensForUserInTenant`. After the rights check, call
+`Provider.JWT.IssueAccess(userID, tenant, authTime, acr)` directly. It mints
+only a short-lived access token and stores no refresh session. When the token
+expires, the admin enters the tenant again and the right is checked again.
 
 **What not to do.** A wildcard token (an empty `tid`, or `*`, accepted in every
 tenant). It breaks standing rule 2 (deny by default). It also brings back the
@@ -215,10 +229,17 @@ tenant except `tenant.Single`. The audit design already separates
 `Event.TenantID` from `Actor.TenantID` for the cross-tenant admin case, but the
 HTTP adapter does not fill them in.
 
-**Proposal for Tamper.** `decorateAuthed` sets `Actor.TenantID` from the claim.
-`Auditor.For` sets `Event.TenantID` from `TenantFromContext`. This changes the
-content of audit rows, so it must be proven that the bytes on the
-`tenant.Single` path do not change (standing rule 1).
+**Proposal for Tamper.** Three changes are needed together:
+
+1. `decorateAuthed` sets `Actor.TenantID` from the claim.
+2. `captureActor` keeps that value. Today it does not: for a user actor it
+   ignores the actor in the context and builds a new
+   `audit.Actor{Type, UserID, Email, IP}` (`espresso/audit.go:174-190`). So
+   change 1 alone has no effect on rows written by `Auditor`.
+3. `Auditor.For` sets `Event.TenantID` from `TenantFromContext`.
+
+This changes the content of audit rows, so it must be proven that the bytes on
+the `tenant.Single` path do not change (standing rule 1).
 
 ### TD-09 — `tamper.New` cannot turn on audit v4 *(sharp edge)*
 
@@ -231,8 +252,15 @@ content of audit rows, so it must be proven that the bytes on the
 `canonical_version=3`. The tenant is not in the hash, and PII cannot be
 redacted. A pooled application must build its own logger outside `tamper.New`.
 
-**Proposal for Tamper.** A field `AuditConfig.Tenancy` that is passed through
-as-is. The default is `false`, so current behaviour does not change.
+**Proposal for Tamper.** A field `AuditConfig.Tenancy`, default `false` so
+current behaviour does not change. Passing the flag through is **not enough**.
+The v4 anchor must be written before the first v4 row: the verify walk takes
+its encoder from the newest anchor, so a v4 row after a v3 anchor is re-hashed
+as v3 and reported as tamper (`audit/bootstrap_v4.go:20-26`). So when the flag
+is on, `New` must also call `BootstrapChainV4`. That method is on
+`*SQLiteLogger` and is not part of the `audit.Logger` interface that
+`Provider.Audit` exposes, so the application cannot easily call it through the
+`Provider` either.
 
 ### TD-10 — The TOTP path mints a token without a tenant *(sharp edge)*
 
@@ -241,13 +269,56 @@ as-is. The default is `false`, so current behaviour does not change.
 `AuthRoutes.VerifyTOTP` calls it (`espresso/authroutes.go:267`).
 `Core.IssueTokensForUser` mints with `tenant.Single` (`identity/core.go:295`).
 
-**Impact.** An adapter that passes this call straight to `Core` produces a
-token with no `tid` after TOTP verification. `RequireTenant` then rejects that
-token on a tenant route. It fails closed (deny), so nothing leaks. But a user
-with 2FA cannot sign in until the adapter uses `IssueTokensForUserInTenant`.
+The TOTP-pending token carries no tenant (`IssueTOTPPending(userID)`,
+`crypto/jwt.go:482`), and `Core.VerifyTOTP(userID, code)` is not tenant-scoped
+(`identity/totp.go:158`).
 
-**Proposal for Tamper.** Document this duty on the port. Or change the port
-signature to carry the tenant, so the mistake fails at compile time.
+**Impact.** There are two ways to get this wrong, and they fail in opposite
+directions:
+
+- *Fails closed.* An adapter that passes the call straight to `Core` produces
+  a token with no `tid`. `RequireTenant` rejects that token on a tenant route.
+  Nothing leaks, but a user with 2FA cannot sign in.
+- *Fails open.* An adapter that "fixes" this by minting with the **routed**
+  tenant, without checking the user, gives a cross-tenant token. A user of
+  tenant B sends their pending token to tenant A's `/totp/verify`. Nothing in
+  the pending token or in `VerifyTOTP` stops it, and the user receives an
+  access and refresh pair with `tid=A`.
+
+**Workaround in the application.** The tenant must come from the user's
+**stored row**, not from the route alone. Load the user, compare
+`user.TenantID` with the routed tenant, return not-found on a mismatch, and
+only then call `IssueTokensForUserInTenant`. The example adapter does this
+comparison (`examples/multitenant/identity_adapter.go:105`), but it then mints
+through `IssueTokensForUser`, so its token still has no `tid`.
+
+**Proposal for Tamper.** Put the tenant in the pending token (a `tid` claim)
+and check it in `VerifyTOTPPending`. Also change the port signature to carry
+the tenant, so a missing tenant fails at compile time.
+
+### TD-15 — SCIM tenant scoping is off by default *(sharp edge)*
+
+**Evidence.** `SCIMConfig.Tenancy` is `false` by default
+(`espresso/scimroutes.go:72-80`). With the default, every SCIM handler calls
+the unscoped store methods, for example `s.users.Get(ctx, id)`
+(`espresso/scimroutes.go:200-240`), and nothing reads `Principal.TenantID`.
+v0.4.0 folded the tenant-scoped methods into `identity.Store`,
+`oidc.ProviderStore`, and `saml.ProviderStore`. SCIM was not folded: it still
+has the optional `TenantScopedUserStore` / `TenantScopedGroupStore` and a
+flag.
+
+**Impact.** A pooled deployment that forgets the flag still compiles and
+boots. Tenant A's service account can then list and change tenant B's users
+and groups. Unlike the identity and federation ports, a forgotten setting
+here fails open.
+
+**Workaround in the application.** Set `SCIMConfig.Tenancy: true` in every
+pooled deployment. With the flag on, `NewSCIMRoutes` fails at boot if a store
+does not implement the scoped interface.
+
+**Proposal for Tamper.** Fold the scoped methods into `scim.UserStore` and
+`scim.GroupStore`, the same way v0.4.0 did for the other ports. A
+single-tenant deployment then passes `tenant.Single` explicitly.
 
 ## P2
 
@@ -300,7 +371,8 @@ port method `IdentityService.Login(ctx, email, password)` takes no tenant
 by the platform console gets no routes until the process restarts.
 
 **Proposal.** Add an example adapter that reads `TenantFromContext` after
-`PinTenant`, so one surface serves dynamic tenants.
+`PinTenant`, so one surface serves dynamic tenants. That adapter must still
+check the user's stored tenant on the TOTP path (see TD-10).
 
 ## What is ready to use
 
@@ -320,15 +392,20 @@ These are not debt, but they matter when you design the workarounds:
 
 Without changing Tamper, an application can already run with three things: a
 special `platform` tenant, its own membership table, and a per-tenant token
-exchange through `IssueTokensForUserInTenant` after an `authz.Check`. This is
-enough for a console prototype. Note that TD-08 means cross-tenant actions are
-not recorded with the right scope unless the application writes those events
-by hand.
+exchange after an `authz.Check`. This is enough for a console prototype, with
+two cautions:
+
+- Mint the exchanged token with `Provider.JWT.IssueAccess`, not with
+  `IssueTokensForUserInTenant`. The second one also stores a refresh session
+  that outlives a removed right (see TD-02).
+- TD-08 means cross-tenant actions are not recorded with the right scope
+  unless the application writes those events by hand.
 
 Suggested slice order if this work moves into Tamper:
 
-1. **TD-09, TD-08, TD-10** — the sharp edges that exist today. They are small,
-   and TD-08 is required for a correct audit trail in every other item.
+1. **TD-15, TD-09, TD-08, TD-10** — the sharp edges that exist today. TD-15
+   and TD-10 can leak across tenants, so they come first. TD-08 is required
+   for a correct audit trail in every other item.
 2. **TD-01 + TD-02** — the membership port and `EnterTenant`. They are one
    design decision and must be designed together.
 3. **TD-03** — the tenant contract for `authz`, with its leak suite.

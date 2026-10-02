@@ -74,6 +74,12 @@ deployments are unaffected unless a line below says otherwise.
   stored byte changes, and a chain with one version reads as before.
   `VerifyChainPostMigration` already worked this way.
 
+  One thing is given up. A v3 row written after `Tenancy` was switched on
+  used to be flagged, as part of that false tamper report. It is no longer
+  flagged. A v3 row has no tenant in its hash, so its tenant can be changed
+  without `Verify` noticing. Keep every writer of one audit DB on the same
+  `Tenancy` setting.
+
   A v4 anchor is no longer needed for a clean chain. `BootstrapChainV4` is
   unchanged and optional; note that an anchor moves `Verify`'s start forward,
   so the rows before it leave `Verify`'s walk.
@@ -96,7 +102,8 @@ deployments are unaffected unless a line below says otherwise.
   - `New` writes no chain anchor. Existing rows keep their own version and
     stay inside `Verify`.
   - It applies to rows written from then on, and it can be turned off again.
-    Rows written while it is off are v3: no tenant in the hash, no erasure.
+    Rows written while it is off are v3: no tenant in the hash, no erasure,
+    and `Verify` does not flag them.
 
 - **`espresso.SCIMConfig.TenantBoundStores`** (#39, TD-15). The opt-out for
   the SCIM refusal above. Set it when the unscoped stores given to

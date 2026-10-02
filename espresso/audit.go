@@ -66,6 +66,12 @@ func (a *Auditor) Mutation(action audit.Action, rt audit.ResourceType, idFrom st
 // handler, captures actor + request_id + IP + (optional) resource_id,
 // and emits an audit.Event after a 2xx response.
 //
+// In a pooled deployment mount it INSIDE the tenant gate (RequireAuth
+// -> RequireTenant -> For, or PinTenant -> For on a public route): the
+// event is scoped to the tenant that gate pinned, and that scope is
+// what audit's per-tenant export filters on. Mounted outside the gate
+// it still emits, with no scope.
+//
 // Audit emission is best-effort: a Log error is reported via
 // log.Printf but never causes the HTTP response to fail — the
 // mutation has already been written to the wire by the time we log.
@@ -108,6 +114,25 @@ func (a *Auditor) For(mc MutationContext) func(http.Handler) http.Handler {
 				}
 			}
 
+			// The row's SCOPE is the ROUTED tenant — the one RequireTenant
+			// or PinTenant pinned — and never the token's `tid`. The two
+			// are different facts (audit.Event.TenantID vs
+			// audit.Actor.TenantID): an actor homed in tenant A acting on
+			// a route in tenant B belongs in B's export, and a scope taken
+			// from the actor would file it under A instead.
+			//
+			// ctx is the context this middleware was ENTERED with, so only
+			// a gate mounted outside it is visible here. An Auditor
+			// mounted outside RequireTenant (or with no tenant gate at
+			// all) finds nothing pinned and records no scope, exactly as
+			// before tenancy; there is deliberately no fallback to the
+			// actor's tenant. tenant.Single stringifies to "", so the
+			// single-tenant row is unchanged too.
+			tenantID := ""
+			if routed, ok := TenantFromContext(ctx); ok {
+				tenantID = routed.String()
+			}
+
 			event := audit.Event{
 				ID:           uuid.NewString(),
 				At:           time.Now().UTC(),
@@ -117,6 +142,7 @@ func (a *Auditor) For(mc MutationContext) func(http.Handler) http.Handler {
 				ResourceID:   resourceID,
 				ClusterID:    clusterCap.ID,
 				RequestID:    requestID,
+				TenantID:     tenantID,
 			}
 
 			if _, err := a.Logger.Log(ctx, event); err != nil {
@@ -165,15 +191,25 @@ func (w *statusCapturingWriter) Write(b []byte) (int, error) {
 // audit.WithActor (service accounts, system emissions), that actor
 // wins — the IP is stamped fresh and the row records the non-user
 // attribution honestly.
+//
+// A user actor is still REBUILT rather than passed through, so the
+// id, email and IP keep coming from the sources above. The one field
+// carried over from the context actor is TenantID: it is the actor's
+// home tenant as RequireAuth read it off the token's `tid`, and there
+// is no other place to recover it from here. On a public route no
+// actor was stashed, ActorFromContext returns the bare user default,
+// and the field stays "" — a user id backfilled through SetUserID says
+// who logged in, not which tenant a token of theirs would name.
 func (a *Auditor) captureActor(ctx context.Context, r *http.Request) audit.Actor {
 	extract := a.IP
 	if extract == nil {
 		extract = IPFromRequest
 	}
 	ip := extract(r)
-	if actor := audit.ActorFromContext(ctx); actor.Type != "" && actor.Type != audit.ActorTypeUser {
-		actor.IP = ip
-		return actor
+	ctxActor := audit.ActorFromContext(ctx)
+	if ctxActor.Type != "" && ctxActor.Type != audit.ActorTypeUser {
+		ctxActor.IP = ip
+		return ctxActor
 	}
 	userID, _ := GetUserID(ctx)
 	// Public-route fallback: honour the SetUserID slot when GetUserID
@@ -187,5 +223,5 @@ func (a *Auditor) captureActor(ctx context.Context, r *http.Request) audit.Actor
 			email = e
 		}
 	}
-	return audit.Actor{Type: audit.ActorTypeUser, UserID: userID, Email: email, IP: ip}
+	return audit.Actor{Type: audit.ActorTypeUser, UserID: userID, Email: email, IP: ip, TenantID: ctxActor.TenantID}
 }

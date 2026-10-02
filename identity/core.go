@@ -325,12 +325,47 @@ func (c *Core) IssueTokensForUserWithACR(ctx context.Context, userID string, aut
 // token that authorises the wrong scope. Deny-by-default extends to
 // tenancy: absent never means "every tenant".
 //
+// A MISMATCHED tenant denies too (TD-10). The user is loaded and the
+// mint is refused unless the tenant on the stored row equals tenantID.
+// Before this check the method rejected only the unset tenant and
+// minted for ANY user in ANY tenant, so the whole rights check sat with
+// the caller — and the one caller that matters could not make it: the
+// TOTP second leg is keyed by a bare user id, so an adapter that minted
+// with the ROUTED tenant turned a globex user's pending token into an
+// access+refresh pair with tid=acme. The tenant named here must be the
+// one the user is stored in, and the stored row is the only thing that
+// can say so.
+//
+// The refusal is [ErrNotFound], and it is the SAME error, built on the
+// same line, as the one for a user id with no row at all. A deny and a
+// miss must be indistinguishable: an error that separated them would
+// tell the caller that the user exists in some other tenant.
+//
+// That makes a second, smaller change: a user id with no row used to
+// mint, because this method never read the store. It is now refused.
+//
+// Nothing else about the user is consulted — not Active, not the
+// enrollment state. This is the tenant check and only that; the callers
+// that reach it have already authenticated the user by their own means.
+//
 // Single-tenant deployments keep calling the shims and are unaffected;
-// this method is byte-identical to IssueTokensForUserWithACR when passed
-// [tenant.Single] explicitly.
+// for a user stored in the single tenant this method is byte-identical
+// to IssueTokensForUserWithACR when passed [tenant.Single] explicitly.
+// The shims themselves are unchanged and still read nothing.
 func (c *Core) IssueTokensForUserInTenant(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
 	if err := c.tenantGate(tenantID); err != nil {
 		return Tokens{}, err
+	}
+	user, err := c.store.UserByID(ctx, userID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return Tokens{}, fmt.Errorf("identity: lookup user for mint: %w", err)
+	}
+	// One branch for the miss and the mismatch, deliberately: they cannot
+	// drift apart into two distinguishable errors if there is only one
+	// return. FromStored, not New — a stored "" is the single tenant, a
+	// recorded fact, and must equal tenant.Single.
+	if err != nil || tenant.FromStored(user.TenantID) != tenantID {
+		return Tokens{}, fmt.Errorf("%w: user %s", ErrNotFound, userID)
 	}
 	return c.issueTokens(ctx, userID, tenantID, authTime, acr)
 }

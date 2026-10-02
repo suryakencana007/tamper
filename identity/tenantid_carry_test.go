@@ -291,12 +291,28 @@ func TestIssueTokensForUserInTenant_CarriesTenantIntoJWTAndSession(t *testing.T)
 	ctx := context.Background()
 	c, store := testCore(t)
 
-	user, _, err := c.Register(ctx, tenant.Single, "acme-user@acme.com", "correct-horse")
+	// The user is registered IN acme. This test used to register in
+	// tenant.Single and then mint into acme — which is the cross-tenant
+	// mint TD-10 closed, so the fixture, not the assertions, had to move.
+	acme := tenant.New("acme")
+	user, _, err := c.Register(ctx, acme, "acme-user@acme.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	acme := tenant.New("acme")
+	// Register already minted an acme session of its own, so count the
+	// delta rather than the total.
+	acmeSessionsFor := func() int {
+		var n int
+		for _, s := range store.sessions {
+			if s.UserID == user.ID && s.TenantID == "acme" {
+				n++
+			}
+		}
+		return n
+	}
+	before := acmeSessionsFor()
+
 	tokens, err := c.IssueTokensForUserInTenant(ctx, user.ID, acme, 0, "")
 	if err != nil {
 		t.Fatalf("IssueTokensForUserInTenant: %v", err)
@@ -312,16 +328,8 @@ func TestIssueTokensForUserInTenant_CarriesTenantIntoJWTAndSession(t *testing.T)
 	}
 
 	// 2. the refresh session row.
-	// Register minted a Single session first, so look for the acme one
-	// specifically rather than asserting every row carries it.
-	var acmeSessions int
-	for _, s := range store.sessions {
-		if s.UserID == user.ID && s.TenantID == "acme" {
-			acmeSessions++
-		}
-	}
-	if acmeSessions != 1 {
-		t.Fatalf("sessions carrying TenantID=acme = %d, want 1 (of %d total)", acmeSessions, len(store.sessions))
+	if got := acmeSessionsFor() - before; got != 1 {
+		t.Fatalf("sessions carrying TenantID=acme added by the mint = %d, want 1 (of %d total)", got, len(store.sessions))
 	}
 
 	// 3. rotation inherits it. This is the end-to-end shape 7b-1 could
@@ -382,5 +390,247 @@ func TestIssueTokensForUserInTenant_SingleMatchesTheShim(t *testing.T) {
 	}
 	if got := emptyAfter - emptyBefore; got != 2 {
 		t.Errorf("empty-tenant sessions added by the two mints = %d, want 2 (one per path)", got)
+	}
+}
+
+// --- TD-10: the tenant-aware mint checks the user's STORED tenant ----
+//
+// The entry point above denied an unset tenant and nothing else: it
+// minted for any user in any tenant, so the rights check lived entirely
+// with the caller. The TOTP second leg is the caller that could not make
+// it — it holds a bare user id — and an adapter that minted with the
+// ROUTED tenant handed a globex user a session with tid=acme. These pin
+// the check that moved into the Core.
+
+// sessionsFor counts the refresh sessions persisted for one user.
+func sessionsFor(store *MemStore, userID string) int {
+	var n int
+	for _, s := range store.sessions {
+		if s.UserID == userID {
+			n++
+		}
+	}
+	return n
+}
+
+// TestIssueTokensForUserInTenant_DeniesMismatchedTenant is the fence.
+// Every pairing of a stored tenant with a DIFFERENT requested one is
+// refused, including the two that involve tenant.Single — "" is a tenant
+// like any other, not a wildcard in either direction.
+//
+// The second half is standing rule 3. The refusal is compared, text and
+// all, against the error the SAME call returns once the user's row is
+// gone: a deny and a miss that differ by a word are an oracle for which
+// user ids exist in another tenant.
+//
+// Mutation check: delete the FromStored comparison in
+// IssueTokensForUserInTenant and every case here mints.
+func TestIssueTokensForUserInTenant_DeniesMismatchedTenant(t *testing.T) {
+	acme, globex := tenant.New("acme"), tenant.New("globex")
+	for _, tc := range []struct {
+		name      string
+		stored    tenant.ID
+		requested tenant.ID
+	}{
+		// TD-10 as reported: a globex user, minted for at acme.
+		{"tenant user into another tenant", globex, acme},
+		{"single-tenant user into a tenant", tenant.Single, acme},
+		{"tenant user into the single tenant", acme, tenant.Single},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c, store := testCore(t)
+
+			user, _, err := c.Register(ctx, tc.stored, "bob@example.com", "correct-horse")
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			before := sessionsFor(store, user.ID)
+
+			tokens, denyErr := c.IssueTokensForUserInTenant(ctx, user.ID, tc.requested, 0, "")
+			if !errors.Is(denyErr, ErrNotFound) {
+				t.Fatalf("a user stored in %q minted into %q: err = %v, want ErrNotFound",
+					tc.stored.String(), tc.requested.String(), denyErr)
+			}
+			if tokens != (Tokens{}) {
+				t.Errorf("a REFUSED mint returned tokens: %+v", tokens)
+			}
+			// Denied BEFORE writing: a refused mint that left a refresh
+			// session behind would still be a cross-tenant grant, just one
+			// the caller has to find.
+			if after := sessionsFor(store, user.ID); after != before {
+				t.Fatalf("sessions %d -> %d: a REFUSED mint persisted a session", before, after)
+			}
+
+			// The control: the same user id with no row at all.
+			store.mu.Lock()
+			delete(store.usersByID, user.ID)
+			store.mu.Unlock()
+			_, missErr := c.IssueTokensForUserInTenant(ctx, user.ID, tc.requested, 0, "")
+			if !errors.Is(missErr, ErrNotFound) {
+				t.Fatalf("missing user: err = %v, want ErrNotFound", missErr)
+			}
+			if denyErr.Error() != missErr.Error() {
+				t.Errorf("wrong-tenant error %q differs from missing-user error %q — the difference "+
+					"is an oracle for which users exist in another tenant", denyErr, missErr)
+			}
+			if after := sessionsFor(store, user.ID); after != before {
+				t.Fatalf("sessions %d -> %d: a mint for a missing user persisted a session", before, after)
+			}
+		})
+	}
+}
+
+// TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant
+// walks TD-10 end to end, the way the proof that found it did: a globex
+// user clears the password step, and the pending token is replayed at
+// acme's totp-verify.
+//
+// Two fences stand in the way now, and the test takes them one at a
+// time because either alone would have been enough. The pending token is
+// bound to globex, so acme's verify refuses it. And an adapter that
+// never got that far — one still on the unbound pair, minting with the
+// ROUTED tenant — is refused by the Core.
+func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *testing.T) {
+	ctx := context.Background()
+	c, store := testCore(t)
+	acme, globex := tenant.New("acme"), tenant.New("globex")
+
+	user, _, err := c.Register(ctx, globex, "bob@globex.test", "correct-horse")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// Password step done in globex.
+	pending, err := c.jwt.IssueTOTPPendingInTenant(user.ID, globex)
+	if err != nil {
+		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+	}
+
+	// Fence 1: the token is replayed at ACME's verify.
+	if uid, err := c.jwt.VerifyTOTPPendingInTenant(pending, acme); !errors.Is(err, crypto.ErrInvalidToken) {
+		t.Errorf("acme accepted a globex pending token: uid=%q err=%v", uid, err)
+	}
+
+	// Fence 2: the adapter that mints with the routed tenant without
+	// comparing it to the user's stored tenant. The unbound pair is used
+	// on purpose — it is what such an adapter would still be calling.
+	unbound, err := c.jwt.IssueTOTPPending(user.ID)
+	if err != nil {
+		t.Fatalf("IssueTOTPPending: %v", err)
+	}
+	uid, err := c.jwt.VerifyTOTPPending(unbound)
+	if err != nil {
+		t.Fatalf("VerifyTOTPPending: %v", err)
+	}
+	before := sessionsFor(store, user.ID)
+	tokens, err := c.IssueTokensForUserInTenant(ctx, uid, acme, 0, "")
+	if !errors.Is(err, ErrNotFound) {
+		claims, _ := c.jwt.ParseAccess(tokens.Access)
+		t.Fatalf("a user stored in tenant %q received a session with tid=%q (refresh issued=%v): err = %v, want ErrNotFound",
+			user.TenantID, claims.TenantID, tokens.Refresh != "", err)
+	}
+	if after := sessionsFor(store, user.ID); after != before {
+		t.Fatalf("sessions %d -> %d: the refused mint left a refresh session to rotate", before, after)
+	}
+
+	// The honest path: globex's verify accepts the token, and the mint
+	// for globex carries the user's tenant — not the empty tid the shim
+	// would have produced, which every tenant-pinned verifier refuses.
+	uid, err = c.jwt.VerifyTOTPPendingInTenant(pending, globex)
+	if err != nil {
+		t.Fatalf("VerifyTOTPPendingInTenant(globex): %v", err)
+	}
+	tokens, err = c.IssueTokensForUserInTenant(ctx, uid, globex, 0, "")
+	if err != nil {
+		t.Fatalf("IssueTokensForUserInTenant(globex user, globex): %v", err)
+	}
+	claims, err := c.jwt.VerifyAccess(tokens.Access, globex)
+	if err != nil {
+		t.Fatalf("VerifyAccess(globex): %v", err)
+	}
+	if claims.TenantID != "globex" || claims.Subject != user.ID {
+		t.Errorf("claims = tid %q sub %q, want tid %q sub %q", claims.TenantID, claims.Subject, "globex", user.ID)
+	}
+	if _, err := c.jwt.VerifyAccess(tokens.Access, acme); err == nil {
+		t.Error("the globex session verified at acme")
+	}
+	// And the session it persisted rotates inside globex.
+	_, rotated, err := c.Refresh(ctx, tokens.Refresh)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if _, err := c.jwt.VerifyAccess(rotated.Access, globex); err != nil {
+		t.Errorf("rotated token lost the tenant: %v", err)
+	}
+}
+
+// userLookupFails is a Store whose UserByID fails with an error that is
+// NOT ErrNotFound — the database being down, not the row being absent.
+type userLookupFails struct {
+	*MemStore
+	err error
+}
+
+func (s *userLookupFails) UserByID(context.Context, string) (User, error) { return User{}, s.err }
+
+// TestIssueTokensForUserInTenant_StoreFailureDoesNotMint: the tenant
+// check rests on a store read, so a read that fails must deny. No error
+// return may be read as allow — and it must not be dressed up as
+// ErrNotFound either, or an outage reads as "no such user".
+func TestIssueTokensForUserInTenant_StoreFailureDoesNotMint(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("store: connection refused")
+	store := &userLookupFails{MemStore: NewMemStore(), err: boom}
+	c, err := New(store, testJWT(), WithRefreshTTL(time.Hour), WithDefaultACR(testACR))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tokens, err := c.IssueTokensForUserInTenant(ctx, "u-1", tenant.New("acme"), 0, "")
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the store failure", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Errorf("a store failure was reported as ErrNotFound: %v", err)
+	}
+	if tokens != (Tokens{}) {
+		t.Errorf("a failed lookup still returned tokens: %+v", tokens)
+	}
+	if n := len(store.sessions); n != 0 {
+		t.Errorf("a failed lookup persisted %d session(s)", n)
+	}
+}
+
+// TestIssueTokensForUserInTenant_SingleIsByteIdenticalToTheShim is
+// standing rule 1 for the new read. For a user stored in the single
+// tenant, passing tenant.Single must still produce the access token the
+// shim produces — the shim was not touched by TD-10 and reads nothing,
+// so it is the fixed point. Both clocks are frozen so the comparison can
+// be on the encoded token rather than on parsed claims.
+func TestIssueTokensForUserInTenant_SingleIsByteIdenticalToTheShim(t *testing.T) {
+	ctx := context.Background()
+	clock := time.Unix(1700000000, 0).UTC()
+	c, _ := testCore(t, WithClock(func() time.Time { return clock }))
+	c.jwt.Testing().SetNow(func() time.Time { return clock })
+
+	user, _, err := c.Register(ctx, tenant.Single, "single@example.com", "correct-horse")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	viaShim, err := c.IssueTokensForUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("shim mint: %v", err)
+	}
+	viaTenant, err := c.IssueTokensForUserInTenant(ctx, user.ID, tenant.Single, 0, "")
+	if err != nil {
+		t.Fatalf("tenant mint: %v", err)
+	}
+	if viaTenant.Access != viaShim.Access {
+		t.Errorf("Single mint drifted from the shim:\n  shim:   %s\n  tenant: %s", viaShim.Access, viaTenant.Access)
+	}
+	if !viaTenant.RefreshExpiresAt.Equal(viaShim.RefreshExpiresAt) {
+		t.Errorf("refresh expiry drifted: shim %v, tenant %v", viaShim.RefreshExpiresAt, viaTenant.RefreshExpiresAt)
 	}
 }

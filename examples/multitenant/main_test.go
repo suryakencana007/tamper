@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -311,5 +312,120 @@ func TestFederatedProvisionIsPerTenant(t *testing.T) {
 	// And an unknown tenant resolves to nothing — not to someone else's.
 	if _, _, found, err := core.ResolveByIdentity(ctx, tenant.New("stranger"), provider0, subject); err != nil || found {
 		t.Errorf("resolve in an unknown tenant = (%v, %v), want (false, nil)", found, err)
+	}
+}
+
+// --- the TOTP second leg is tenant-bound ------------------------------
+
+// TestTOTPSecondLegIsTenantBound drives the three port methods the
+// totp-verify route calls, in the order it calls them, on the adapters
+// the routes are mounted with. It is TD-10 at the level an app owns.
+//
+// The leg used to fail in one of two directions, and both are asserted
+// here because fixing one by hand is how the other gets introduced:
+//
+//   - closed: the post-TOTP mint went through Core.IssueTokensForUser,
+//     so the token carried no tid and the refresh session no tenant — a
+//     user with 2FA got a session no tenant-pinned verifier accepts, and
+//     one this adapter's own Refresh refused;
+//   - open: nothing tied the pending token to a tenant, so a globex
+//     user's token could be presented under acme's prefix.
+//
+// The code check itself (VerifyTOTP) sits between steps 2 and 3 on the
+// real route and is skipped: this example's store does not persist TOTP
+// state, and that check is keyed by user id alone — it is not what
+// stands between the two tenants.
+func TestTOTPSecondLegIsTenantBound(t *testing.T) {
+	ctx := context.Background()
+	store := newTenantStore()
+	_, provider, err := buildHandler(store, "multitenant-test-secret")
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+	defer func() { _ = provider.Close() }()
+
+	// The same constructor buildHandler mounts the routes with.
+	acme := newTenantIdentity(provider, store, tenantAcme)
+	globex := newTenantIdentity(provider, store, tenantGlobex)
+
+	reg, err := globex.Register(ctx, "bob@globex.example", password)
+	if err != nil {
+		t.Fatalf("register into %s: %v", tenantGlobex, err)
+	}
+	bob := reg.User
+
+	// 1. Password step done under globex's prefix: the routes mint the
+	//    pending token through globex's adapter.
+	pending, err := globex.IssueTOTPPending(bob.ID)
+	if err != nil {
+		t.Fatalf("IssueTOTPPending: %v", err)
+	}
+
+	// 2. The token is replayed under ACME's prefix. It must die here,
+	//    at the first thing the route does.
+	if uid, err := acme.VerifyTOTPPending(pending); !errors.Is(err, crypto.ErrInvalidToken) {
+		t.Fatalf("%s accepted a pending token minted under %s: uid=%q err=%v", tenantAcme, tenantGlobex, uid, err)
+	}
+	// A pending token that names NO tenant is refused too: absence is
+	// not a match, and it is what an unbound mint would have produced.
+	unbound, err := provider.JWT.IssueTOTPPending(bob.ID)
+	if err != nil {
+		t.Fatalf("IssueTOTPPending (unbound): %v", err)
+	}
+	for _, a := range []tenantIdentity{acme, globex} {
+		if uid, err := a.VerifyTOTPPending(unbound); !errors.Is(err, crypto.ErrInvalidToken) {
+			t.Errorf("%s accepted a pending token bound to no tenant: uid=%q err=%v", a.tenantID, uid, err)
+		}
+	}
+
+	// And if acme's adapter is asked to mint for bob anyway, it reports
+	// a user that does not exist — the same answer as for one that
+	// really does not.
+	_, crossErr := acme.IssueTokensForUser(ctx, bob.ID)
+	_, missErr := acme.IssueTokensForUser(ctx, "no-such-user")
+	if !errors.Is(crossErr, identity.ErrNotFound) || !errors.Is(missErr, identity.ErrNotFound) {
+		t.Fatalf("cross-tenant mint err = %v, missing-user err = %v; want ErrNotFound for both", crossErr, missErr)
+	}
+
+	// 3. The honest path, under globex's prefix.
+	uid, err := globex.VerifyTOTPPending(pending)
+	if err != nil {
+		t.Fatalf("%s refused its own pending token: %v", tenantGlobex, err)
+	}
+	if uid != bob.ID {
+		t.Fatalf("pending token resolved to %q, want %q", uid, bob.ID)
+	}
+	res, err := globex.IssueTokensForUser(ctx, uid)
+	if err != nil {
+		t.Fatalf("IssueTokensForUser: %v", err)
+	}
+	if res.User == nil || res.User.ID != bob.ID {
+		t.Fatalf("post-TOTP result carries user %+v, want %s", res.User, bob.ID)
+	}
+
+	// The post-TOTP access token carries the tenant...
+	claims, err := provider.JWT.VerifyAccess(res.Tokens.Access, tenant.New(tenantGlobex))
+	if err != nil {
+		t.Fatalf("the post-TOTP token does not verify for %s: %v — a user with 2FA cannot sign in", tenantGlobex, err)
+	}
+	if claims.TenantID != tenantGlobex {
+		t.Errorf("post-TOTP token tid = %q, want %q", claims.TenantID, tenantGlobex)
+	}
+	// ...and only that one.
+	if _, err := provider.JWT.VerifyAccess(res.Tokens.Access, tenant.New(tenantAcme)); err == nil {
+		t.Errorf("the post-TOTP token for %s verified for %s", tenantGlobex, tenantAcme)
+	}
+
+	// So does the refresh session: it rotates under globex and is
+	// refused under acme. With the tid-less mint it rotated nowhere.
+	if _, err := acme.Refresh(ctx, res.Tokens.Refresh); !errors.Is(err, identity.ErrInvalidSession) {
+		t.Errorf("%s rotated a %s session: err = %v, want ErrInvalidSession", tenantAcme, tenantGlobex, err)
+	}
+	rotated, err := globex.Refresh(ctx, res.Tokens.Refresh)
+	if err != nil {
+		t.Fatalf("the post-TOTP session does not refresh under %s: %v", tenantGlobex, err)
+	}
+	if _, err := provider.JWT.VerifyAccess(rotated.Tokens.Access, tenant.New(tenantGlobex)); err != nil {
+		t.Errorf("the rotated token lost the tenant: %v", err)
 	}
 }

@@ -43,10 +43,46 @@ type IdentityService interface {
 	Refresh(ctx context.Context, refreshToken string) (AuthResult, error)
 	Logout(ctx context.Context, refreshToken string) error
 
+	// The next five methods carry the two-phase TOTP login, and NONE of
+	// them is handed a tenant: the routes pass a user id and nothing
+	// else. A single-tenant adapter forwards them as they are. A POOLED
+	// adapter — one instance per tenant, the tenant bound at wiring time
+	// — owes the three obligations noted below, and the port cannot
+	// enforce them: nothing here fails to compile when the tenant is
+	// left out. Left out, the login fails one of two ways. Either the
+	// session it mints carries no tenant and every tenant route refuses
+	// it, or it carries the ROUTED tenant for a user who is stored in
+	// another one.
+
+	// IssueTOTPPending mints the session token returned after a
+	// password-only Login, for the user that Login just authenticated.
+	//
+	// Pooled: bind the token to the adapter's tenant —
+	// crypto.JWTService.IssueTOTPPendingInTenant. The unbound form names
+	// a user and no tenant, so every tenant's verify would accept it.
 	IssueTOTPPending(userID string) (string, error)
+	// VerifyTOTPPending validates that session token and returns the user
+	// id it was minted for. Any error renders as the generic 401.
+	//
+	// Pooled: verify against the adapter's tenant —
+	// crypto.JWTService.VerifyTOTPPendingInTenant — so a pending token
+	// minted under another tenant's routes is refused here, before a code
+	// is checked or anything is minted. This is the only place the second
+	// leg can be tied to the tenant the first leg ran in: VerifyTOTP and
+	// VerifyRecoveryCode below are keyed by user id alone.
 	VerifyTOTPPending(sessionToken string) (userID string, err error)
 	VerifyTOTP(ctx context.Context, userID, code string) error
 	VerifyRecoveryCode(ctx context.Context, userID, code string) error
+	// IssueTokensForUser mints the session that completes the second
+	// leg, and returns the user alongside it.
+	//
+	// Pooled: mint with identity.Core.IssueTokensForUserInTenant and the
+	// adapter's tenant. Do NOT forward to Core.IssueTokensForUser — that
+	// shim mints for tenant.Single, so the token carries no `tid`. The
+	// tenant passed must be the one the user is STORED in; the Core
+	// refuses a mismatch with identity.ErrNotFound, the same error as a
+	// user that does not exist, and an adapter that loads the user itself
+	// must report its own mismatch the same way.
 	IssueTokensForUser(ctx context.Context, userID string) (AuthResult, error)
 	EnrollTOTP(ctx context.Context, userID string) (TOTPEnrollment, error)
 	DisableTOTP(ctx context.Context, userID, code string) error

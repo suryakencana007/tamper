@@ -7,17 +7,29 @@ import (
 	"time"
 )
 
-// TD-16 — the idempotency key of BootstrapChainV4.
+// TD-16 — when BootstrapChainV4 writes the v4 anchor.
 //
-// HasChainRestartV4 used to answer "is there a v4 anchor?" by counting
-// every v4 row. One ordinary v4 row logged before the bootstrap was
-// enough to make it say yes, and from then on the bootstrap refused to
-// write the anchor it was the only way to write. These tests pin the
-// question to the anchor row itself.
+// The decision used to be "is there any v4 row?". One ordinary v4 row
+// logged before the bootstrap was enough to make it say the anchor was
+// there, and from then on the bootstrap refused to write the anchor it
+// was the only way to write. It is now taken from the NEWEST
+// chain-restart anchor, in three steps (see needsChainRestartV4), and
+// each test below holds one of them in place:
 //
-// Every test here that logs before bootstrapping is the mutation proof
-// for the fix: restore the row-counting check and they fail, because
-// the late bootstrap goes back to returning (false, nil).
+//   - newest anchor is v4 → skip
+//     (TestV4_BootstrapIsIdempotentAndGated, and the closing calls of the
+//     two repair tests here);
+//   - newest anchor is older → emit
+//     (TestBootstrapChainV4_LateOnAnAnchoredV3DB,
+//     TestBootstrapChainV4_ReanchorsWhenAnOlderAnchorLandsAfterIt);
+//   - no anchor at all → emit only while there is no v4 row
+//     (TestBootstrapChainV4_SkipsOnAnUnanchoredDBWithV4Rows,
+//     TestBootstrapChainV4_DoesNotReanchorAfterTheAnchorIsPruned).
+//
+// Each step has a tempting simplification, and each simplification turns
+// one of these red: the old row count fails both repair tests; "some v4
+// anchor exists → skip" fails the second of them; "no v4 anchor → emit"
+// fails the two no-anchor tests.
 
 // countV4Anchors counts the rows that ARE v4 anchors — action and
 // version both. Written out against the DB rather than through
@@ -45,80 +57,93 @@ func mustHaveChainRestartV4(t *testing.T, l *SQLiteLogger, want bool, when strin
 	}
 }
 
-// TestHasChainRestartV4_CountsAnchorsNotRows is the predicate on its
-// own, through the three states that matter: nothing, ordinary v4 rows
-// with no anchor, and the anchor.
-//
-// The middle state is the whole of TD-16. An empty DB and an anchored
-// DB were answered correctly by the old row count too, which is why the
-// flaw survived every test that bootstrapped first.
-func TestHasChainRestartV4_CountsAnchorsNotRows(t *testing.T) {
-	ctx := context.Background()
-	l := v4Logger(t)
-	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
-
-	mustHaveChainRestartV4(t, l, false, "empty DB")
-
-	for i, id := range []string{"v4-a", "v4-b"} {
-		got, err := l.Log(ctx, tenantEvent(id, base.Add(time.Duration(i)*time.Second), "acme"))
-		if err != nil {
-			t.Fatalf("Log %s: %v", id, err)
-		}
-		if got.CanonicalVersion != CanonicalVersion4 {
-			t.Fatalf("row %s landed at v%d, want v4 — the fixture is not exercising "+
-				"the case under test", id, got.CanonicalVersion)
-		}
-	}
-	if n := countV4Anchors(t, l); n != 0 {
-		t.Fatalf("fixture has %d v4 anchors before the bootstrap, want 0", n)
-	}
-	got, err := l.HasChainRestartV4(ctx)
-	if err != nil {
-		t.Fatalf("HasChainRestartV4 (ordinary v4 rows, no anchor): %v", err)
-	}
-	if got {
-		t.Fatal("HasChainRestartV4 = true on a DB holding ordinary v4 rows and NO " +
-			"anchor; it is counting rows at the version rather than anchors, and " +
-			"BootstrapChainV4 will skip the anchor on every boot from here on")
-	}
-
-	emitted, err := l.BootstrapChainV4(ctx, base.Add(time.Minute), "v4-anchor")
-	if err != nil || !emitted {
-		t.Fatalf("BootstrapChainV4 = (%v, %v), want (true, nil)", emitted, err)
-	}
-	mustHaveChainRestartV4(t, l, true, "after the bootstrap")
-}
-
-// TestHasChainRestartV4_IgnoresAnchorsAtOtherVersions: the predicate is
-// action AND version. A v3 chain-restart row is an anchor, but it is not
-// the v4 one — and it is exactly the row an existing deployment already
-// has when it first switches Tenancy on. Matching on the action alone
-// would skip the bootstrap on every DB that needs it most.
-func TestHasChainRestartV4_IgnoresAnchorsAtOtherVersions(t *testing.T) {
-	ctx := context.Background()
-	l := v4Logger(t)
-	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
-
-	if _, err := l.Log(ctx, Event{
-		ID:               "v3-anchor",
-		At:               base,
+// v3AnchorEvent is the chain-restart row an application's own (pre-v4)
+// boot bootstrap emits: the reserved action at an explicit
+// canonical_version=3.
+func v3AnchorEvent(id string, at time.Time) Event {
+	return Event{
+		ID:               id,
+		At:               at,
 		Actor:            ActorSystem("audit"),
 		Action:           ActionAuditChainRestart,
 		ResourceType:     ResourceType("audit_chain"),
 		ResourceID:       "v3",
 		CanonicalVersion: CanonicalVersion3,
-	}); err != nil {
+	}
+}
+
+// TestHasChainRestartV4_CountsAnchorsNotRows is the predicate on its
+// own, through the three states that matter: nothing, ordinary v4 rows
+// with no anchor, and the anchor.
+//
+// The middle state is where it used to lie. An empty DB and an anchored
+// DB were answered correctly by the old row count too, which is why the
+// flaw survived every test that bootstrapped first.
+func TestHasChainRestartV4_CountsAnchorsNotRows(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+
+	t.Run("ordinary v4 rows are not an anchor", func(t *testing.T) {
+		l := v4Logger(t)
+		mustHaveChainRestartV4(t, l, false, "empty DB")
+
+		for i, id := range []string{"v4-a", "v4-b"} {
+			got, err := l.Log(ctx, tenantEvent(id, base.Add(time.Duration(i)*time.Second), "acme"))
+			if err != nil {
+				t.Fatalf("Log %s: %v", id, err)
+			}
+			if got.CanonicalVersion != CanonicalVersion4 {
+				t.Fatalf("row %s landed at v%d, want v4 — the fixture is not "+
+					"exercising the case under test", id, got.CanonicalVersion)
+			}
+		}
+		got, err := l.HasChainRestartV4(ctx)
+		if err != nil {
+			t.Fatalf("HasChainRestartV4 (ordinary v4 rows, no anchor): %v", err)
+		}
+		if got {
+			t.Fatal("HasChainRestartV4 = true on a DB holding ordinary v4 rows and " +
+				"NO anchor; it is counting rows at the version rather than anchors")
+		}
+	})
+
+	t.Run("the anchor is", func(t *testing.T) {
+		l := v4Logger(t)
+		emitted, err := l.BootstrapChainV4(ctx, base, "v4-anchor")
+		if err != nil || !emitted {
+			t.Fatalf("BootstrapChainV4 on a fresh DB = (%v, %v), want (true, nil)", emitted, err)
+		}
+		mustHaveChainRestartV4(t, l, true, "after the bootstrap")
+	})
+}
+
+// TestHasChainRestartV4_IgnoresAnchorsAtOtherVersions: the predicate is
+// action AND version. A v3 chain-restart row is an anchor, but it is not
+// the v4 one — and it is exactly the row an existing deployment already
+// has when it first switches Tenancy on.
+func TestHasChainRestartV4_IgnoresAnchorsAtOtherVersions(t *testing.T) {
+	ctx := context.Background()
+	l := v4Logger(t)
+	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+
+	if _, err := l.Log(ctx, v3AnchorEvent("v3-anchor", base)); err != nil {
 		t.Fatalf("emit v3 anchor: %v", err)
 	}
 	mustHaveChainRestartV4(t, l, false, "v3 anchor only")
 }
 
-// TestBootstrapChainV4_EmitsAfterAnOrdinaryV4Row is the repair path.
-// The application logged first and bootstrapped second — the wrong
-// order, and the one a boot sequence drifts into the moment somebody
-// adds an audited step above the bootstrap call. The anchor must still
-// be written, exactly once.
-func TestBootstrapChainV4_EmitsAfterAnOrdinaryV4Row(t *testing.T) {
+// TestBootstrapChainV4_SkipsOnAnUnanchoredDBWithV4Rows is step 3 with a
+// v4 row present: no anchor of any version, and the application logged
+// before it bootstrapped.
+//
+// Nothing is broken on this DB. With no anchor, Verify walks every row
+// under that row's own version and is clean. An anchor written late
+// would not repair anything — there is no older anchor's encoder to
+// override — and would move Verify's walk root past the rows already
+// logged. So the bootstrap leaves it alone, which is also what it did
+// before TD-16; HasChainRestartV4 is honestly false here, and "no v4
+// anchor" on its own must not be read as "write one".
+func TestBootstrapChainV4_SkipsOnAnUnanchoredDBWithV4Rows(t *testing.T) {
 	ctx := context.Background()
 	l := v4Logger(t)
 	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
@@ -131,29 +156,29 @@ func TestBootstrapChainV4_EmitsAfterAnOrdinaryV4Row(t *testing.T) {
 	if err != nil {
 		t.Fatalf("late BootstrapChainV4: %v", err)
 	}
-	if !emitted {
-		t.Fatal("BootstrapChainV4 returned (false, nil) on a DB with a v4 row and " +
-			"NO v4 anchor; the ordinary row was mistaken for the anchor, and no " +
-			"later boot can repair it")
+	if emitted {
+		t.Error("BootstrapChainV4 emitted an anchor onto a DB with v4 rows and no " +
+			"anchor of any version; Verify already walks every row there, and the " +
+			"new walk root hides the rows logged before it")
 	}
-	mustHaveChainRestartV4(t, l, true, "after the late bootstrap")
+	if n := countV4Anchors(t, l); n != 0 {
+		t.Errorf("v4 anchors = %d, want 0", n)
+	}
+	mustHaveChainRestartV4(t, l, false, "after the skipped bootstrap")
 
-	second, err := l.BootstrapChainV4(ctx, base.Add(time.Hour), "v4-anchor-2")
+	if _, err := l.Log(ctx, tenantEvent("later", base.Add(2*time.Second), "acme")); err != nil {
+		t.Fatalf("Log later: %v", err)
+	}
+	res, err := l.Verify(ctx)
 	if err != nil {
-		t.Fatalf("second BootstrapChainV4: %v", err)
+		t.Fatalf("Verify: %v", err)
 	}
-	if second {
-		t.Error("a second bootstrap emitted another v4 anchor; every restart would " +
-			"add a chain segment")
+	if res.Tamper {
+		t.Errorf("Verify reports tamper on an unanchored v4 chain: %+v", res)
 	}
-	if n := countV4Anchors(t, l); n != 1 {
-		t.Errorf("v4 anchors = %d, want exactly 1", n)
-	}
-
-	// The anchor went through Log, so it is linked onto the row that was
-	// already there rather than restarting from the zero sentinel.
-	if _, err := verifyChainPostMigrationStore(ctx, l); err != nil {
-		t.Errorf("the chain does not walk after a late bootstrap: %v", err)
+	if res.Total != 2 {
+		t.Errorf("Verify walked %d rows, want 2 — every row on the DB, the early "+
+			"one included", res.Total)
 	}
 }
 
@@ -181,15 +206,7 @@ func TestBootstrapChainV4_LateOnAnAnchoredV3DB(t *testing.T) {
 		t.Fatalf("open (tenancy off): %v", err)
 	}
 	a3 := opened.(*SQLiteLogger)
-	if _, err := a3.Log(ctx, Event{
-		ID:               "v3-anchor",
-		At:               base,
-		Actor:            ActorSystem("audit"),
-		Action:           ActionAuditChainRestart,
-		ResourceType:     ResourceType("audit_chain"),
-		ResourceID:       "v3",
-		CanonicalVersion: CanonicalVersion3,
-	}); err != nil {
+	if _, err := a3.Log(ctx, v3AnchorEvent("v3-anchor", base)); err != nil {
 		t.Fatalf("emit v3 anchor: %v", err)
 	}
 	if _, err := a3.Log(ctx, makeEvent("v3-row", base.Add(time.Second), Action("auth.login"))); err != nil {
@@ -245,13 +262,25 @@ func TestBootstrapChainV4_LateOnAnAnchoredV3DB(t *testing.T) {
 		t.Fatal("the late bootstrap emitted nothing; Verify reports tamper on this " +
 			"DB and the only call that could end it has refused to run")
 	}
-	if n := countV4Anchors(t, l); n != 1 {
-		t.Fatalf("v4 anchors = %d, want exactly 1", n)
-	}
+	mustHaveChainRestartV4(t, l, true, "after the late bootstrap")
 	for i, id := range []string{"v4-after-a", "v4-after-b"} {
 		if _, err := l.Log(ctx, tenantEvent(id, base.Add(time.Duration(4+i)*time.Second), "acme")); err != nil {
 			t.Fatalf("Log %s: %v", id, err)
 		}
+	}
+
+	// And it is a repair, not a habit: the next boot finds the newest
+	// anchor at v4 and writes nothing.
+	second, err := l.BootstrapChainV4(ctx, base.Add(time.Hour), "v4-anchor-2")
+	if err != nil {
+		t.Fatalf("second BootstrapChainV4: %v", err)
+	}
+	if second {
+		t.Error("a second bootstrap emitted another v4 anchor; every restart would " +
+			"add a chain segment")
+	}
+	if n := countV4Anchors(t, l); n != 1 {
+		t.Errorf("v4 anchors = %d, want exactly 1", n)
 	}
 
 	// Verify roots at the newest anchor — now the v4 one — and walks it
@@ -276,8 +305,8 @@ func TestBootstrapChainV4_LateOnAnAnchoredV3DB(t *testing.T) {
 	// What changed is who reads it. Verify no longer does — the Total of
 	// 3 above is the anchor and its two successors, and v4-between is
 	// behind the walk root, like every row before any anchor. The two
-	// walks that honour the row's own canonical_version still cover it,
-	// and both find it intact:
+	// walks that hash each row under its own canonical_version still
+	// cover it, and both find it intact:
 	boot, err := verifyChainPostMigrationStore(ctx, l)
 	if err != nil {
 		t.Fatalf("VerifyChainPostMigration rejects the repaired chain: %v", err)
@@ -319,17 +348,105 @@ func TestBootstrapChainV4_LateOnAnAnchoredV3DB(t *testing.T) {
 	}
 }
 
-// TestBootstrapChainV4_ReanchorsAfterTheAnchorIsPruned records a
-// consequence of keying on the anchor row rather than on any v4 row, so
-// that it is a stated behaviour and not a surprise.
+// TestBootstrapChainV4_ReanchorsWhenAnOlderAnchorLandsAfterIt is why
+// step 1 reads the NEWEST anchor instead of asking HasChainRestartV4.
 //
-// PruneOlderThan deletes by age and the anchor is the oldest v4 row.
-// Under the old row count the bootstrap stayed quiet for as long as any
-// v4 row survived; now, once retention removes the anchor, the next boot
-// emits a new one. That is at most one anchor per retention window, each
-// linked into the chain through Log, and the chain must verify across
-// it.
-func TestBootstrapChainV4_ReanchorsAfterTheAnchorIsPruned(t *testing.T) {
+// The bootstraps ran in the wrong order: the v4 anchor went in first,
+// and an application's legacy boot bootstrap — which knows nothing about
+// v4 — then emitted its v3 chain-restart row on top of it. The newest
+// anchor is now v3, so Verify re-hashes every later v4 row as v3 and
+// reports tamper. A v4 anchor exists the whole time; "a v4 anchor exists
+// → skip" would look at this DB on every boot and decide it was done.
+func TestBootstrapChainV4_ReanchorsWhenAnOlderAnchorLandsAfterIt(t *testing.T) {
+	ctx := context.Background()
+	l := v4Logger(t)
+	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+
+	first, err := l.BootstrapChainV4(ctx, base, "v4-anchor")
+	if err != nil || !first {
+		t.Fatalf("first bootstrap = (%v, %v), want (true, nil)", first, err)
+	}
+	if _, err := l.Log(ctx, v3AnchorEvent("v3-anchor", base.Add(time.Second))); err != nil {
+		t.Fatalf("emit v3 anchor: %v", err)
+	}
+	row, err := l.Log(ctx, tenantEvent("v4-row", base.Add(2*time.Second), "acme"))
+	if err != nil {
+		t.Fatalf("Log v4-row: %v", err)
+	}
+	if row.CanonicalVersion != CanonicalVersion4 {
+		t.Fatalf("v4-row landed at v%d, want v4", row.CanonicalVersion)
+	}
+
+	// The damage, asserted for the same reason as in the test above: the
+	// walk is rooted at the v3 anchor (index 0) and the v4 row behind it
+	// (index 1) is hashed under v3.
+	damaged, err := l.Verify(ctx)
+	if err != nil {
+		t.Fatalf("Verify (before the repair): %v", err)
+	}
+	if !damaged.Tamper || damaged.FirstBadIndex != 1 {
+		t.Fatalf("Verify before the repair = %+v, want tamper at index 1 (the v4 "+
+			"row re-hashed under the later v3 anchor's encoder); the fixture is "+
+			"not in the state this test describes", damaged)
+	}
+	// A v4 anchor IS on the table. That is the whole trap.
+	mustHaveChainRestartV4(t, l, true, "v4 anchor behind a newer v3 anchor")
+
+	second, err := l.BootstrapChainV4(ctx, base.Add(3*time.Second), "v4-anchor-2")
+	if err != nil {
+		t.Fatalf("second BootstrapChainV4: %v", err)
+	}
+	if !second {
+		t.Fatal("the bootstrap skipped because a v4 anchor exists, though a v3 " +
+			"anchor was written after it; Verify reports tamper on every v4 row " +
+			"from here on and no later boot will repair it")
+	}
+	for i, id := range []string{"v4-after-a", "v4-after-b"} {
+		if _, err := l.Log(ctx, tenantEvent(id, base.Add(time.Duration(4+i)*time.Second), "acme")); err != nil {
+			t.Fatalf("Log %s: %v", id, err)
+		}
+	}
+
+	res, err := l.Verify(ctx)
+	if err != nil {
+		t.Fatalf("Verify (after the repair): %v", err)
+	}
+	if res.Tamper {
+		t.Fatalf("Verify still reports tamper after the repair: %+v", res)
+	}
+	if res.Total != 3 {
+		t.Errorf("Verify walked %d rows, want 3 (the second v4 anchor and the two "+
+			"rows after it)", res.Total)
+	}
+	if _, err := verifyChainPostMigrationStore(ctx, l); err != nil {
+		t.Errorf("the boot guard rejects the repaired chain: %v", err)
+	}
+
+	third, err := l.BootstrapChainV4(ctx, base.Add(time.Hour), "v4-anchor-3")
+	if err != nil {
+		t.Fatalf("third BootstrapChainV4: %v", err)
+	}
+	if third {
+		t.Error("a third bootstrap emitted again with the newest anchor already " +
+			"at v4; every restart would add a chain segment")
+	}
+	if n := countV4Anchors(t, l); n != 2 {
+		t.Errorf("v4 anchors = %d, want 2 (the original and the repair)", n)
+	}
+}
+
+// TestBootstrapChainV4_DoesNotReanchorAfterTheAnchorIsPruned is step 3
+// on the DB retention produces. PruneOlderThan deletes by age and the
+// anchor is the oldest v4 row, so sooner or later it goes — and with it
+// the last anchor of any version.
+//
+// That is not a chain in need of an anchor. With none left, Verify walks
+// EVERY surviving row under that row's own version, which is the widest
+// coverage it has. A fresh anchor on the next boot would move the walk
+// root to "now" and drop every surviving row before it out of Verify,
+// once per retention window: tamper detection given away to restore a
+// row nothing was missing.
+func TestBootstrapChainV4_DoesNotReanchorAfterTheAnchorIsPruned(t *testing.T) {
 	ctx := context.Background()
 	l := v4Logger(t)
 	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
@@ -351,26 +468,37 @@ func TestBootstrapChainV4_ReanchorsAfterTheAnchorIsPruned(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("pruned %d rows, want 2 (the anchor and row a)", n)
 	}
+	// The predicate stays truthful: there is no v4 anchor any more. It is
+	// the bootstrap that must not act on that alone.
 	mustHaveChainRestartV4(t, l, false, "anchor pruned, v4 rows surviving")
 
 	emitted, err := l.BootstrapChainV4(ctx, base.Add(24*time.Hour), "v4-anchor-2")
 	if err != nil {
 		t.Fatalf("BootstrapChainV4 after the prune: %v", err)
 	}
-	if !emitted {
-		t.Fatal("no anchor was emitted on a DB whose v4 anchor has been pruned")
+	if emitted {
+		t.Error("the bootstrap re-anchored a chain whose anchor was pruned; the new " +
+			"walk root hides every surviving row before it from Verify, and it " +
+			"will do so again each retention window")
 	}
-	if n := countV4Anchors(t, l); n != 1 {
-		t.Errorf("v4 anchors = %d, want exactly 1", n)
+	if n := countV4Anchors(t, l); n != 0 {
+		t.Errorf("v4 anchors = %d, want 0 — a new anchor row appeared", n)
 	}
 	if _, err := l.Log(ctx, tenantEvent("d", base.Add(25*time.Hour), "acme")); err != nil {
 		t.Fatalf("Log d: %v", err)
 	}
 
-	if res, err := l.Verify(ctx); err != nil || res.Tamper {
-		t.Errorf("Verify after re-anchoring = %+v, %v; want a clean walk", res, err)
+	res, err := l.Verify(ctx)
+	if err != nil {
+		t.Fatalf("Verify after the prune: %v", err)
+	}
+	if res.Tamper {
+		t.Errorf("Verify reports tamper on the pruned chain: %+v", res)
+	}
+	if res.Total != 3 {
+		t.Errorf("Verify walked %d rows, want 3 — every surviving row (b, c, d)", res.Total)
 	}
 	if _, err := verifyChainPostMigrationStore(ctx, l); err != nil {
-		t.Errorf("the boot guard rejects the re-anchored chain: %v", err)
+		t.Errorf("the boot guard rejects the pruned chain: %v", err)
 	}
 }

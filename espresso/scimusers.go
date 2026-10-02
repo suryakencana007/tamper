@@ -166,8 +166,15 @@ func (s *SCIMRoutes) UsersDelete(w http.ResponseWriter, r *http.Request) {
 // uniqueness; ErrInvalidInput → 400 invalidValue; anything else → 500. The
 // uniqueness/invalidValue details recover the app's original message so they
 // stay byte-identical.
+//
+// errSCIMNotTenantScoped is not the application's error — the guarded
+// store (scimtenantguard.go) returned it in place of calling the
+// application's — but it arrives on the same return value, so it is mapped
+// here rather than falling through to the anonymous 500.
 func (s *SCIMRoutes) writeUserStoreErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errSCIMNotTenantScoped):
+		writeSCIMNotTenantScoped(w)
 	case errors.Is(err, scim.ErrNotFound):
 		WriteSCIMErrorTyped(w, http.StatusNotFound, "user not found", "")
 	case errors.Is(err, scim.ErrConflict):

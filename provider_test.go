@@ -252,3 +252,237 @@ func TestNew_KeySetThreadsIntoIdentity(t *testing.T) {
 		t.Errorf("expected ErrNoKeySet without KEKs, got %v", err)
 	}
 }
+
+// --- Audit.Tenancy (TD-09) ---
+
+// chainAnchors counts the chain-restart anchor rows at the given
+// canonical_version. It matches on the ACTION as well as the version, so it
+// counts anchors and nothing else — HasChainRestartV4 alone cannot tell an
+// anchor from an ordinary v4 row once one has been logged. The match is done
+// here rather than through Filter.Action because SQLiteLogger.List does not
+// dispatch on that field; every test below stays far under the page limit.
+func chainAnchors(t *testing.T, l audit.Logger, version int) int {
+	t.Helper()
+	page, err := l.List(context.Background(), audit.Filter{Limit: 100})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	n := 0
+	for _, e := range page.Events {
+		if e.Action == audit.ActionAuditChainRestart && e.CanonicalVersion == version {
+			n++
+		}
+	}
+	return n
+}
+
+// tenantEvent is an ordinary application event carrying a tenant and PII.
+func tenantEvent(id string) audit.Event {
+	return audit.Event{
+		ID: id, At: time.Now().UTC(), Action: "td09.proof", TenantID: "acme",
+		Actor: audit.Actor{Type: audit.ActorTypeUser, UserID: "user-1", Email: "bob@acme.test", TenantID: "acme"},
+	}
+}
+
+// requireCleanChain fails the test unless Verify walks the chain clean.
+func requireCleanChain(t *testing.T, l audit.Logger) {
+	t.Helper()
+	vr, err := l.Verify(context.Background())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if vr.Tamper {
+		t.Fatalf("Verify reports tamper at index %d of %d on a chain nobody touched", vr.FirstBadIndex, vr.Total)
+	}
+}
+
+// The TD-09 proof, inverted: with Audit.Tenancy a logger built by New writes
+// canonical_version=4, the v4 anchor is already there when New returns, the
+// chain verifies, and the row's PII can be redacted.
+func TestNew_AuditTenancy_WritesV4(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tp, err := tamper.New(tamper.Config{
+		JWT:   validJWT(),
+		Audit: tamper.AuditConfig{DBPath: filepath.Join(t.TempDir(), "audit.db"), Tenancy: true},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = tp.Close() })
+	sl, ok := tp.Audit.(*audit.SQLiteLogger)
+	if !ok {
+		t.Fatalf("Audit should be *audit.SQLiteLogger, got %T", tp.Audit)
+	}
+
+	// Asked BEFORE any application event: the anchor is New's doing, and it
+	// precedes the first v4 row.
+	has, err := sl.HasChainRestartV4(ctx)
+	if err != nil {
+		t.Fatalf("HasChainRestartV4: %v", err)
+	}
+	if !has {
+		t.Fatal("no v4 anchor when New returned; the first application event would land before it")
+	}
+	if n := chainAnchors(t, tp.Audit, audit.CanonicalVersion4); n != 1 {
+		t.Fatalf("v4 anchors after New = %d, want 1", n)
+	}
+
+	ev, err := tp.Audit.Log(ctx, tenantEvent("e1"))
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if ev.CanonicalVersion != audit.CanonicalVersion4 {
+		t.Fatalf("canonical_version = %d, want %d", ev.CanonicalVersion, audit.CanonicalVersion4)
+	}
+	requireCleanChain(t, tp.Audit)
+
+	redacted, err := sl.RedactEvent(ctx, "e1")
+	if err != nil {
+		t.Fatalf("RedactEvent: %v", err)
+	}
+	if !redacted {
+		t.Fatal("RedactEvent(e1) = false; a row written through New is not erasable")
+	}
+	// Redaction must not cost the chain its integrity.
+	requireCleanChain(t, tp.Audit)
+}
+
+// The case where the anchor's ORDER is what matters: an existing deployment
+// whose chain already has an older anchor. Verify takes its encoder from the
+// newest anchor, so without New's v4 anchor the first v4 row is re-hashed as
+// v3 and an untouched chain reports itself forged.
+func TestNew_AuditTenancy_OnAnchoredV3Chain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+
+	before, err := tamper.New(tamper.Config{JWT: validJWT(), Audit: tamper.AuditConfig{DBPath: dbPath}})
+	if err != nil {
+		t.Fatalf("New (v3): %v", err)
+	}
+	if _, err := before.Audit.Log(ctx, audit.Event{
+		ID: "anchor-v3", At: time.Now().UTC(), Actor: audit.ActorSystem("audit"),
+		Action: audit.ActionAuditChainRestart, ResourceType: "audit_chain", ResourceID: "v3",
+		CanonicalVersion: audit.CanonicalVersion3,
+	}); err != nil {
+		t.Fatalf("emit v3 anchor: %v", err)
+	}
+	if _, err := before.Audit.Log(ctx, tenantEvent("v3-row")); err != nil {
+		t.Fatalf("Log (v3): %v", err)
+	}
+	requireCleanChain(t, before.Audit)
+	if err := before.Close(); err != nil {
+		t.Fatalf("Close (v3): %v", err)
+	}
+
+	after, err := tamper.New(tamper.Config{JWT: validJWT(), Audit: tamper.AuditConfig{DBPath: dbPath, Tenancy: true}})
+	if err != nil {
+		t.Fatalf("New (tenancy): %v", err)
+	}
+	t.Cleanup(func() { _ = after.Close() })
+	ev, err := after.Audit.Log(ctx, tenantEvent("v4-row"))
+	if err != nil {
+		t.Fatalf("Log (v4): %v", err)
+	}
+	if ev.CanonicalVersion != audit.CanonicalVersion4 {
+		t.Fatalf("canonical_version = %d, want %d", ev.CanonicalVersion, audit.CanonicalVersion4)
+	}
+	requireCleanChain(t, after.Audit)
+	if n := chainAnchors(t, after.Audit, audit.CanonicalVersion4); n != 1 {
+		t.Fatalf("v4 anchors = %d, want 1", n)
+	}
+}
+
+// New bootstraps on every boot; only the first may write a row.
+func TestNew_AuditTenancy_BootstrapIsIdempotent(t *testing.T) {
+	t.Parallel()
+	cfg := tamper.Config{
+		JWT:   validJWT(),
+		Audit: tamper.AuditConfig{DBPath: filepath.Join(t.TempDir(), "audit.db"), Tenancy: true},
+	}
+
+	first, err := tamper.New(cfg)
+	if err != nil {
+		t.Fatalf("New (first boot): %v", err)
+	}
+	if n := chainAnchors(t, first.Audit, audit.CanonicalVersion4); n != 1 {
+		t.Fatalf("v4 anchors after the first boot = %d, want 1", n)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close (first boot): %v", err)
+	}
+
+	second, err := tamper.New(cfg)
+	if err != nil {
+		t.Fatalf("New (second boot): %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if n := chainAnchors(t, second.Audit, audit.CanonicalVersion4); n != 1 {
+		t.Fatalf("v4 anchors after the second boot = %d, want exactly 1", n)
+	}
+	requireCleanChain(t, second.Audit)
+}
+
+// Standing rule 1: without Tenancy nothing changes — v3 rows, no anchor, and
+// no row in the DB that the application did not log itself.
+func TestNew_AuditDefault_StaysV3(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tp, err := tamper.New(tamper.Config{
+		JWT:   validJWT(),
+		Audit: tamper.AuditConfig{DBPath: filepath.Join(t.TempDir(), "audit.db")},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = tp.Close() })
+
+	ev, err := tp.Audit.Log(ctx, tenantEvent("e1"))
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if ev.CanonicalVersion != audit.CanonicalVersion3 {
+		t.Errorf("canonical_version = %d, want %d", ev.CanonicalVersion, audit.CanonicalVersion3)
+	}
+	has, err := tp.Audit.(*audit.SQLiteLogger).HasChainRestartV4(ctx)
+	if err != nil {
+		t.Fatalf("HasChainRestartV4: %v", err)
+	}
+	if has {
+		t.Error("HasChainRestartV4 = true on a default-config logger")
+	}
+	page, err := tp.Audit.List(ctx, audit.Filter{Limit: 100})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].ID != "e1" {
+		t.Errorf("default config wrote %d row(s), want only the one logged event: %+v", len(page.Events), page.Events)
+	}
+	requireCleanChain(t, tp.Audit)
+}
+
+// Tenancy with no DBPath would silently select the NoopLogger. It is a
+// misconfiguration and fails at New (standing rule 4).
+func TestNew_AuditTenancyRequiresDBPath(t *testing.T) {
+	t.Parallel()
+	tp, err := tamper.New(tamper.Config{JWT: validJWT(), Audit: tamper.AuditConfig{Tenancy: true}})
+	if err == nil {
+		t.Fatal("expected an error for Audit.Tenancy with an empty DBPath, got nil")
+	}
+	if tp != nil {
+		t.Errorf("Provider should be nil on error, got %+v", tp)
+	}
+	if !strings.Contains(err.Error(), "Audit.DBPath") {
+		t.Errorf("error should name the missing field, got %q", err)
+	}
+}
+
+// Standing rule 6: the guard must FIRE. A logger that cannot write the v4
+// anchor is an error, not a skipped step.
+func TestBootstrapAuditV4_RejectsLoggerThatCannotBootstrap(t *testing.T) {
+	t.Parallel()
+	if err := tamper.BootstrapAuditV4(audit.NewNoopLogger()); err == nil {
+		t.Fatal("expected an error for a logger without BootstrapChainV4, got nil")
+	}
+}

@@ -75,6 +75,7 @@ const (
 	leakIdentity                   // ignores tenantID on the identity read
 	leakCount                      // counts every tenant's users
 	leakSessionTenant              // drops TenantID when returning a session
+	leakUserTenant                 // drops TenantID when returning a user by id
 	leakRevokeAll                  // revokes every tenant's sessions
 	leakPermissionError            // returns a permission-shaped error instead of ErrNotFound
 	leakZeroValueNilError          // returns a zero value with a nil error
@@ -195,6 +196,9 @@ func (f *fixture) UserByID(_ context.Context, id string) (identity.User, error) 
 	u, ok := f.users[id]
 	if !ok {
 		return identity.User{}, fmt.Errorf("%w: user %s", identity.ErrNotFound, id)
+	}
+	if f.mode == leakUserTenant {
+		u.TenantID = "" // the row loses its tenant on the way out
 	}
 	return u, nil
 }
@@ -390,6 +394,7 @@ func TestRunLeakSuite_FailsAgainstLeakyStore(t *testing.T) {
 		{"identity read ignores the tenant", leakIdentity, "IdentityByProviderSubject"},
 		{"count spans every tenant", leakCount, "CountUsers"},
 		{"session loses its tenant on read", leakSessionTenant, "RefreshSessionByHash"},
+		{"user loses its tenant on read by id", leakUserTenant, "UserByID"},
 		{"revoke crosses the tenant boundary", leakRevokeAll, "RevokeAllRefreshSessionsForTenant"},
 		{"permission error instead of not-found", leakPermissionError, "UserByEmail"},
 		{"zero value with a nil error", leakZeroValueNilError, "UserByEmail"},

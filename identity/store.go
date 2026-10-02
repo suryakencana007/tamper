@@ -32,6 +32,16 @@ type Store interface {
 	// ErrEmailTaken.
 	CreateUser(ctx context.Context, u NewUser, firstUser bool) error
 
+	// UserByID returns the user with this id, ErrNotFound when none
+	// exists. It is NOT tenant-scoped: an id is unique across tenants,
+	// and the callers that need a tenant check compare User.TenantID
+	// themselves.
+	//
+	// That comparison is why the returned row MUST carry its TenantID.
+	// Core.IssueTokensForUserInTenant refuses to mint unless the stored
+	// tenant equals the one it was asked for, so a query that does not
+	// select the tenant column — it comes back "" — makes every mint for
+	// a real tenant fail closed. The leak suite asserts the round trip.
 	UserByID(ctx context.Context, id string) (User, error)
 
 	// UserByEmail resolves an email WITHIN one tenant. This is the method

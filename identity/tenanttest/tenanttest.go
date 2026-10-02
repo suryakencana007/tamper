@@ -104,6 +104,7 @@ func (r realT) Run(name string, f func(harnessT)) bool {
 func runLeakSuite(t harnessT, newStore func() identity.Store) {
 	t.Helper()
 	t.Run("UserByEmail", func(t harnessT) { userByEmailInTenant(t, newStore()) })
+	t.Run("UserByID", func(t harnessT) { userByIDKeepsTenant(t, newStore()) })
 	t.Run("IdentityByProviderSubject", func(t harnessT) { identityByProviderSubjectInTenant(t, newStore()) })
 	t.Run("CountUsers", func(t harnessT) { countUsersInTenant(t, newStore()) })
 	t.Run("RefreshSessionByHash", func(t harnessT) { refreshSessionByHash(t, newStore()) })
@@ -239,6 +240,32 @@ func countUsersInTenant(t harnessT, s identity.Store) {
 	} else if n != 0 {
 		t.Errorf("CountUsers(unknown tenant) = %d, want 0 — an unknown tenant "+
 			"resolved to every tenant's users", n)
+	}
+}
+
+func userByIDKeepsTenant(t harnessT, s identity.Store) {
+	t.Helper()
+	ctx := context.Background()
+
+	seedUser(t, s, "b-user", tenantB, "b@example.com")
+
+	// UserByID is keyed by an id that is unique across tenants, so, as
+	// with RefreshSessionByHash below, the failure is not "A reads B's
+	// row" — it is that the row comes back WITHOUT its tenant. The Core
+	// compares this field before it mints a tenant-bound session
+	// (IssueTokensForUserInTenant), and an adapter compares it before it
+	// answers for a user at all. A store that drops it returns "", which
+	// reads as the single tenant: the Core's check then refuses every
+	// real tenant, and a caller that treats "" as "no tenant to check"
+	// accepts every one.
+	got, err := s.UserByID(ctx, "b-user")
+	if err != nil {
+		t.Fatalf("UserByID: %v", err)
+	}
+	if got.TenantID != tenantB {
+		t.Errorf("user created in tenant %q came back from UserByID with TenantID %q; the store "+
+			"dropped the tenant, so nothing downstream can tell which tenant the user belongs to",
+			tenantB, got.TenantID)
 	}
 }
 

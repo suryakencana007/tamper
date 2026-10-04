@@ -8,8 +8,8 @@ INSERT INTO events (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetLatestHash :one
--- v1.8 follow-up #2: canonical_version DESC is the deterministic
--- tiebreaker for same-at rows. See audit_sqlite.go latestHash() docs.
+-- canonical_version DESC is a deterministic tiebreaker for same-at
+-- rows. See latestHashFrom in audit_sqlite.go.
 SELECT hash FROM events ORDER BY at DESC, canonical_version DESC, id DESC LIMIT 1;
 
 -- name: GetLatestAt :one
@@ -107,14 +107,20 @@ SET actor_email = '',
     row_salt    = x''
 WHERE id = ? AND canonical_version = 4;
 
--- name: GetFirstEventNotAtVersion :one
--- Returns the canonical_version of one row that is NOT at the given
--- version, or no row when every row is. NewSQLiteLogger uses it to
--- refuse a DB that holds rows this package cannot verify. LIMIT 1, so
--- it stops at the first such row; on a DB where every row is at the
--- given version it still reads the whole table, because nothing
--- indexes canonical_version.
-SELECT canonical_version
+-- name: CountEventsNotAtV4 :many
+-- Returns, per canonical_version, how many rows are NOT at version 4.
+-- No rows on a healthy DB. NewSQLiteLogger uses it to refuse a DB
+-- that holds rows this package cannot verify, and to say how many
+-- there are at each version: one stray row and a whole legacy file
+-- are different findings.
+--
+-- The 4 is a literal on purpose. The partial index idx_events_not_v4
+-- (migration 006) covers exactly this predicate, and SQLite uses it
+-- only when the WHERE implies the index's own, which it cannot prove
+-- through a bound parameter. With the index the check reads only the
+-- rows it reports.
+SELECT canonical_version, COUNT(*) AS event_count
 FROM events
-WHERE canonical_version <> ?
-LIMIT 1;
+WHERE canonical_version <> 4
+GROUP BY canonical_version
+ORDER BY canonical_version ASC;

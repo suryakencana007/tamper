@@ -18,10 +18,9 @@ only a reserved field today.
 Most items below are **gaps against a new requirement**, not bugs. Phase 7
 chose these limits deliberately. Six items were found as **sharp edges that
 exist today**, with or without a platform admin: TD-08, TD-09, TD-10, TD-15,
-TD-16, and TD-17. Five of them are fixed or resolved; see the fix status
-below. TD-17 is open.
+TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 
-**Fix status (2026-10-04).**
+**Fix status (2026-10-05).**
 
 | Item | Pull request | State |
 |---|---|---|
@@ -35,11 +34,11 @@ below. TD-17 is open.
 | TD-18 | #50 | Merged. |
 | TD-20 | #51 | Merged. |
 | TD-23 | #52 | Merged. |
-| TD-26 | #54 | Open. |
+| TD-26 | #54 | Merged. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
-reviewed. They are listed after TD-17. Of all the sharp edges found, the ones
-still open after the pull requests above is TD-27.
+reviewed. They are listed after TD-17. Of all the sharp edges found, only
+TD-27 is still open: Barista must move to the v4-only audit API.
 
 Every fix had a code review, and the reviews changed the fixes:
 
@@ -704,18 +703,23 @@ before either, plus `CountEventsByCanonicalVersion`, which the new check
 replaces. Eleven queries remain and each has a caller. `UpdateEventHash` is
 gone: nothing in the package can rewrite a stored hash.
 
-`NewSQLiteLogger` now uses `GetFirstEventNotAtVersion`, which stops at the
-first row that is not v4. The refusal no longer says how many such rows there
-are.
+The open-time check is also fixed, with a schema migration:
+
+- Migration 006 adds a partial index over the rows that are not v4. On a
+  healthy DB the index is empty, so the check reads nothing. A test asserts
+  that the query plan uses the index.
+- The refusal lists how many rows there are at each version, lowest first.
+  The count matters: one stray row in a v4 file is a row that was changed; a
+  file of older rows is an old file.
+- A `canonical_version` that is not an integer cannot be read. That open also
+  fails, and its error also says to keep the file.
 
 Left as it is:
 
-- On a DB where every row is v4, the check still reads the whole table,
-  because no index covers `canonical_version`. Stopping early only helps when
-  there is such a row. A partial index would fix it; that is a schema
-  migration and was not done.
-- `sqlitestore.Open` still runs its migrations before the check.
-- `NewSQLiteLogger` takes no context, so the check cannot be cancelled.
+- `sqlitestore.Open` still runs its migrations before the check, so a refused
+  file has already been migrated (and now also gets the index).
+- `NewSQLiteLogger` takes no context, so the check cannot be cancelled. With
+  the index it has nothing to wait for on a healthy DB.
 
 ### TD-27 — Barista must move to the v4-only audit API
 

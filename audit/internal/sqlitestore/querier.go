@@ -22,6 +22,18 @@ type Querier interface {
 	// add a cluster_id IN (?...) clause, same shape as the v1.1 task 04
 	// ListScoped code path).
 	CountAuditEventsByActionSince(ctx context.Context, at time.Time) ([]CountAuditEventsByActionSinceRow, error)
+	// Returns, per canonical_version, how many rows are NOT at version 4.
+	// No rows on a healthy DB. NewSQLiteLogger uses it to refuse a DB
+	// that holds rows this package cannot verify, and to say how many
+	// there are at each version: one stray row and a whole legacy file
+	// are different findings.
+	//
+	// The 4 is a literal on purpose. The partial index idx_events_not_v4
+	// (migration 006) covers exactly this predicate, and SQLite uses it
+	// only when the WHERE implies the index's own, which it cannot prove
+	// through a bound parameter. With the index the check reads only the
+	// rows it reports.
+	CountEventsNotAtV4(ctx context.Context) ([]CountEventsNotAtV4Row, error)
 	// Used by the v1.5 load-fixture ConflictForce policy. Removes a single
 	// event by id (idempotent: zero-row deletes are not errors at the
 	// sqlc level). Operators invoking `barista --load-fixture
@@ -32,19 +44,12 @@ type Querier interface {
 	// Looks up a single event by id. RedactEvent uses it to tell a row
 	// that does not exist from a lookup that failed.
 	GetEventByID(ctx context.Context, id string) (Event, error)
-	// Returns the canonical_version of one row that is NOT at the given
-	// version, or no row when every row is. NewSQLiteLogger uses it to
-	// refuse a DB that holds rows this package cannot verify. LIMIT 1, so
-	// it stops at the first such row; on a DB where every row is at the
-	// given version it still reads the whole table, because nothing
-	// indexes canonical_version.
-	GetFirstEventNotAtVersion(ctx context.Context, canonicalVersion int64) (int64, error)
 	// v1.8 follow-up #3: returns the most-recent event's `at` value, used by
 	// NewSQLiteLogger to initialize the in-memory monotonic-at watermark on
 	// open. See audit_sqlite.go SQLiteLogger.lastAt docs.
 	GetLatestAt(ctx context.Context) (time.Time, error)
-	// v1.8 follow-up #2: canonical_version DESC is the deterministic
-	// tiebreaker for same-at rows. See audit_sqlite.go latestHash() docs.
+	// canonical_version DESC is a deterministic tiebreaker for same-at
+	// rows. See latestHashFrom in audit_sqlite.go.
 	GetLatestHash(ctx context.Context) ([]byte, error)
 	InsertEvent(ctx context.Context, arg InsertEventParams) error
 	// Phase 7 (7i-1): the tenant-scoped export projection. Oldest first: an

@@ -59,6 +59,53 @@ func (q *Queries) CountAuditEventsByActionSince(ctx context.Context, at time.Tim
 	return items, nil
 }
 
+const countEventsNotAtV4 = `-- name: CountEventsNotAtV4 :many
+SELECT canonical_version, COUNT(*) AS event_count
+FROM events
+WHERE canonical_version <> 4
+GROUP BY canonical_version
+ORDER BY canonical_version ASC
+`
+
+type CountEventsNotAtV4Row struct {
+	CanonicalVersion int64
+	EventCount       int64
+}
+
+// Returns, per canonical_version, how many rows are NOT at version 4.
+// No rows on a healthy DB. NewSQLiteLogger uses it to refuse a DB
+// that holds rows this package cannot verify, and to say how many
+// there are at each version: one stray row and a whole legacy file
+// are different findings.
+//
+// The 4 is a literal on purpose. The partial index idx_events_not_v4
+// (migration 006) covers exactly this predicate, and SQLite uses it
+// only when the WHERE implies the index's own, which it cannot prove
+// through a bound parameter. With the index the check reads only the
+// rows it reports.
+func (q *Queries) CountEventsNotAtV4(ctx context.Context) ([]CountEventsNotAtV4Row, error) {
+	rows, err := q.db.QueryContext(ctx, countEventsNotAtV4)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountEventsNotAtV4Row{}
+	for rows.Next() {
+		var i CountEventsNotAtV4Row
+		if err := rows.Scan(&i.CanonicalVersion, &i.EventCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteEventByID = `-- name: DeleteEventByID :exec
 DELETE FROM events WHERE id = ?
 `
@@ -120,26 +167,6 @@ func (q *Queries) GetEventByID(ctx context.Context, id string) (Event, error) {
 	return i, err
 }
 
-const getFirstEventNotAtVersion = `-- name: GetFirstEventNotAtVersion :one
-SELECT canonical_version
-FROM events
-WHERE canonical_version <> ?
-LIMIT 1
-`
-
-// Returns the canonical_version of one row that is NOT at the given
-// version, or no row when every row is. NewSQLiteLogger uses it to
-// refuse a DB that holds rows this package cannot verify. LIMIT 1, so
-// it stops at the first such row; on a DB where every row is at the
-// given version it still reads the whole table, because nothing
-// indexes canonical_version.
-func (q *Queries) GetFirstEventNotAtVersion(ctx context.Context, canonicalVersion int64) (int64, error) {
-	row := q.db.QueryRowContext(ctx, getFirstEventNotAtVersion, canonicalVersion)
-	var canonical_version int64
-	err := row.Scan(&canonical_version)
-	return canonical_version, err
-}
-
 const getLatestAt = `-- name: GetLatestAt :one
 SELECT at FROM events ORDER BY at DESC, canonical_version DESC, id DESC LIMIT 1
 `
@@ -158,8 +185,8 @@ const getLatestHash = `-- name: GetLatestHash :one
 SELECT hash FROM events ORDER BY at DESC, canonical_version DESC, id DESC LIMIT 1
 `
 
-// v1.8 follow-up #2: canonical_version DESC is the deterministic
-// tiebreaker for same-at rows. See audit_sqlite.go latestHash() docs.
+// canonical_version DESC is a deterministic tiebreaker for same-at
+// rows. See latestHashFrom in audit_sqlite.go.
 func (q *Queries) GetLatestHash(ctx context.Context) ([]byte, error) {
 	row := q.db.QueryRowContext(ctx, getLatestHash)
 	var hash []byte

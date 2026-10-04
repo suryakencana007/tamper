@@ -338,7 +338,31 @@ type AccessClaims struct {
 	// no-tenant token byte-identical to a pre-tenancy one, so this claim
 	// costs single-tenant deployments nothing on the wire.
 	TenantID string `json:"tid,omitempty"`
+	// HomeTenantID is present only on an ENTERED token: one minted by
+	// IssueAccessEntered for a subject who is stored in one tenant and is
+	// acting in another (a platform admin inside a customer's tenant).
+	// TenantID is then the tenant the token is FOR; this is the tenant
+	// the subject is FROM.
+	//
+	// It grants nothing. Every verifier still compares TenantID, and
+	// only TenantID, with the tenant it was asked about. This claim is
+	// for attribution: an audit row can say who acted and where they
+	// came from. Read it through ActorTenantID.
+	//
+	// omitempty keeps every ordinary token byte-identical to one minted
+	// before this claim existed.
+	HomeTenantID string `json:"htid,omitempty"`
 	jwt.RegisteredClaims
+}
+
+// ActorTenantID returns the tenant the token's subject is from: the
+// home tenant of an entered token, and TenantID for every other token,
+// where the two are the same thing.
+func (c *AccessClaims) ActorTenantID() string {
+	if c.HomeTenantID != "" {
+		return c.HomeTenantID
+	}
+	return c.TenantID
 }
 
 // Token purpose values. These ride in the `purpose` claim and are the
@@ -407,6 +431,52 @@ func (j *JWTService) Issue(userID string) (string, error) {
 // Same rejections as IssueAccess otherwise: empty userID, non-positive
 // authTime, empty acr.
 func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int64, acr string) (string, error) {
+	return j.issueAccess(userID, tenantID.String(), "", authTime, acr, j.ttl)
+}
+
+// ErrEnteredTenants — IssueAccessEntered was asked for a pair of
+// tenants that cannot make an entered token: one of them is the single
+// tenant, or the two are the same. A caller bug, decided from the
+// caller's own arguments, so it has its own text like ErrTenantRequired.
+var ErrEnteredTenants = errors.New("auth: an entered token needs two different tenants, neither of them the single tenant")
+
+// IssueAccessEntered mints an access token for a subject who is stored
+// in homeTenantID and is acting in tenantID. The token carries
+// tid=tenantID, so it is accepted exactly where an ordinary token for
+// that tenant is, and htid=homeTenantID, so whoever reads it knows where
+// the subject is from.
+//
+// THIS METHOD CHECKS NO RIGHT. Whether the subject may enter the tenant
+// is decided before it is called — by identity.Core.EnterTenant, which
+// is the entry point to use. Calling this directly mints a cross-tenant
+// token on the caller's say-so alone.
+//
+// ttl is the lifetime. Zero or negative means the service TTL, and a
+// ttl longer than the service TTL is cut to it: an entered token is
+// never longer-lived than an ordinary one. It has no refresh session
+// behind it, so its lifetime is how long a removed right keeps working.
+//
+// Both tenants must be set (ErrTenantRequired), neither may be the
+// single tenant, and they must differ (ErrEnteredTenants). An entered
+// token with an empty htid would be indistinguishable from an ordinary
+// one, and a token "entering" its own home tenant is an ordinary token.
+func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID tenant.ID, authTime int64, acr string, ttl time.Duration) (string, error) {
+	if !tenantID.Valid() || !homeTenantID.Valid() {
+		return "", ErrTenantRequired
+	}
+	if tenantID.IsSingle() || homeTenantID.IsSingle() || tenantID == homeTenantID {
+		return "", ErrEnteredTenants
+	}
+	if ttl <= 0 || ttl > j.ttl {
+		ttl = j.ttl
+	}
+	return j.issueAccess(userID, tenantID.String(), homeTenantID.String(), authTime, acr, ttl)
+}
+
+// issueAccess is the one mint behind IssueAccess and IssueAccessEntered,
+// so the two cannot drift apart in anything but the claims they differ
+// on by design.
+func (j *JWTService) issueAccess(userID, tid, htid string, authTime int64, acr string, ttl time.Duration) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
 	}
@@ -418,15 +488,16 @@ func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int
 	}
 	now := j.now()
 	claims := AccessClaims{
-		AuthTime: authTime,
-		ACR:      acr,
-		Purpose:  purposeAccess,
-		TenantID: tenantID.String(),
+		AuthTime:     authTime,
+		ACR:          acr,
+		Purpose:      purposeAccess,
+		TenantID:     tid,
+		HomeTenantID: htid,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(j.ttl)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
 	signed, err := j.sign(claims)

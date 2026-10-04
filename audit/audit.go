@@ -318,20 +318,32 @@ type Event struct {
 	Commitments Commitments
 }
 
-// Filter narrows ListEvents queries. Zero-valued fields mean "any."
-// Limit defaults to 50 when zero. Cursor is opaque — pass back the
-// `next_cursor` from a prior page for the next page.
+// Filter narrows List and ListScoped. A zero-valued field means "any".
+// Every field that is set is applied, and they are ANDed: a row is
+// returned only when it matches all of them. String fields match
+// exactly.
 type Filter struct {
-	Since        time.Time
-	Until        time.Time
-	ActorUserID  string
-	ActorEmail   string
+	// Since and Until bound the event time: Since is inclusive, Until is
+	// exclusive, so [Since, Until) and a following [Until, ...) never
+	// return the same row twice.
+	Since time.Time
+	Until time.Time
+
+	ActorUserID string
+	// ActorEmail matches the stored email. A redacted row has none, so
+	// it never matches.
+	ActorEmail string
+
 	Action       Action
 	ResourceType ResourceType
 	ResourceID   string
 	RequestID    string
-	Limit        int
-	Cursor       string
+
+	// Limit is the page size; 50 when zero.
+	Limit int
+	// Cursor is opaque — pass back Page.NextCursor to get the next,
+	// older page. Keep the other fields the same between pages.
+	Cursor string
 }
 
 // Page is the result of ListEvents. NextCursor is empty when the page

@@ -18,8 +18,8 @@ import (
 // bootstrap signal at insert, exactly as Barista assigns its
 // cluster-admin role AT INSERT.
 //
-// It implements identity.Store, so tamper.New accepts it
-// with Tenancy.Enabled. The isolation contract on that interface is the
+// It implements identity.Store, which is tenant-scoped for every
+// deployment. The isolation contract on that interface is the
 // obligation this type is signing up to; examples/multitenant's test
 // runs tenanttest.RunLeakSuite against it as the proof.
 //

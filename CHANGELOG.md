@@ -137,6 +137,11 @@ redacted. Everything that existed for older rows is removed.
 
 - **`examples/multitenant`** (#40). The post-TOTP session now carries the
   tenant, and the example issues tenant-bound pending tokens.
+- **`examples/multitenant`: authenticated routes use `RequireTenant`** (#48,
+  TD-22). The `/me` route had only `RequireAuth`, with the tenant check inside
+  the adapter. The example now shows the gate that every authenticated route
+  in a pooled deployment needs, and its comments no longer describe `tid` and
+  `RequireTenant` as future work.
 
 ---
 

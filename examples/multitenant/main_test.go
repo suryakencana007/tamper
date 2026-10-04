@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/identity"
@@ -427,5 +428,81 @@ func TestTOTPSecondLegIsTenantBound(t *testing.T) {
 	}
 	if _, err := provider.JWT.VerifyAccess(rotated.Tokens.Access, tenant.New(tenantGlobex)); err != nil {
 		t.Errorf("the rotated token lost the tenant: %v", err)
+	}
+}
+
+// --- the tenant gate on authenticated routes ---------------------------
+
+// getMeRaw is getMe returning the response body untouched, for the
+// byte-for-byte comparisons below.
+func getMeRaw(t *testing.T, srv *httptest.Server, tenantID, bearer string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		srv.URL+"/t/"+tenantID+"/auth/me", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET me: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(raw)
+}
+
+// TestTenantGateRefusesBeforeTheAdapter proves the route's RequireTenant
+// is what refuses a wrong-tenant token — not the adapter behind it.
+//
+// The token here is one only the gate can catch: it is signed with the
+// deployment's own key and names a user who really is stored in globex,
+// so the adapter's stored-tenant check on the globex route would pass.
+// What is wrong with it is its `tid`, which says acme. A route with
+// RequireAuth alone serves it.
+func TestTenantGateRefusesBeforeTheAdapter(t *testing.T) {
+	srv, _ := newServer(t)
+	carol := dto(t, register(t, srv, tenantGlobex, "carol@globex.example").User)
+
+	// The same secret and issuer buildHandler configures.
+	jwt := crypto.NewJWTService(crypto.JWTConfig{
+		Secret: "multitenant-test-secret", TTL: time.Minute, Issuer: "multitenant-example",
+	})
+	wrongTID, err := jwt.IssueAccess(carol.ID, tenant.New(tenantAcme), time.Now().Unix(), crypto.ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	// Control: the same user with the right tid is served, so the refusal
+	// below is the tid and nothing else.
+	rightTID, err := jwt.IssueAccess(carol.ID, tenant.New(tenantGlobex), time.Now().Unix(), crypto.ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	if code, _ := getMeRaw(t, srv, tenantGlobex, rightTID); code != http.StatusOK {
+		t.Fatalf("a globex token for a globex user on the globex route: status %d, want 200", code)
+	}
+
+	code, body := getMeRaw(t, srv, tenantGlobex, wrongTID)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("a token with tid=%s was served on the %s route: status %d, want 401 — the route "+
+			"has no tenant gate, and the adapter cannot catch this token (body %s)",
+			tenantAcme, tenantGlobex, code, body)
+	}
+
+	// A wrong-tenant token must look exactly like an invalid one, or the
+	// response says "this token is genuine, just aimed elsewhere".
+	garbageCode, garbageBody := getMeRaw(t, srv, tenantGlobex, "not-a-token")
+	if code != garbageCode || body != garbageBody {
+		t.Errorf("wrong-tenant response (%d %s) differs from invalid-token response (%d %s)",
+			code, body, garbageCode, garbageBody)
+	}
+
+	// A token with NO tid is refused on a tenant route as well.
+	noTID, err := jwt.IssueAccess(carol.ID, tenant.Single, time.Now().Unix(), crypto.ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	if code, _ := getMeRaw(t, srv, tenantGlobex, noTID); code != http.StatusUnauthorized {
+		t.Errorf("a token with no tid on the globex route: status %d, want 401", code)
 	}
 }

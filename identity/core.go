@@ -391,6 +391,9 @@ func (c *Core) IssueTokensForUserInTenant(ctx context.Context, userID string, te
 // ErrUserInactive, returned after revoking the presented session so a
 // deactivated user's cookie cannot be retried.
 //
+// A session whose tenant is not the tenant its user is stored in is
+// refused the same way, with ErrInvalidSession, and revoked.
+//
 // Step-up carry-forward: the successor row and access JWT inherit the
 // old row's auth_time + ACR UNCHANGED. Legacy rows (zero auth_time)
 // fall back to now + the default ACR exactly once.
@@ -420,6 +423,22 @@ func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, 
 			return User{}, Tokens{}, ErrInvalidSession
 		}
 		return User{}, Tokens{}, fmt.Errorf("identity: lookup user for session: %w", err)
+	}
+	// The session's tenant must be the tenant the user is stored in.
+	// Rotation copies session.TenantID onto the successor and into the
+	// new access token's `tid`, so a session whose tenant differs from
+	// its user's would keep minting tokens for a tenant the user does not
+	// belong to — for as long as it is refreshed, with nothing re-checked.
+	// No path in this package creates such a row; this is for the one
+	// that already exists, or that an application wrote itself.
+	//
+	// Checked BEFORE Active, and answered with the generic
+	// ErrInvalidSession: ErrUserInactive is a deliberate disclosure, and
+	// it must not be made about a user through a session bound to
+	// another tenant. The session is revoked so it cannot be retried.
+	if tenant.FromStored(session.TenantID) != tenant.FromStored(user.TenantID) {
+		_ = c.store.RevokeRefreshSession(ctx, session.ID, now)
+		return User{}, Tokens{}, ErrInvalidSession
 	}
 	if !user.Active {
 		// Revoke the presented session best-effort; the inactive verdict

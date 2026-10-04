@@ -37,10 +37,15 @@ nothing also exits with success (see `PHASE7-HANDOFF.md`).
 ## Re-run against the fixes
 
 On 2026-10-02 the same six tests were run again against the fixes. The tests
-were not changed. Five results below are from a branch that merged #39, #40,
-#43 and the first versions of the two audit fixes. The audit fixes were then
-redone (#45 replaces #41, and #42 was reduced), and the last row is from a
-run with the `Verify` change of #45.
+were not changed. The results for the three audit tests are from the designs
+that existed then.
+
+**After #46 the three audit tests no longer compile.** They use the `Tenancy`
+option, `BootstrapChainV4`, `HasChainRestartV4` and `VerifyChainPostMigration`
+on chains that mix v3 and v4. #46 makes v4 the only version and deletes that
+API, so the situations these tests build cannot be built any more. The tests
+that replace them are in `audit/v4_only_test.go` and
+`audit/verify_boot_test.go`.
 
 | Test | Result with the fixes | Why |
 |---|---|---|

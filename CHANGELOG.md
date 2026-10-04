@@ -8,9 +8,50 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
-Five fixes for sharp edges in pooled deployments. Each one is a separate
-change (#39, #40, #42, #43, #45) and is described in `tech-debt.md`. Single-tenant
-deployments are unaffected unless a line below says otherwise.
+Fixes for sharp edges in pooled deployments, and one breaking change to the
+audit log. Each is a separate change (#39, #40, #43, #46) and is described in
+`tech-debt.md`.
+
+### ⚠️ Breaking — the audit log is `canonical_version=4` only (#46)
+
+Every audit row is now written and read at `canonical_version=4`: the tenant
+is inside the hash, and PII is hashed as salted commitments so it can be
+redacted. Everything that existed for older rows is removed.
+
+**Before you upgrade:**
+
+- **An audit DB written by an earlier version cannot be opened.**
+  `NewSQLiteLogger` returns an error that names the file. Archive the old file
+  if its history must be kept, and start a fresh one.
+- **A single-tenant deployment's audit hashes change.** It now writes v4 rows
+  with an empty tenant. Nothing else on the single-tenant path changes.
+- **An application that writes its own chain-restart anchors at boot must stop.**
+  `Log` refuses every version but 4, and the anchor actions are gone.
+
+**What changes:**
+
+- `Log` writes v4 with no option. It accepts an event whose
+  `CanonicalVersion` is zero or `CanonicalVersion4` and refuses any other.
+- `RedactEvent` works on every row, for every deployment.
+- `Verify` and `VerifyChainPostMigration` walk every row from the first one.
+  There are no anchors.
+- `ComputeHash` accepts only `CanonicalVersion4`.
+- A logger built by `tamper.New` writes v4. `tamper.Config` did not change.
+
+**Removed:**
+
+- `SQLiteLoggerOptions.Tenancy`
+- `CanonicalVersion1`, `CanonicalVersion2`, `CanonicalVersion3`
+- `SQLiteLogger.VerifyLegacy`
+- `SQLiteLogger.BootstrapChainV4`, `HasChainRestartV2`, `HasChainRestartV3`,
+  `HasChainRestartV4`, `HasChainMigrate`
+- `SQLiteLogger.MigrateLegacyV2Hashes`, `RehashChainInPlace`, `MigrationResult`
+- `SQLiteLogger.CountByCanonicalVersion`, `CanonicalVersionCount`,
+  `ListByCanonicalVersion`
+- `ActionAuditChainRestart`, `ActionAuditChainMigrate`,
+  `ReservedActionPrefix`, `IsReservedAction`
+- `CanonicalPayloadV2ForDebug`
+- `VerifyBootResult.Segments`
 
 ### ⚠️ Changed — behaviour
 
@@ -57,33 +98,6 @@ deployments are unaffected unless a line below says otherwise.
   to one tenant by other means, set `SCIMConfig.TenantBoundStores` instead
   (see Added).
 
-- **`audit.SQLiteLogger.Verify` hashes each row under its own
-  `canonical_version`** (#45, TD-16). When a chain-restart anchor existed,
-  `Verify` used to take the anchor's version and apply it to every later row.
-  A chain that mixed versions behind one anchor then read as tamper although
-  no row had been changed. That happened when:
-
-  - `Tenancy` was switched on and a row was logged before
-    `BootstrapChainV4` ran (a v4 row behind a v3 anchor);
-  - two replicas on different configs shared one DB, or `Tenancy` was turned
-    off and on again (a v3 row behind a v4 anchor);
-  - an application emitted an older chain-restart anchor after the v4 one.
-
-  All three now verify clean. The anchor still decides where `Verify` starts.
-  Edits are still caught, including a change to a row's version column. No
-  stored byte changes, and a chain with one version reads as before.
-  `VerifyChainPostMigration` already worked this way.
-
-  One thing is given up. A v3 row written after `Tenancy` was switched on
-  used to be flagged, as part of that false tamper report. It is no longer
-  flagged. A v3 row has no tenant in its hash, so its tenant can be changed
-  without `Verify` noticing. Keep every writer of one audit DB on the same
-  `Tenancy` setting.
-
-  A v4 anchor is no longer needed for a clean chain. `BootstrapChainV4` is
-  unchanged and optional; note that an anchor moves `Verify`'s start forward,
-  so the rows before it leave `Verify`'s walk.
-
 - **Rows written by `espresso.Auditor` now carry the tenant** (#43, TD-08).
   `Event.TenantID` is the tenant pinned by `RequireTenant` or `PinTenant`.
   `Actor.TenantID` is the token's `tid`. Before, both were empty, so
@@ -92,18 +106,6 @@ deployments are unaffected unless a line below says otherwise.
   this change are not migrated.
 
 ### Added
-
-- **`tamper.AuditConfig.Tenancy`** (#42, TD-09). Turns on the
-  `canonical_version=4` encoder for the logger built by `tamper.New`: the
-  tenant enters the hash and PII becomes redactable. Default `false` is
-  byte-identical to before.
-
-  - It requires `Audit.DBPath`. `New` rejects `Tenancy` with an empty path.
-  - `New` writes no chain anchor. Existing rows keep their own version and
-    stay inside `Verify`.
-  - It applies to rows written from then on, and it can be turned off again.
-    Rows written while it is off are v3: no tenant in the hash, no erasure,
-    and `Verify` does not flag them.
 
 - **`espresso.SCIMConfig.TenantBoundStores`** (#39, TD-15). The opt-out for
   the SCIM refusal above. Set it when the unscoped stores given to

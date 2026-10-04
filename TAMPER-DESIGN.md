@@ -293,7 +293,7 @@ r.Post("/api/auth/login", espresso.Doppio(surfaces.Auth.Login))
 r.Get("/api/auth/me", surfaces.RequireAuth(espresso.HandlerCtx(surfaces.Auth.Me)))
 // ... register the rest of surfaces.Auth (+ Federation/SAML/SCIM when configured)
 
-dec, err := tp.Authz.Check(ctx, subj, "doc.delete", res) // SQL-RBAC today, swappable later
+dec, err := tp.Authz.Check(ctx, tenantID, subj, "doc.delete", res) // SQL-RBAC today, swappable later
 ```
 
 ## Open items

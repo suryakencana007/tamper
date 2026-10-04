@@ -264,7 +264,9 @@ a guest needs a binding in the tenant they entered. Design:
   subject `{platform, user, id}` in scope `acme`, and gets only what `acme`
   granted to that subject. Roles held at home are never checked.
 - `espresso.RequireDecision` takes the scope from the tenant gate and the
-  subject's tenant from the token.
+  subject's tenant from the token. Where a tenant is missing it refuses and
+  does not guess. Its ghost probe (`UserExists`) is given the subject's home
+  tenant.
 - `authz/tenanttest` has a leak suite for each store port, and tests that
   prove the suites fail on stores that leak.
 
@@ -822,8 +824,9 @@ start a fresh audit DB.
 `Subject` and `Binding` have a `Tenant` field. Barista's binding store and
 permission store do not compile against #56 until they take the new argument.
 Barista is single-tenant, so the change is mechanical: pass `tenant.Single`
-as the scope, set `Tenant: tenant.Single` on every subject and binding, and
-ignore the argument in the queries. It was not done or tested where #56 was
+as the scope, set `Tenant: tenant.Single` on every subject and binding,
+ignore the argument in the queries, and add the tenant argument to its
+`UserExists` probes. It was not done or tested where #56 was
 written.
 
 ## What is ready to use

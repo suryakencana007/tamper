@@ -28,8 +28,9 @@ func NewMemStore(bindings ...Binding) *MemStore {
 }
 
 // Grant adds a binding. Exact duplicates are ignored (idempotent).
-// b.Tenant is the scope the binding lives in; a binding with an unset
-// Tenant is stored and never matches any question.
+// b.Tenant is the scope the binding lives in. A binding with an unset
+// Tenant is stored but never returned: every read refuses the unset
+// scope.
 func (m *MemStore) Grant(b Binding) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -56,6 +57,9 @@ func (m *MemStore) Revoke(b Binding) {
 
 // BindingsFor implements BindingStore (exact subject + resource match).
 func (m *MemStore) BindingsFor(_ context.Context, tenantID tenant.ID, sub Subject, res Resource) ([]Binding, error) {
+	if !tenantID.Valid() {
+		return nil, nil
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []Binding
@@ -69,6 +73,9 @@ func (m *MemStore) BindingsFor(_ context.Context, tenantID tenant.ID, sub Subjec
 
 // BindingsForSubject implements BindingStore (concrete resources only).
 func (m *MemStore) BindingsForSubject(_ context.Context, tenantID tenant.ID, sub Subject, resourceType string) ([]Binding, error) {
+	if !tenantID.Valid() {
+		return nil, nil
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []Binding
@@ -82,6 +89,9 @@ func (m *MemStore) BindingsForSubject(_ context.Context, tenantID tenant.ID, sub
 
 // BindingsOnResource implements BindingStore (exact resource match).
 func (m *MemStore) BindingsOnResource(_ context.Context, tenantID tenant.ID, res Resource) ([]Binding, error) {
+	if !tenantID.Valid() {
+		return nil, nil
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []Binding

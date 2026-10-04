@@ -64,9 +64,6 @@ func TestRequireDecision_AsksInTheRoutedScopeWithTheTokensHomeTenant(t *testing.
 		{"single-tenant deployment, no tenant gate", pass, tokenFor(t, j, tenant.Single), tenant.Single, tenant.Single},
 		{"the tenant's own user", RequireTenant(routeTo(tenantA)), tokenFor(t, j, acme), acme, acme},
 		{"a platform admin who entered", RequireTenantAllowEntered(routeTo(tenantA)), enteredToken(t, j, tenantA), acme, platform},
-		// A pooled route that forgot its tenant gate. The scope is the
-		// single tenant, where nothing is granted to an acme subject.
-		{"a tenant token on a route with no tenant gate", pass, tokenFor(t, j, acme), tenant.Single, acme},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &recordingAuthorizer{allow: true}
@@ -127,23 +124,96 @@ func TestRequireDecision_GuestNeedsABindingInTheTenantEntered(t *testing.T) {
 	}
 }
 
-// An acme token on a route with no tenant gate is denied by the real
-// engine, although the same subject is an admin in acme.
-func TestRequireDecision_NoTenantGateDeniesATenantToken(t *testing.T) {
+// Where a tenant is missing the gate refuses. It never fills one in.
+func TestRequireDecision_RefusesWhenATenantIsMissing(t *testing.T) {
 	j := tenantJWT(t)
 	acme := tenant.New(tenantA)
-	store := authz.NewMemStore(authz.Binding{
-		Tenant: acme, Subject: authz.Subject{Tenant: acme, Type: "user", ID: "u-1"},
-		Resource: authz.Resource{Type: "thing"}, Role: "admin",
-	})
-	rbac, err := authz.NewRBAC(store,
-		authz.Hierarchy{"thing": {"viewer", "admin"}},
-		authz.Policy{"thing.update": {{Type: "thing", Min: "admin"}}})
-	if err != nil {
-		t.Fatalf("NewRBAC: %v", err)
+	pass := func(next http.Handler) http.Handler { return next }
+
+	for _, tc := range []struct {
+		name   string
+		gate   func(http.Handler) http.Handler
+		bearer string
+		want   int
+	}{
+		// A pooled route that forgot its tenant gate: a wiring bug, said
+		// loudly, not a decision taken in the single scope.
+		{"a tenant token and no tenant gate", pass, tokenFor(t, j, acme), http.StatusInternalServerError},
+		// PinTenant checks no token, so these reach the gate.
+		{"another tenant's token behind PinTenant", PinTenant(routeTo(tenantA)), tokenFor(t, j, tenant.New(tenantB)), http.StatusUnauthorized},
+		{"a single-tenant token behind PinTenant", PinTenant(routeTo(tenantA)), tokenFor(t, j, tenant.Single), http.StatusUnauthorized},
+		{"a token entered elsewhere behind PinTenant", PinTenant(routeTo(tenantA)), enteredToken(t, j, tenantB), http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &recordingAuthorizer{allow: true}
+			h := RequireAuth(j)(tc.gate(decisionGate(a)(http.HandlerFunc(noContent))))
+			if code := serveDecision(h, tc.bearer); code != tc.want {
+				t.Errorf("status %d, want %d", code, tc.want)
+			}
+			if len(a.scopes) != 0 {
+				t.Errorf("the Authorizer was asked (scope %q, subject %+v); the gate should have refused first", a.scopes[0], a.subjects[0])
+			}
+		})
 	}
-	h := RequireAuth(j)(decisionGate(rbac)(http.HandlerFunc(noContent)))
-	if code := serveDecision(h, tokenFor(t, j, acme)); code != http.StatusForbidden {
-		t.Errorf("status %d, want 403", code)
+
+	// A user id with no claims: nothing says where the subject is from.
+	t.Run("a user id in the context without claims", func(t *testing.T) {
+		a := &recordingAuthorizer{allow: true}
+		h := decisionGate(a)(http.HandlerFunc(noContent))
+		req := httptest.NewRequest(http.MethodPost, "/things", nil)
+		req = req.WithContext(ContextWithUserID(req.Context(), "u-1"))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("status %d, want 500", rec.Code)
+		}
+		if len(a.scopes) != 0 {
+			t.Error("the Authorizer was asked about a subject with no claims")
+		}
+	})
+}
+
+// The ghost probe is told where the subject is stored. A denied guest
+// is looked up at home, so they are denied (403) and not mistaken for a
+// deleted user, and a local user who shares the id is not consulted.
+func TestRequireDecision_GhostProbeLooksInTheHomeTenant(t *testing.T) {
+	j := tenantJWT(t)
+	acme, platform := tenant.New(tenantA), tenant.New(tenantPlatform)
+
+	type probe struct {
+		home tenant.ID
+		id   string
+	}
+	var probes []probe
+	gate := RequireDecision(DecisionGate{
+		Authorizer:   &recordingAuthorizer{allow: false},
+		Label:        "thing role",
+		SubjectType:  "user",
+		ResourceType: "thing",
+		Action:       "thing.update",
+		WriteDenied:  denied,
+		WriteGhost:   func(w http.ResponseWriter) { w.WriteHeader(http.StatusGone) },
+		// The admin exists in platform and nowhere else.
+		UserExists: func(_ context.Context, home tenant.ID, id string) (bool, error) {
+			probes = append(probes, probe{home, id})
+			return home == platform && id == "u-1", nil
+		},
+	})
+	h := RequireAuth(j)(RequireTenantAllowEntered(routeTo(tenantA))(gate(http.HandlerFunc(noContent))))
+
+	if code := serveDecision(h, enteredToken(t, j, tenantA)); code != http.StatusForbidden {
+		t.Errorf("a denied guest: status %d, want 403 (denied), not the ghost response", code)
+	}
+	if len(probes) != 1 || probes[0] != (probe{platform, "u-1"}) {
+		t.Errorf("probe calls = %+v, want one, for u-1 in platform", probes)
+	}
+
+	// acme's own user, who (in this fixture) has no row: a real ghost.
+	probes = nil
+	if code := serveDecision(h, tokenFor(t, j, acme)); code != http.StatusGone {
+		t.Errorf("a denied local user with no row: status %d, want the ghost response", code)
+	}
+	if len(probes) != 1 || probes[0] != (probe{acme, "u-1"}) {
+		t.Errorf("probe calls = %+v, want one, for u-1 in acme", probes)
 	}
 }

@@ -144,6 +144,9 @@ func (e *PermissionSet) Check(ctx context.Context, tenantID tenant.ID, sub Subje
 // CheckBulk implements Authorizer. Results are index-aligned with reqs; the
 // first evaluation error fails the whole call.
 func (e *PermissionSet) CheckBulk(ctx context.Context, tenantID tenant.ID, reqs []CheckRequest) ([]Decision, error) {
+	if !tenantID.Valid() {
+		return nil, fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	}
 	out := make([]Decision, len(reqs))
 	for i, r := range reqs {
 		d, err := e.Check(ctx, tenantID, r.Subject, r.Action, r.Resource)
@@ -202,7 +205,8 @@ func (e *PermissionSet) ListSubjects(ctx context.Context, tenantID tenant.ID, ac
 	seen := make(map[Subject]bool, len(subs))
 	out := make([]Subject, 0, len(subs))
 	for _, s := range subs {
-		if seen[s] {
+		// A subject with no home tenant is one Check would refuse.
+		if seen[s] || !s.Tenant.Valid() {
 			continue
 		}
 		seen[s] = true

@@ -82,8 +82,13 @@ redacted. Everything that existed for older rows is removed.
 - **`MemPermissionStore.Grant` and `GrantSuperuser` take the scope** as their
   first argument. A superuser is a superuser of one scope.
 - **`espresso.RequireDecision`** asks in the tenant a tenant gate put in the
-  context (`tenant.Single` with no gate) and builds the subject with the
-  token's home tenant.
+  context and builds the subject with the token's home tenant. It refuses
+  where a tenant is missing: a user id with no access claims in the context,
+  or a tenant token on a route with no tenant gate, is a 500 `CONFIG_ERROR`;
+  a token that is not for the pinned tenant is a 401. A single-tenant
+  deployment (no gate, no `tid`) is unchanged.
+- **`espresso.DecisionGate.UserExists` takes the subject's home tenant**:
+  `func(ctx, home tenant.ID, userID string)`. Look the user up there.
 
 **To upgrade a single-tenant deployment:** pass `tenant.Single` as the scope,
 set `Tenant: tenant.Single` on every `Subject` and `Binding`, and accept the

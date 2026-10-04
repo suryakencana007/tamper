@@ -78,6 +78,10 @@ func (e *RBAC) Check(ctx context.Context, tenantID tenant.ID, sub Subject, act A
 // CheckBulk implements Authorizer. Results are index-aligned with reqs; the
 // first evaluation error fails the whole call.
 func (e *RBAC) CheckBulk(ctx context.Context, tenantID tenant.ID, reqs []CheckRequest) ([]Decision, error) {
+	// Here and not only in Check: an empty reqs must not hide the bug.
+	if !tenantID.Valid() {
+		return nil, fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	}
 	out := make([]Decision, len(reqs))
 	for i, r := range reqs {
 		d, err := e.Check(ctx, tenantID, r.Subject, r.Action, r.Resource)
@@ -174,7 +178,9 @@ func (e *RBAC) ListSubjects(ctx context.Context, tenantID tenant.ID, act Action,
 			return nil, false, fmt.Errorf("authz: list subjects for %q: %w", act, err)
 		}
 		for _, b := range bs {
-			if b.Tenant != tenantID || b.Resource != target {
+			// A subject with no home tenant is one Check would refuse;
+			// an access review must not list it as having access.
+			if b.Tenant != tenantID || b.Resource != target || !b.Subject.Tenant.Valid() {
 				continue // defensive: hold the store to its contract
 			}
 			if e.h.rank(target.Type, b.Role) >= minRank && !seen[b.Subject] {

@@ -82,10 +82,14 @@ const (
 	// then stamps every row with the scope it was asked for, so the
 	// rows look right. The engine's own filter cannot see this one.
 	stampsTheAskedScope
+	// answersFromTheHomeTenant: the store finds a subject's grants
+	// through the tenant the subject is stored in, not the scope asked.
+	// Right for a tenant's own users; wrong for every guest.
+	answersFromTheHomeTenant
 )
 
 func (m leakMode) String() string {
-	return [...]string{"ignores the scope", "ignores the subject's tenant", "stamps the asked scope"}[m]
+	return [...]string{"ignores the scope", "ignores the subject's tenant", "stamps the asked scope", "answers from the subject's home tenant"}[m]
 }
 
 // --- a leaky BindingStore ----------------------------------------------
@@ -98,7 +102,15 @@ type leakyBindings struct {
 func (l *leakyBindings) grant(b authz.Binding) error { l.all = append(l.all, b); return nil }
 
 func (l *leakyBindings) scopeOK(b authz.Binding, scope tenant.ID) bool {
-	return l.mode != ignoresSubjectTenant || b.Tenant == scope
+	return (l.mode != ignoresSubjectTenant && l.mode != answersFromTheHomeTenant) || b.Tenant == scope
+}
+
+// eff is the scope the store really reads from.
+func (l *leakyBindings) eff(scope tenant.ID, sub authz.Subject) tenant.ID {
+	if l.mode == answersFromTheHomeTenant {
+		return sub.Tenant
+	}
+	return scope
 }
 
 func (l *leakyBindings) subjectOK(b authz.Binding, sub authz.Subject) bool {
@@ -109,7 +121,7 @@ func (l *leakyBindings) subjectOK(b authz.Binding, sub authz.Subject) bool {
 }
 
 func (l *leakyBindings) out(b authz.Binding, scope tenant.ID) authz.Binding {
-	if l.mode == stampsTheAskedScope {
+	if l.mode == stampsTheAskedScope || l.mode == answersFromTheHomeTenant {
 		b.Tenant = scope
 	}
 	return b
@@ -118,7 +130,7 @@ func (l *leakyBindings) out(b authz.Binding, scope tenant.ID) authz.Binding {
 func (l *leakyBindings) BindingsFor(_ context.Context, scope tenant.ID, sub authz.Subject, res authz.Resource) ([]authz.Binding, error) {
 	var got []authz.Binding
 	for _, b := range l.all {
-		if l.scopeOK(b, scope) && l.subjectOK(b, sub) && b.Resource == res {
+		if l.scopeOK(b, l.eff(scope, sub)) && l.subjectOK(b, sub) && b.Resource == res {
 			got = append(got, l.out(b, scope))
 		}
 	}
@@ -128,7 +140,7 @@ func (l *leakyBindings) BindingsFor(_ context.Context, scope tenant.ID, sub auth
 func (l *leakyBindings) BindingsForSubject(_ context.Context, scope tenant.ID, sub authz.Subject, resourceType string) ([]authz.Binding, error) {
 	var got []authz.Binding
 	for _, b := range l.all {
-		if l.scopeOK(b, scope) && l.subjectOK(b, sub) && b.Resource.Type == resourceType && b.Resource.ID != "" {
+		if l.scopeOK(b, l.eff(scope, sub)) && l.subjectOK(b, sub) && b.Resource.Type == resourceType && b.Resource.ID != "" {
 			got = append(got, l.out(b, scope))
 		}
 	}
@@ -157,6 +169,8 @@ func TestBindingSuite_FailsAgainstLeakyStores(t *testing.T) {
 		ignoresScope:         {"BindingsFor", "BindingsForSubject", "BindingsOnResource"},
 		stampsTheAskedScope:  {"BindingsFor", "BindingsForSubject", "BindingsOnResource"},
 		ignoresSubjectTenant: {"BindingsFor", "BindingsForSubject"},
+		// Only the guest cases can see this one.
+		answersFromTheHomeTenant: {"BindingsFor", "BindingsForSubject"},
 	} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rec := &recorderT{}
@@ -205,7 +219,14 @@ func (l *leakyPermissions) grantSuperuser(scope tenant.ID, sub authz.Subject) er
 }
 
 func (l *leakyPermissions) scopeOK(g permGrant, scope tenant.ID) bool {
-	return l.mode == ignoresSubjectTenant && g.scope == scope || l.mode != ignoresSubjectTenant
+	return (l.mode != ignoresSubjectTenant && l.mode != answersFromTheHomeTenant) || g.scope == scope
+}
+
+func (l *leakyPermissions) eff(scope tenant.ID, sub authz.Subject) tenant.ID {
+	if l.mode == answersFromTheHomeTenant {
+		return sub.Tenant
+	}
+	return scope
 }
 
 func (l *leakyPermissions) subjectOK(g permGrant, sub authz.Subject) bool {
@@ -230,7 +251,7 @@ func (l *leakyPermissions) PermissionsFor(_ context.Context, scope tenant.ID, su
 	}
 	keys := map[string]struct{}{}
 	for _, g := range l.grants {
-		if l.scopeOK(g, scope) && l.subjectOK(g, sub) && g.res == res {
+		if l.scopeOK(g, l.eff(scope, sub)) && l.subjectOK(g, sub) && g.res == res {
 			keys[g.key] = struct{}{}
 		}
 	}
@@ -243,7 +264,7 @@ func (l *leakyPermissions) ResourcesWithPermission(_ context.Context, scope tena
 	}
 	var out []authz.Resource
 	for _, g := range l.grants {
-		if l.scopeOK(g, scope) && l.subjectOK(g, sub) && g.key == key && g.res.Type == resourceType && g.res.ID != "" {
+		if l.scopeOK(g, l.eff(scope, sub)) && l.subjectOK(g, sub) && g.key == key && g.res.Type == resourceType && g.res.ID != "" {
 			out = append(out, g.res)
 		}
 	}
@@ -283,6 +304,9 @@ func TestPermissionSuite_FailsAgainstLeakyStores(t *testing.T) {
 	for mode, wantCases := range map[leakMode][]string{
 		ignoresScope:         {"PermissionsFor", "ResourcesWithPermission", "SubjectsWithPermission", "Superuser"},
 		ignoresSubjectTenant: {"PermissionsFor", "ResourcesWithPermission", "Superuser"},
+		// Only the guest cases can see this one. ResourcesWithPermission
+		// catches it by the resource returned, not by how many.
+		answersFromTheHomeTenant: {"PermissionsFor", "ResourcesWithPermission"},
 	} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rec := &recorderT{}

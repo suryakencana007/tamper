@@ -92,8 +92,7 @@ func TenantFromContext(ctx context.Context) (tenant.ID, bool) {
 // An entered token belongs to a platform admin acting inside this
 // tenant. Its subject is NOT a user of this tenant, and most routes are
 // written for the tenant's own users: "my account" routes act on the
-// subject's row wherever it is stored, and an authorization check finds
-// whatever roles the subject holds at home. So this gate keeps the
+// subject's row wherever it is stored. So this gate keeps the
 // promise it made before entered tokens existed — the subject is a user
 // of the routed tenant — and a route that is meant for platform admins
 // says so with [RequireTenantAllowEntered].
@@ -117,10 +116,10 @@ func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.H
 //     mount "my account" handlers (the AuthRoutes TOTP and profile
 //     routes, identity linking) behind this gate; they would act on the
 //     admin's home account.
-//   - Its authorization must know the subject may be a guest. The user
-//     id alone finds the roles the admin holds in their home tenant.
-//     Read [EnteredFromContext] or the claims, and decide what a guest
-//     may do.
+//   - Its authorization must know the subject may be a guest.
+//     [RequireDecision] does: it asks with the guest's home tenant on
+//     the subject, so the guest gets only what this tenant granted
+//     them. A handler that decides by itself reads [EnteredFromContext].
 func RequireTenantAllowEntered(resolve func(*http.Request) string) func(http.Handler) http.Handler {
 	return requireTenant(resolve, true)
 }

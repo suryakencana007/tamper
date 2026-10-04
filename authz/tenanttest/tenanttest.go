@@ -60,6 +60,10 @@ var (
 	// customers do.
 	res    = authz.Resource{Type: "thing", ID: "t-1"}
 	global = authz.Resource{Type: "thing"}
+	// resHome exists only where the guest is stored. A Resource carries
+	// no tenant, so a different id is the only way to see that a store
+	// answered from the wrong scope.
+	resHome = authz.Resource{Type: "thing", ID: "t-home"}
 )
 
 const (
@@ -114,7 +118,7 @@ func runBindingSuite(t harnessT, newHarness func() BindingHarness) {
 //	scope A: userA has roleA on res and on the global resource;
 //	         the guest has roleA on res
 //	scope B: userB has roleB on res and on the global resource
-//	scope P: the guest has roleB on res (its role AT HOME)
+//	scope P: the guest has roleB on res and roleA on resHome (AT HOME)
 func seedBindings(t harnessT, h BindingHarness) authz.BindingStore {
 	t.Helper()
 	for _, b := range []authz.Binding{
@@ -124,6 +128,7 @@ func seedBindings(t harnessT, h BindingHarness) authz.BindingStore {
 		{Tenant: tenantB, Subject: userB, Resource: res, Role: roleB},
 		{Tenant: tenantB, Subject: userB, Resource: global, Role: roleB},
 		{Tenant: tenantP, Subject: guest, Resource: res, Role: roleB},
+		{Tenant: tenantP, Subject: guest, Resource: resHome, Role: roleA},
 	} {
 		if err := h.Grant(b); err != nil {
 			t.Fatalf("seed %+v: %v", b, err)
@@ -206,6 +211,16 @@ func bindingsForSubject(t harnessT, s authz.BindingStore) {
 	got, err = s.BindingsForSubject(ctx, tenantA, userB, res.Type)
 	wantBindings(t, "BindingsForSubject(A, userB) — another tenant's subject with the same id", tenantA, got, err)
 
+	// The guest: exactly the one binding of the scope asked. A store
+	// that finds a guest's bindings through the home tenant returns the
+	// home ones here.
+	got, err = s.BindingsForSubject(ctx, tenantA, guest, res.Type)
+	wantBindings(t, "BindingsForSubject(A, guest)", tenantA, got, err,
+		authz.Binding{Tenant: tenantA, Subject: guest, Resource: res, Role: roleA})
+	got, err = s.BindingsForSubject(ctx, tenantP, guest, res.Type)
+	wantBindings(t, "BindingsForSubject(P, guest) — the guest at home", tenantP, got, err,
+		authz.Binding{Tenant: tenantP, Subject: guest, Resource: res, Role: roleB},
+		authz.Binding{Tenant: tenantP, Subject: guest, Resource: resHome, Role: roleA})
 	got, err = s.BindingsForSubject(ctx, tenantB, guest, res.Type)
 	wantBindings(t, "BindingsForSubject(B, guest) — the guest holds nothing in B", tenantB, got, err)
 }
@@ -255,29 +270,35 @@ func runPermissionSuite(t harnessT, newHarness func() PermissionHarness) {
 	t.Run("PermissionsFor", func(t harnessT) { permissionsFor(t, seedPermissions(t, newHarness())) })
 	t.Run("ResourcesWithPermission", func(t harnessT) { resourcesWithPermission(t, seedPermissions(t, newHarness())) })
 	t.Run("SubjectsWithPermission", func(t harnessT) { subjectsWithPermission(t, seedPermissions(t, newHarness())) })
-	if newHarness().GrantSuperuser != nil {
-		t.Run("Superuser", func(t harnessT) { superuser(t, newHarness()) })
-	}
+	// One harness, built inside the case: a store without superusers
+	// passes it by having nothing to check.
+	t.Run("Superuser", func(t harnessT) {
+		if h := newHarness(); h.GrantSuperuser != nil {
+			superuser(t, h)
+		}
+	})
 }
 
 // seedPermissions mirrors seedBindings:
 //
 //	scope A: userA holds keyA on res; the guest holds keyA on res
 //	scope B: userB holds keyB on res
-//	scope P: the guest holds keyB on res (at home)
+//	scope P: the guest holds keyB on res and keyA on resHome (at home)
 func seedPermissions(t harnessT, h PermissionHarness) authz.PermissionStore {
 	t.Helper()
 	for _, g := range []struct {
 		scope tenant.ID
 		sub   authz.Subject
+		res   authz.Resource
 		key   string
 	}{
-		{tenantA, userA, keyA},
-		{tenantA, guest, keyA},
-		{tenantB, userB, keyB},
-		{tenantP, guest, keyB},
+		{tenantA, userA, res, keyA},
+		{tenantA, guest, res, keyA},
+		{tenantB, userB, res, keyB},
+		{tenantP, guest, res, keyB},
+		{tenantP, guest, resHome, keyA},
 	} {
-		if err := h.Grant(g.scope, g.sub, res, g.key); err != nil {
+		if err := h.Grant(g.scope, g.sub, g.res, g.key); err != nil {
 			t.Fatalf("seed %s %v %s: %v", g.scope, g.sub, g.key, err)
 		}
 	}
@@ -335,7 +356,9 @@ func permissionsFor(t harnessT, s authz.PermissionStore) {
 
 func resourcesWithPermission(t harnessT, s authz.PermissionStore) {
 	ctx := context.Background()
-	check := func(what string, scope tenant.ID, sub authz.Subject, key string, want int) {
+	// want is the exact set: a store that returns the right NUMBER of
+	// resources from the wrong scope must not pass.
+	check := func(what string, scope tenant.ID, sub authz.Subject, key string, want ...authz.Resource) {
 		t.Helper()
 		got, unbounded, err := s.ResourcesWithPermission(ctx, scope, sub, key, res.Type)
 		if err != nil {
@@ -344,17 +367,33 @@ func resourcesWithPermission(t harnessT, s authz.PermissionStore) {
 		if unbounded {
 			t.Errorf("%s reported unbounded access; nobody was granted it", what)
 		}
-		if len(got) != want {
-			t.Errorf("%s returned %v, want %d resource(s)", what, got, want)
+		if len(got) != len(want) {
+			t.Errorf("%s returned %v, want %v", what, got, want)
+			return
+		}
+		for _, w := range want {
+			found := false
+			for _, g := range got {
+				if g == w {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s returned %v, want %v", what, got, want)
+			}
 		}
 	}
-	check("ResourcesWithPermission(A, userA, keyA)", tenantA, userA, keyA, 1)
-	check("ResourcesWithPermission(B, userA, keyA) — another scope", tenantB, userA, keyA, 0)
+	check("ResourcesWithPermission(A, userA, keyA)", tenantA, userA, keyA, res)
+	check("ResourcesWithPermission(B, userA, keyA) — another scope", tenantB, userA, keyA)
 	// keyA, the key A's user really holds in A: a store that matches on
 	// the bare id hands it to B's user.
-	check("ResourcesWithPermission(A, userB, keyA) — another tenant's subject with the same id", tenantA, userB, keyA, 0)
-	check("ResourcesWithPermission(A, userA, keyB) — a key granted only in B", tenantA, userA, keyB, 0)
-	check("ResourcesWithPermission(A, guest, keyB) — the guest's key at home", tenantA, guest, keyB, 0)
+	check("ResourcesWithPermission(A, userB, keyA) — another tenant's subject with the same id", tenantA, userB, keyA)
+	check("ResourcesWithPermission(A, userA, keyB) — a key granted only in B", tenantA, userA, keyB)
+	check("ResourcesWithPermission(A, guest, keyB) — the guest's key at home", tenantA, guest, keyB)
+	// The guest holds keyA on one resource in A and on another at home.
+	// Each scope returns its own.
+	check("ResourcesWithPermission(A, guest, keyA)", tenantA, guest, keyA, res)
+	check("ResourcesWithPermission(P, guest, keyA) — the guest at home", tenantP, guest, keyA, resHome)
 }
 
 func subjectsWithPermission(t harnessT, s authz.PermissionStore) {

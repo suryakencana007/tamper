@@ -88,25 +88,45 @@ Rules, for both engines:
 2. The RBAC engine drops any binding whose `Tenant` is not the scope asked
    for, and any whose `Subject` is not exactly the subject asked for. A store
    that returns too much is held to the contract where the engine can see it.
-3. `tenant.Single` is a scope like any other. A single-tenant deployment
+3. `CheckBulk` refuses an unset scope even for an empty batch, and
+   `ListSubjects` does not list a subject with no home tenant: an access
+   review must not show someone `Check` would refuse.
+4. `tenant.Single` is a scope like any other. A single-tenant deployment
    passes it everywhere and gets the decisions it got before.
 
 ### `espresso.RequireDecision`
 
 - Scope: the tenant a tenant gate put in the context (`RequireTenant`,
-  `RequireTenantAllowEntered`, `PinTenant`). With no gate, `tenant.Single`.
-- Subject tenant: the token's home tenant (`ActorTenantID`), so an entered
-  admin is (platform, …) in scope acme.
+  `RequireTenantAllowEntered`, `PinTenant`).
+- Subject tenant: the scope itself, or the token's `htid` when the token is
+  an entered one. So an entered admin is (platform, …) in scope acme.
 
-A pooled route mounted without a tenant gate therefore asks in the single
-scope with a tenanted subject. No binding matches, and it denies.
+The gate never fills in a missing tenant with a guess. The first draft did:
+with no tenant gate it used `tenant.Single`, and with no claims it assumed a
+single-tenant subject. Review of #56 showed both could authorize a request in
+the wrong scope, so the gate now refuses:
+
+| Situation | Answer |
+|---|---|
+| A user id in the context but no access claims | 500 `CONFIG_ERROR` |
+| No tenant gate ran, and the token has a tenant | 500 `CONFIG_ERROR` (a pooled route that forgot its gate) |
+| No tenant gate ran, and the token has no tenant | scope and subject are `tenant.Single` (the single-tenant deployment) |
+| A tenant gate ran, and the token is not for that tenant | 401, as `RequireTenant` writes it (possible behind `PinTenant`) |
+
+`DecisionGate.UserExists` takes the subject's home tenant:
+`func(ctx, home tenant.ID, userID string)`. The ghost probe must look where
+the subject is stored. With the bare id it looked in the routed tenant, where
+a guest has no row, and reported every denied guest as a deleted user.
 
 ### `authz/tenanttest`
 
 `RunBindingStoreLeakSuite` and `RunPermissionStoreLeakSuite`. The ports are
 read-only, so each takes a factory that returns the store and a function that
 seeds it. The package's own tests run the suites against stores that leak on
-purpose and assert that the suites fail.
+purpose and assert that the suites fail. Four kinds of leak are covered: the
+scope ignored; the subject's tenant ignored; rows stamped with the scope asked
+for; and grants found through the subject's home tenant, which only a guest
+can reveal.
 
 ## 5. Invariants
 

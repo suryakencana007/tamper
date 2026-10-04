@@ -340,3 +340,68 @@ func TestMemPermissionStore_SuperuserIsPerScope(t *testing.T) {
 		t.Errorf("acme's superuser is listed in globex: %v", subs)
 	}
 }
+
+// An empty batch does not hide an unset scope.
+func TestTenant_CheckBulkRefusesAnUnsetScopeEvenWhenEmpty(t *testing.T) {
+	engines, _, _ := tenantEngines(t)
+	for name, a := range engines {
+		out, err := a.CheckBulk(context.Background(), tenant.ID{}, nil)
+		if !errors.Is(err, ErrTenantRequired) || out != nil {
+			t.Errorf("%s: CheckBulk(unset, nil) = %v, %v; want nil and ErrTenantRequired", name, out, err)
+		}
+	}
+}
+
+// An access review does not list a subject that Check would refuse.
+func TestTenant_ListSubjectsSkipsASubjectWithNoHomeTenant(t *testing.T) {
+	engines, bs, ps := tenantEngines(t)
+	noHome := Subject{Type: "user", ID: "orphan"}
+	bs.Grant(Binding{Tenant: tAcme, Subject: noHome, Resource: c1, Role: "cluster-admin"})
+	ps.Grant(tAcme, noHome, c1, "cluster.view")
+
+	for name, a := range engines {
+		subs, _, err := a.ListSubjects(context.Background(), tAcme, "cluster.view", c1)
+		if err != nil {
+			t.Fatalf("%s: ListSubjects: %v", name, err)
+		}
+		for _, s := range subs {
+			if s == noHome {
+				t.Errorf("%s: ListSubjects lists %+v, which Check refuses with ErrTenantRequired", name, s)
+			}
+		}
+		if len(subs) != 1 || subs[0] != acmeU1 {
+			t.Errorf("%s: ListSubjects = %v, want only acme's u-1", name, subs)
+		}
+	}
+}
+
+// The reference stores return nothing for the unset scope, even when a
+// row was stored with one.
+func TestMemStores_ReturnNothingForTheUnsetScope(t *testing.T) {
+	ctx := context.Background()
+	var unset tenant.ID
+
+	bs := NewMemStore(Binding{Subject: acmeU1, Resource: c1, Role: "cluster-admin"}) // Tenant unset
+	if got, _ := bs.BindingsFor(ctx, unset, acmeU1, c1); len(got) != 0 {
+		t.Errorf("MemStore.BindingsFor(unset) = %v", got)
+	}
+	if got, _ := bs.BindingsForSubject(ctx, unset, acmeU1, "cluster"); len(got) != 0 {
+		t.Errorf("MemStore.BindingsForSubject(unset) = %v", got)
+	}
+	if got, _ := bs.BindingsOnResource(ctx, unset, c1); len(got) != 0 {
+		t.Errorf("MemStore.BindingsOnResource(unset) = %v", got)
+	}
+
+	ps := NewMemPermissionStore()
+	ps.Grant(unset, acmeU1, c1, "cluster.view")
+	ps.GrantSuperuser(unset, acmeU1)
+	if got, _ := ps.PermissionsFor(ctx, unset, acmeU1, c1); got.Superuser || len(got.Keys) != 0 {
+		t.Errorf("MemPermissionStore.PermissionsFor(unset) = %+v", got)
+	}
+	if got, unbounded, _ := ps.ResourcesWithPermission(ctx, unset, acmeU1, "cluster.view", "cluster"); unbounded || len(got) != 0 {
+		t.Errorf("MemPermissionStore.ResourcesWithPermission(unset) = %v unbounded=%v", got, unbounded)
+	}
+	if got, _ := ps.SubjectsWithPermission(ctx, unset, "cluster.view", c1); len(got) != 0 {
+		t.Errorf("MemPermissionStore.SubjectsWithPermission(unset) = %v", got)
+	}
+}

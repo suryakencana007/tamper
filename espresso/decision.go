@@ -59,7 +59,13 @@ type DecisionGate struct {
 	// WriteGhost (the app's 401 so its session-refresh path logs the
 	// caller out) instead of WriteDenied. Allowed requests never pay
 	// the probe.
-	UserExists func(ctx context.Context, userID string) (bool, error)
+	//
+	// home is the tenant the subject is STORED in — the token's home
+	// tenant. Look the user up there. It is not always the routed
+	// tenant: a platform admin who entered this tenant has no row in
+	// it, and a probe that looked here would call every denied guest a
+	// ghost (or answer for a local user who happens to share the id).
+	UserExists func(ctx context.Context, home tenant.ID, userID string) (bool, error)
 	// WriteGhost writes the ghost-subject response. Required when
 	// UserExists is set.
 	WriteGhost DenyWriter
@@ -77,17 +83,28 @@ type DecisionGate struct {
 //
 //   - The SCOPE is the tenant a tenant gate put in the context
 //     (RequireTenant, RequireTenantAllowEntered, PinTenant) — whose
-//     resources these are. With no gate it is tenant.Single, which is
-//     what a single-tenant deployment has always asked in.
+//     resources these are.
 //   - The SUBJECT's tenant is the token's home tenant. For a platform
 //     admin who entered this tenant that is their own tenant, not the
 //     routed one, so the Authorizer finds only what was granted to that
 //     guest inside this scope; the roles they hold at home are bindings
 //     of another scope and are never consulted.
 //
-// A pooled route mounted without a tenant gate asks in the single scope
-// with a tenanted subject. Nothing is granted to such a subject there,
-// so it denies.
+// Neither is ever filled in with a guess. Where a tenant is missing the
+// gate refuses:
+//
+//   - No access claims in the context (a user id stashed by something
+//     other than RequireAuth) is a 500 CONFIG_ERROR: nothing says where
+//     the subject is from.
+//   - No tenant gate ran and the token HAS a tenant: a pooled route that
+//     forgot its tenant gate. 500 CONFIG_ERROR, loudly, rather than a
+//     decision taken in the wrong scope.
+//   - No tenant gate ran and the token has no tenant: the single-tenant
+//     deployment. Scope and subject are both tenant.Single.
+//   - A tenant gate ran and the token is not for that tenant (possible
+//     behind PinTenant, which checks no token): the 401 RequireTenant
+//     writes. A subject may not be authorized in a scope its token was
+//     not minted for.
 func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,15 +132,33 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 				}
 			}
 
-			scope, ok := TenantFromContext(r.Context())
-			if !ok {
-				scope = tenant.Single
+			claims, ok := AccessClaimsFromContext(r.Context())
+			if !ok || claims == nil {
+				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate has a user id but no access claims (RequireAuth did not run)").
+					WithCode("CONFIG_ERROR").
+					WriteResponse(w)
+				return
 			}
-			// Never the routed tenant: the token says where its subject
-			// is from, and a guest must not be taken for a local user.
-			home := tenant.Single
-			if claims, ok := AccessClaimsFromContext(r.Context()); ok && claims != nil {
-				home = tenant.FromStored(claims.ActorTenantID())
+			scope, gated := TenantFromContext(r.Context())
+			switch {
+			case !gated && claims.TenantID != "":
+				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate got a tenant token on a route with no tenant gate").
+					WithCode("CONFIG_ERROR").
+					WriteResponse(w)
+				return
+			case !gated:
+				scope = tenant.Single
+			case claims.TenantID != scope.String():
+				writeUnauthenticated(w, "invalid token")
+				return
+			}
+			// From here the token is for exactly this scope. Its subject
+			// is from the scope itself, unless the token says it entered
+			// from somewhere else. tenant.New, not FromStored: an htid is
+			// a claim, and an empty one must not become a tenant.
+			home := scope
+			if claims.Entered() {
+				home = tenant.New(claims.HomeTenantID)
 			}
 			subject := authz.Subject{Tenant: home, Type: g.SubjectType, ID: userID}
 			resource := authz.Resource{Type: g.ResourceType, ID: resourceID}
@@ -158,7 +193,7 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 			if !decision.Allowed {
 				// Ghost probe: deny path only.
 				if g.UserExists != nil {
-					exists, exErr := g.UserExists(r.Context(), userID)
+					exists, exErr := g.UserExists(r.Context(), home, userID)
 					if exErr != nil {
 						if g.WriteProbeError != nil {
 							g.WriteProbeError(w)

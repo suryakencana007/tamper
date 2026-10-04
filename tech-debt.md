@@ -31,14 +31,15 @@ below. TD-17 is open.
 | TD-09, TD-16, TD-21, TD-24, TD-25 | #46 | Merged. The audit log is v4-only; these five items cannot occur any more. |
 | TD-19 | #47 | Merged. |
 | TD-22 | #48 | Merged. |
-| TD-17 | #49 | Open. |
-| TD-18 | #50 | Open. |
-| TD-20 | #51 | Open. |
-| TD-23 | #52 | Open. |
+| TD-17 | #49 | Merged. |
+| TD-18 | #50 | Merged. |
+| TD-20 | #51 | Merged. |
+| TD-23 | #52 | Merged. |
+| TD-26 | #54 | Open. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, the ones
-still open after the pull requests above are TD-26 and TD-27.
+still open after the pull requests above is TD-27.
 
 Every fix had a code review, and the reviews changed the fixes:
 
@@ -83,7 +84,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-23 | A wrong-tenant token error has its own text | fixed by #52 | — | — |
 | TD-24 | A v3 row in a v4 deployment is not flagged | resolved by #46 | — | — |
 | TD-25 | `VerifyLegacy` reports tamper on a mixed-version chain | resolved by #46 | — | — |
-| TD-26 | Generated SQL queries that nothing calls | gap | P2 | Tamper |
+| TD-26 | Generated SQL queries that nothing calls | fixed by #54 | — | — |
 | TD-27 | Barista must move to the v4-only audit API | gap | P1 | Barista |
 
 P0 = the feature cannot be built safely without this. P1 = the application can
@@ -671,7 +672,7 @@ it reported tamper on a chain where versions were interleaved.
 
 **Resolved by #46.** `VerifyLegacy` is deleted. There is one version.
 
-### TD-26 — Generated SQL queries that nothing calls
+### TD-26 — Generated SQL queries that nothing calls *(fixed by #54)*
 
 **Evidence.** #46 deletes the code that used these generated queries in
 `audit/internal/sqlitestore`: `CountChainRestartV2`, `GetLatestChainRestart`,
@@ -696,8 +697,25 @@ Two more things wait for the same regeneration:
 - `sqlitestore.Open` runs its migrations before that check, so a file that is
   then refused has already been migrated.
 
-**Proposal for Tamper.** Delete the queries from `queries/events.sql`, add
-the cheaper existence check, and regenerate with the pinned sqlc version.
+**Fix: #54.** Sixteen queries are deleted from `queries/events.sql` and the
+layer is regenerated with sqlc v1.30.0, the pinned version. The thirteen named
+above, plus `CountEvents` and `CountEventsByAction`, which nothing called
+before either, plus `CountEventsByCanonicalVersion`, which the new check
+replaces. Eleven queries remain and each has a caller. `UpdateEventHash` is
+gone: nothing in the package can rewrite a stored hash.
+
+`NewSQLiteLogger` now uses `GetFirstEventNotAtVersion`, which stops at the
+first row that is not v4. The refusal no longer says how many such rows there
+are.
+
+Left as it is:
+
+- On a DB where every row is v4, the check still reads the whole table,
+  because no index covers `canonical_version`. Stopping early only helps when
+  there is such a row. A partial index would fix it; that is a schema
+  migration and was not done.
+- `sqlitestore.Open` still runs its migrations before the check.
+- `NewSQLiteLogger` takes no context, so the check cannot be cancelled.
 
 ### TD-27 — Barista must move to the v4-only audit API
 
@@ -762,8 +780,9 @@ Suggested slice order if this work moves into Tamper:
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
    answered.
-8. **TD-17, TD-18, TD-20, TD-23** — open as #49 to #52.
-9. **TD-12, TD-13, TD-14, TD-26** — the rest. TD-26 needs sqlc.
+8. **TD-17, TD-18, TD-20, TD-23** — merged (#49 to #52). **TD-26** — open as
+   #54.
+9. **TD-12, TD-13, TD-14** — the rest.
 
 ## Process limits
 

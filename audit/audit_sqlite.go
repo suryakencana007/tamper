@@ -71,21 +71,23 @@ func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 	}
 	l := &SQLiteLogger{store: store, opts: opts}
 
-	counts, err := store.Queries.CountEventsByCanonicalVersion(context.Background())
-	if err != nil {
+	// One row at another version is enough to refuse the file; the query
+	// stops at the first.
+	other, err := store.Queries.GetFirstEventNotAtVersion(context.Background(), int64(CanonicalVersion4))
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// Every row is v4, or the DB is empty.
+	case err != nil:
 		_ = store.Close()
 		return nil, fmt.Errorf("audit: check canonical versions: %w", err)
-	}
-	for _, c := range counts {
-		if c.CanonicalVersion != CanonicalVersion4 {
-			_ = store.Close()
-			return nil, fmt.Errorf(
-				"audit: %s holds %d row(s) at canonical_version=%d, which this version cannot "+
-					"verify (it reads and writes canonical_version=%d only). Keep the file. If it was "+
-					"written by an older version of tamper, archive it and point the application at "+
-					"a new audit DB. If it was not, a row was altered after it was written",
-				dbPath, c.EventCount, c.CanonicalVersion, CanonicalVersion4)
-		}
+	default:
+		_ = store.Close()
+		return nil, fmt.Errorf(
+			"audit: %s holds a row at canonical_version=%d, which this version cannot "+
+				"verify (it reads and writes canonical_version=%d only). Keep the file. If it was "+
+				"written by an older version of tamper, archive it and point the application at "+
+				"a new audit DB. If it was not, a row was altered after it was written",
+			dbPath, other, CanonicalVersion4)
 	}
 
 	// Prime the monotonic-at watermark so the first Log after a restart

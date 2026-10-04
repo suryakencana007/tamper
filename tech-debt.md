@@ -70,7 +70,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-16 | `Verify` reports tamper on a mixed-version chain | resolved by #46 | — | — |
 | TD-17 | `audit.Filter` fields are ignored by `List` | sharp edge | P2 | Tamper |
 | TD-18 | A not-found from the TOTP mint is a 500 on the wire | sharp edge | P2 | Tamper |
-| TD-19 | `Refresh` does not re-check the session's tenant | gap | P1 | Tamper |
+| TD-19 | `Refresh` does not re-check the session's tenant | fixed by #47 | — | — |
 | TD-20 | Step-up-denied audit rows carry no tenant | sharp edge | P2 | Tamper |
 | TD-21 | `HasChainRestartV2` / `V3` / `V4` count rows, not anchors | resolved by #46 | — | — |
 | TD-22 | The multitenant example is out of date | gap | P2 | example |
@@ -531,7 +531,7 @@ single-use recovery code has already been spent.
 invalid credentials. This also changes the single-tenant path (a user deleted
 during the ceremony gets 401 instead of 500), so it is its own change.
 
-### TD-19 — `Refresh` does not re-check the session's tenant
+### TD-19 — `Refresh` does not re-check the session's tenant *(fixed by #47)*
 
 **Evidence.** `Core.Refresh` rotates a session after checking only
 `user.Active` (`identity/core.go:347`). It does not compare
@@ -541,9 +541,15 @@ during the ceremony gets 401 instead of 500), so it is its own change.
 a session whose tenant differs from the user's. But a row that already exists,
 or one written by the application, keeps rotating.
 
-**Proposal for Tamper.** Compare the two in `Refresh`, and revoke the session
-on a mismatch. This is a behaviour change and needs its own entry in the
-changelog.
+**Fix: #47.** `Refresh` compares the session's tenant with the user's stored
+tenant. On a mismatch it revokes the session and returns `ErrInvalidSession`.
+The check runs before the `Active` check, so `ErrUserInactive` is never
+reported through a session bound to another tenant.
+
+One consequence to know: `IssueTokensForUser` and `IssueTokensForUserWithACR`
+write a session with no tenant. For a user stored in a tenant, that session
+can no longer be refreshed. A pooled adapter must mint with
+`IssueTokensForUserInTenant`.
 
 ### TD-20 — Two kinds of audit rows still carry no scope *(sharp edge)*
 

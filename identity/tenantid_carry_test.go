@@ -26,42 +26,27 @@ func TestRefresh_PreservesTenantIDOnSuccessor(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
 
-	user, _, err := c.Register(ctx, tenant.Single, "bob@acme.com", "correct-horse")
+	// The user is stored in acme, so the session Register mints carries
+	// acme, and that is the session rotated here.
+	_, tokens, err := c.Register(ctx, tenant.New("acme"), "bob@acme.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-
-	// Register cannot supply a tenant in 7b-1, so seed a tenant-bearing
-	// session directly — the shape a pooled deployment produces once
-	// 7b-2 routes it.
-	plaintext, err := crypto.NewRefreshToken()
-	if err != nil {
-		t.Fatalf("NewRefreshToken: %v", err)
-	}
-	hash, err := crypto.HashRefreshToken(plaintext)
+	origHash, err := crypto.HashRefreshToken(tokens.Refresh)
 	if err != nil {
 		t.Fatalf("HashRefreshToken: %v", err)
 	}
-	now := time.Now()
-	if err := store.CreateRefreshSession(ctx, RefreshSession{
-		ID:        "sess-tenant",
-		UserID:    user.ID,
-		TenantID:  "acme",
-		TokenHash: hash,
-		IssuedAt:  now,
-		ExpiresAt: now.Add(time.Hour),
-		AuthTime:  now,
-		ACR:       testACR,
-	}); err != nil {
-		t.Fatalf("CreateRefreshSession: %v", err)
+	orig, ok := store.SessionByHash(origHash)
+	if !ok || orig.TenantID != "acme" {
+		t.Fatalf("fixture: the registered session should carry acme, got %+v (found=%v)", orig, ok)
 	}
 
-	_, tokens, err := c.Refresh(ctx, plaintext)
+	_, rotated, err := c.Refresh(ctx, tokens.Refresh)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
 
-	succHash, err := crypto.HashRefreshToken(tokens.Refresh)
+	succHash, err := crypto.HashRefreshToken(rotated.Refresh)
 	if err != nil {
 		t.Fatalf("HashRefreshToken(successor): %v", err)
 	}
@@ -72,9 +57,99 @@ func TestRefresh_PreservesTenantIDOnSuccessor(t *testing.T) {
 	if succ.TenantID != "acme" {
 		t.Errorf("successor TenantID = %q, want %q — rotation dropped the tenant", succ.TenantID, "acme")
 	}
-	// The successor is a genuinely new row, not the one we seeded.
-	if succ.ID == "sess-tenant" {
+	// The successor is a genuinely new row, not the one Register minted.
+	if succ.ID == orig.ID {
 		t.Error("expected a rotated successor row, got the original")
+	}
+}
+
+// seedSession writes a live refresh session for userID in tenantID
+// straight into the store, the way an application (or an older version
+// of this package) could have, and returns its plaintext token.
+func seedSession(t *testing.T, store *MemStore, id, userID, tenantID string) string {
+	t.Helper()
+	plaintext, err := crypto.NewRefreshToken()
+	if err != nil {
+		t.Fatalf("NewRefreshToken: %v", err)
+	}
+	hash, err := crypto.HashRefreshToken(plaintext)
+	if err != nil {
+		t.Fatalf("HashRefreshToken: %v", err)
+	}
+	now := time.Now()
+	if err := store.CreateRefreshSession(context.Background(), RefreshSession{
+		ID: id, UserID: userID, TenantID: tenantID, TokenHash: hash,
+		IssuedAt: now, ExpiresAt: now.Add(time.Hour), AuthTime: now, ACR: testACR,
+	}); err != nil {
+		t.Fatalf("CreateRefreshSession: %v", err)
+	}
+	return plaintext
+}
+
+// TestRefresh_DeniesSessionInAnotherTenant (TD-19): a session whose
+// tenant is not the one its user is stored in must not rotate. Rotation
+// would copy the session's tenant into a new access token, so the user
+// would keep getting tokens for a tenant they do not belong to.
+func TestRefresh_DeniesSessionInAnotherTenant(t *testing.T) {
+	acme, globex := tenant.New("acme"), tenant.New("globex")
+	for _, tc := range []struct {
+		name          string
+		userTenant    tenant.ID
+		sessionTenant string
+	}{
+		{"tenant user, session in another tenant", globex, "acme"},
+		{"single-tenant user, session in a tenant", tenant.Single, "acme"},
+		{"tenant user, session with no tenant", acme, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c, store := testCore(t)
+			user, _, err := c.Register(ctx, tc.userTenant, "bob@example.com", "correct-horse")
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			token := seedSession(t, store, "sess-cross", user.ID, tc.sessionTenant)
+			before := sessionsFor(store, user.ID)
+
+			_, tokens, err := c.Refresh(ctx, token)
+			if !errors.Is(err, ErrInvalidSession) {
+				t.Fatalf("Refresh of a session in %q for a user stored in %q: err = %v, want ErrInvalidSession",
+					tc.sessionTenant, tc.userTenant.String(), err)
+			}
+			if tokens != (Tokens{}) {
+				t.Errorf("a REFUSED refresh returned tokens: %+v", tokens)
+			}
+			if after := sessionsFor(store, user.ID); after != before {
+				t.Fatalf("sessions %d -> %d: a refused refresh minted a successor", before, after)
+			}
+			// Revoked, so the same token cannot be tried again.
+			hash, _ := crypto.HashRefreshToken(token)
+			if s, ok := store.SessionByHash(hash); !ok || !s.Revoked() {
+				t.Errorf("the refused session was left live: %+v (found=%v)", s, ok)
+			}
+		})
+	}
+}
+
+// TestRefresh_CrossTenantSessionDoesNotDiscloseInactive: ErrUserInactive
+// is the one refresh failure that says something about the user. It must
+// not be said through a session bound to another tenant.
+func TestRefresh_CrossTenantSessionDoesNotDiscloseInactive(t *testing.T) {
+	ctx := context.Background()
+	c, store := testCore(t)
+	user, _, err := c.Register(ctx, tenant.New("globex"), "bob@example.com", "correct-horse")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	store.SetActive(user.ID, false)
+
+	if _, _, err := c.Refresh(ctx, seedSession(t, store, "sess-cross", user.ID, "acme")); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("cross-tenant session of an inactive user: err = %v, want ErrInvalidSession "+
+			"(ErrUserInactive here tells acme that the user exists in another tenant)", err)
+	}
+	// In the user's own tenant the inactive answer is unchanged.
+	if _, _, err := c.Refresh(ctx, seedSession(t, store, "sess-own", user.ID, "globex")); !errors.Is(err, ErrUserInactive) {
+		t.Fatalf("own-tenant session of an inactive user: err = %v, want ErrUserInactive", err)
 	}
 }
 

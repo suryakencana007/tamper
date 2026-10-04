@@ -117,6 +117,19 @@ redacted. Everything that existed for older rows is removed.
   and no pinned tenant produces the same event as before. Rows written before
   this change are not migrated.
 
+- **`identity.Core.Refresh` refuses a session bound to another tenant** (#47,
+  TD-19). A refresh session whose tenant is not the tenant its user is stored
+  in no longer rotates. It returns `ErrInvalidSession` and the session is
+  revoked. Before, such a session kept producing access tokens for a tenant
+  the user does not belong to, for as long as it was refreshed.
+
+  No path in tamper creates such a session since #40. This affects a row
+  written earlier or by the application, and one more case: a pooled adapter
+  that mints a tenant user's session through `IssueTokensForUser` or
+  `IssueTokensForUserWithACR`. Those two write a session with no tenant, so
+  it can no longer be refreshed; mint with `IssueTokensForUserInTenant`.
+  Single-tenant deployments are unaffected.
+
 ### Added
 
 - **`espresso.SCIMConfig.TenantBoundStores`** (#39, TD-15). The opt-out for

@@ -219,20 +219,21 @@ func emitStepUpDenied(ctx context.Context, auditLog audit.Logger, claims *crypto
 		return
 	}
 	actorID := ""
+	actorTenant := ""
 	currentACR := ""
 	if claims != nil {
 		actorID = claims.Subject
+		actorTenant = claims.TenantID
 		currentACR = claims.ACR
 	}
-	// Resolve the actor through the standard captureActor path so the
-	// audit row carries the same shape as every other actor-emitting
-	// audit event (UserID + IP). EmailLookup is omitted here — the
-	// middleware doesn't have AuthService access, and downstream audit
-	// pages already enrich via ActorPill's user-id fallback.
+	// The same actor RequireAuth stashes — id and home tenant off the
+	// token — plus the source IP. No email: this middleware has no
+	// lookup, and the logger can enrich it.
 	actor := audit.Actor{
-		Type:   audit.ActorTypeUser,
-		UserID: actorID,
-		IP:     IPFromRequest(r),
+		Type:     audit.ActorTypeUser,
+		UserID:   actorID,
+		IP:       IPFromRequest(r),
+		TenantID: actorTenant,
 	}
 	after := stepUpDeniedAfter{
 		Endpoint:               endpoint,
@@ -260,6 +261,10 @@ func emitStepUpDenied(ctx context.Context, auditLog audit.Logger, claims *crypto
 		Action:       deniedAction,
 		ResourceType: audit.ResourceAuth,
 		After:        afterJSON,
+		// Scoped like every other row: a denial on a tenant route
+		// belongs in that tenant's log. The gate must be mounted inside
+		// RequireTenant for the tenant to be visible here.
+		TenantID: eventScope(ctx, actor),
 	}
 	// audit.Logger.Log is goroutine-safe (per the v0.6 task 01 contract).
 	// Errors are swallowed — the security gate has already fired; the

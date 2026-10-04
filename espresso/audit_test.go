@@ -296,8 +296,45 @@ func TestAuditor_ServiceAccountActorPassesThrough(t *testing.T) {
 	if ev.Actor != want {
 		t.Errorf("service-account actor was not passed through:\n got  %+v\n want %+v", ev.Actor, want)
 	}
-	if ev.TenantID != "" {
-		t.Errorf("Event.TenantID = %q, want empty — the actor's tenant is not the row's scope", ev.TenantID)
+	// A service account's tenant IS its scope: it comes from the
+	// validated credential, and its routes pin no tenant.
+	if ev.TenantID != tenantB {
+		t.Errorf("Event.TenantID = %q, want %q — a service-account row with no scope is "+
+			"missing from its own tenant's export", ev.TenantID, tenantB)
+	}
+}
+
+// A pinned tenant still wins over the service account's own.
+func TestAuditor_ServiceAccountPinnedTenantWins(t *testing.T) {
+	rec := newRecordingLogger()
+	validator := ValidatorFunc(func(context.Context, string) (Principal, error) {
+		return Principal{ID: "sa-1", TenantID: tenantB, Name: "provisioner"}, nil
+	})
+	h := PinTenant(func(*http.Request) string { return tenantA })(
+		RequireServiceAccount(validator)(
+			NewAuditor(rec, nil).Mutation(auditTestAction, auditTestResource, "")(
+				http.HandlerFunc(noContent))))
+	serveMutation(t, h, "machine-token")
+
+	if ev := rec.one(t); ev.TenantID != tenantA || ev.Actor.TenantID != tenantB {
+		t.Errorf("scope = %q, actor tenant = %q; want the pinned %q and the principal's %q",
+			ev.TenantID, ev.Actor.TenantID, tenantA, tenantB)
+	}
+}
+
+// A service account with no tenant (single-tenant) writes no scope.
+func TestAuditor_SingleTenantServiceAccountHasNoScope(t *testing.T) {
+	rec := newRecordingLogger()
+	validator := ValidatorFunc(func(context.Context, string) (Principal, error) {
+		return Principal{ID: "sa-1", Name: "provisioner"}, nil
+	})
+	h := RequireServiceAccount(validator)(
+		NewAuditor(rec, nil).Mutation(auditTestAction, auditTestResource, "")(
+			http.HandlerFunc(noContent)))
+	serveMutation(t, h, "machine-token")
+
+	if ev := rec.one(t); ev.TenantID != "" || ev.Actor.TenantID != "" {
+		t.Errorf("single-tenant service account grew a tenant: scope %q, actor %q", ev.TenantID, ev.Actor.TenantID)
 	}
 }
 

@@ -3,6 +3,8 @@ package authz
 import (
 	"context"
 	"fmt"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // rbacPermissionStore adapts a rank model (BindingStore + Hierarchy + Policy)
@@ -43,7 +45,7 @@ func NewRBACPermissionStore(store BindingStore, h Hierarchy, p Policy) (Permissi
 }
 
 // PermissionsFor returns the set of actions RBAC would allow sub on res.
-func (s *rbacPermissionStore) PermissionsFor(ctx context.Context, sub Subject, res Resource) (PermissionSetResult, error) {
+func (s *rbacPermissionStore) PermissionsFor(ctx context.Context, tenantID tenant.ID, sub Subject, res Resource) (PermissionSetResult, error) {
 	// Memoize effective rank per target: RBAC reads the same target across
 	// multiple actions' requirements (especially the shared global singleton),
 	// so caching keeps the DB cost at RBAC's level.
@@ -52,7 +54,7 @@ func (s *rbacPermissionStore) PermissionsFor(ctx context.Context, sub Subject, r
 		if r, ok := ranks[target]; ok {
 			return r, nil
 		}
-		_, r, err := s.e.effective(ctx, sub, target)
+		_, r, err := s.e.effective(ctx, tenantID, sub, target)
 		if err != nil {
 			return 0, err
 		}
@@ -82,12 +84,12 @@ func (s *rbacPermissionStore) PermissionsFor(ctx context.Context, sub Subject, r
 
 // ResourcesWithPermission delegates to the internal RBAC's ListResources so the
 // enumeration + unbounded semantics are reproduced exactly.
-func (s *rbacPermissionStore) ResourcesWithPermission(ctx context.Context, sub Subject, key string, resourceType string) ([]Resource, bool, error) {
-	return s.e.ListResources(ctx, sub, Action(key), resourceType)
+func (s *rbacPermissionStore) ResourcesWithPermission(ctx context.Context, tenantID tenant.ID, sub Subject, key string, resourceType string) ([]Resource, bool, error) {
+	return s.e.ListResources(ctx, tenantID, sub, Action(key), resourceType)
 }
 
 // SubjectsWithPermission delegates to the internal RBAC's ListSubjects.
-func (s *rbacPermissionStore) SubjectsWithPermission(ctx context.Context, key string, res Resource) ([]Subject, error) {
-	subs, _, err := s.e.ListSubjects(ctx, Action(key), res)
+func (s *rbacPermissionStore) SubjectsWithPermission(ctx context.Context, tenantID tenant.ID, key string, res Resource) ([]Subject, error) {
+	subs, _, err := s.e.ListSubjects(ctx, tenantID, Action(key), res)
 	return subs, err
 }

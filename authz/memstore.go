@@ -3,6 +3,8 @@ package authz
 import (
 	"context"
 	"sync"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // MemStore is an in-memory BindingStore — the reference implementation and
@@ -26,6 +28,8 @@ func NewMemStore(bindings ...Binding) *MemStore {
 }
 
 // Grant adds a binding. Exact duplicates are ignored (idempotent).
+// b.Tenant is the scope the binding lives in; a binding with an unset
+// Tenant is stored and never matches any question.
 func (m *MemStore) Grant(b Binding) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -51,12 +55,12 @@ func (m *MemStore) Revoke(b Binding) {
 }
 
 // BindingsFor implements BindingStore (exact subject + resource match).
-func (m *MemStore) BindingsFor(_ context.Context, sub Subject, res Resource) ([]Binding, error) {
+func (m *MemStore) BindingsFor(_ context.Context, tenantID tenant.ID, sub Subject, res Resource) ([]Binding, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []Binding
 	for _, b := range m.bindings {
-		if b.Subject == sub && b.Resource == res {
+		if b.Tenant == tenantID && b.Subject == sub && b.Resource == res {
 			out = append(out, b)
 		}
 	}
@@ -64,12 +68,12 @@ func (m *MemStore) BindingsFor(_ context.Context, sub Subject, res Resource) ([]
 }
 
 // BindingsForSubject implements BindingStore (concrete resources only).
-func (m *MemStore) BindingsForSubject(_ context.Context, sub Subject, resourceType string) ([]Binding, error) {
+func (m *MemStore) BindingsForSubject(_ context.Context, tenantID tenant.ID, sub Subject, resourceType string) ([]Binding, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []Binding
 	for _, b := range m.bindings {
-		if b.Subject == sub && b.Resource.Type == resourceType && b.Resource.ID != "" {
+		if b.Tenant == tenantID && b.Subject == sub && b.Resource.Type == resourceType && b.Resource.ID != "" {
 			out = append(out, b)
 		}
 	}
@@ -77,12 +81,12 @@ func (m *MemStore) BindingsForSubject(_ context.Context, sub Subject, resourceTy
 }
 
 // BindingsOnResource implements BindingStore (exact resource match).
-func (m *MemStore) BindingsOnResource(_ context.Context, res Resource) ([]Binding, error) {
+func (m *MemStore) BindingsOnResource(_ context.Context, tenantID tenant.ID, res Resource) ([]Binding, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []Binding
 	for _, b := range m.bindings {
-		if b.Resource == res {
+		if b.Tenant == tenantID && b.Resource == res {
 			out = append(out, b)
 		}
 	}

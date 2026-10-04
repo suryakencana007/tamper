@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"github.com/suryakencana007/tamper/tenant"
 	"testing"
 )
 
@@ -43,11 +44,11 @@ type parityFixture struct {
 
 // Subjects.
 var (
-	pAlice = Subject{"user", "alice"} // system admin, global; NO cluster row (the bypass case)
-	pBob   = Subject{"user", "bob"}   // cluster deployer on c1
-	pCarol = Subject{"user", "carol"} // cluster viewer on c1
-	pDave  = Subject{"user", "dave"}  // system admin global + cluster viewer on c1 (mixed)
-	pErin  = Subject{"user", "erin"}  // nothing
+	pAlice = Subject{Tenant: tenant.Single, Type: "user", ID: "alice"} // system admin, global; NO cluster row (the bypass case)
+	pBob   = Subject{Tenant: tenant.Single, Type: "user", ID: "bob"}   // cluster deployer on c1
+	pCarol = Subject{Tenant: tenant.Single, Type: "user", ID: "carol"} // cluster viewer on c1
+	pDave  = Subject{Tenant: tenant.Single, Type: "user", ID: "dave"}  // system admin global + cluster viewer on c1 (mixed)
+	pErin  = Subject{Tenant: tenant.Single, Type: "user", ID: "erin"}  // nothing
 )
 
 // Resources.
@@ -73,11 +74,11 @@ func newParityFixture(t *testing.T) parityFixture {
 
 	// RBAC over role bindings.
 	ms := NewMemStore(
-		Binding{pAlice, pSys, "system-admin"},
-		Binding{pBob, pC1, "cluster-deployer"},
-		Binding{pCarol, pC1, "cluster-viewer"},
-		Binding{pDave, pSys, "system-admin"},
-		Binding{pDave, pC1, "cluster-viewer"},
+		Binding{tenant.Single, pAlice, pSys, "system-admin"},
+		Binding{tenant.Single, pBob, pC1, "cluster-deployer"},
+		Binding{tenant.Single, pCarol, pC1, "cluster-viewer"},
+		Binding{tenant.Single, pDave, pSys, "system-admin"},
+		Binding{tenant.Single, pDave, pC1, "cluster-viewer"},
 	)
 	rbac, err := NewRBAC(ms, h, p)
 	if err != nil {
@@ -88,10 +89,10 @@ func newParityFixture(t *testing.T) parityFixture {
 	// the downward-closure of its rank, and a system admin — who bypasses every
 	// action — is a global Superuser.
 	pstore := NewMemPermissionStore()
-	pstore.GrantSuperuser(pAlice)
-	pstore.Grant(pBob, pC1, "cluster.view", "cluster.deploy")
-	pstore.Grant(pCarol, pC1, "cluster.view")
-	pstore.GrantSuperuser(pDave) // system admin ⇒ superuser; his cluster-viewer row is subsumed
+	pstore.GrantSuperuser(tenant.Single, pAlice)
+	pstore.Grant(tenant.Single, pBob, pC1, "cluster.view", "cluster.deploy")
+	pstore.Grant(tenant.Single, pCarol, pC1, "cluster.view")
+	pstore.GrantSuperuser(tenant.Single, pDave) // system admin ⇒ superuser; his cluster-viewer row is subsumed
 	permset, err := NewPermissionSet(pstore)
 	if err != nil {
 		t.Fatalf("NewPermissionSet: %v", err)
@@ -153,8 +154,8 @@ func TestParity_FullMatrix(t *testing.T) {
 	for _, sub := range fx.subjects {
 		for _, act := range fx.actions {
 			for _, res := range fx.resources {
-				dR, errR := fx.rbac.Check(ctx, sub, act, res)
-				dP, errP := fx.permset.Check(ctx, sub, act, res)
+				dR, errR := fx.rbac.Check(ctx, tenant.Single, sub, act, res)
+				dP, errP := fx.permset.Check(ctx, tenant.Single, sub, act, res)
 				if errR != nil || errP != nil {
 					t.Fatalf("Check(%s,%q,%s): rbac err=%v permset err=%v", sub.ID, act, res.ID, errR, errP)
 				}
@@ -181,8 +182,8 @@ func TestParity_UnknownActionDivergenceIsScoped(t *testing.T) {
 	const unknown Action = "nonexistent.action"
 
 	// Non-superuser: both deny — parity holds.
-	dR, _ := fx.rbac.Check(ctx, pBob, unknown, pC1)
-	dP, _ := fx.permset.Check(ctx, pBob, unknown, pC1)
+	dR, _ := fx.rbac.Check(ctx, tenant.Single, pBob, unknown, pC1)
+	dP, _ := fx.permset.Check(ctx, tenant.Single, pBob, unknown, pC1)
 	if dR.Allowed || dP.Allowed {
 		t.Errorf("unknown action on a non-superuser must deny on both: rbac=%v permset=%v", dR.Allowed, dP.Allowed)
 	}
@@ -190,8 +191,8 @@ func TestParity_UnknownActionDivergenceIsScoped(t *testing.T) {
 	// Superuser: the documented divergence. RBAC denies (unknown action),
 	// PermissionSet superuser allows. Pinned so a future reader understands it
 	// is intentional, not a regression.
-	dR, _ = fx.rbac.Check(ctx, pAlice, unknown, pC1)
-	dP, _ = fx.permset.Check(ctx, pAlice, unknown, pC1)
+	dR, _ = fx.rbac.Check(ctx, tenant.Single, pAlice, unknown, pC1)
+	dP, _ = fx.permset.Check(ctx, tenant.Single, pAlice, unknown, pC1)
 	if dR.Allowed {
 		t.Error("RBAC must deny an unknown action even for a system admin")
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // RBAC is the built-in Authorizer: scoped-role RBAC over a pluggable
@@ -40,7 +42,14 @@ func NewRBAC(store BindingStore, h Hierarchy, p Policy) (*RBAC, error) {
 // Check implements Authorizer. Unknown actions deny with a nil error (the
 // deny-by-default contract); store failures return an error, which callers
 // must also treat as deny.
-func (e *RBAC) Check(ctx context.Context, sub Subject, act Action, res Resource) (Decision, error) {
+//
+// The scope and the subject's home tenant are checked first, before the
+// action: a question with no tenant is ErrTenantRequired whatever it
+// asks.
+func (e *RBAC) Check(ctx context.Context, tenantID tenant.ID, sub Subject, act Action, res Resource) (Decision, error) {
+	if err := gate(tenantID, sub); err != nil {
+		return Decision{}, err
+	}
 	reqs, ok := e.p[act]
 	if !ok {
 		return Decision{Allowed: false, Reason: fmt.Sprintf("unknown action %q", act)}, nil
@@ -52,7 +61,7 @@ func (e *RBAC) Check(ctx context.Context, sub Subject, act Action, res Resource)
 			// requirement's type (see Requirement docs).
 			target = Resource{Type: req.Type}
 		}
-		role, rank, err := e.effective(ctx, sub, target)
+		role, rank, err := e.effective(ctx, tenantID, sub, target)
 		if err != nil {
 			return Decision{}, fmt.Errorf("authz: check %q on %s: %w", act, label(res), err)
 		}
@@ -68,10 +77,10 @@ func (e *RBAC) Check(ctx context.Context, sub Subject, act Action, res Resource)
 
 // CheckBulk implements Authorizer. Results are index-aligned with reqs; the
 // first evaluation error fails the whole call.
-func (e *RBAC) CheckBulk(ctx context.Context, reqs []CheckRequest) ([]Decision, error) {
+func (e *RBAC) CheckBulk(ctx context.Context, tenantID tenant.ID, reqs []CheckRequest) ([]Decision, error) {
 	out := make([]Decision, len(reqs))
 	for i, r := range reqs {
-		d, err := e.Check(ctx, r.Subject, r.Action, r.Resource)
+		d, err := e.Check(ctx, tenantID, r.Subject, r.Action, r.Resource)
 		if err != nil {
 			return nil, err
 		}
@@ -84,7 +93,10 @@ func (e *RBAC) CheckBulk(ctx context.Context, reqs []CheckRequest) ([]Decision, 
 // an error here rather than an empty result: list callers are UI/audit
 // surfaces wiring actions statically, and a typo silently rendering an
 // empty listing is a worse failure mode than a loud one.
-func (e *RBAC) ListResources(ctx context.Context, sub Subject, act Action, resourceType string) ([]Resource, bool, error) {
+func (e *RBAC) ListResources(ctx context.Context, tenantID tenant.ID, sub Subject, act Action, resourceType string) ([]Resource, bool, error) {
+	if err := gate(tenantID, sub); err != nil {
+		return nil, false, err
+	}
 	reqs, ok := e.p[act]
 	if !ok {
 		return nil, false, fmt.Errorf("authz: unknown action %q", act)
@@ -106,7 +118,7 @@ func (e *RBAC) ListResources(ctx context.Context, sub Subject, act Action, resou
 		if unbounded {
 			continue
 		}
-		_, rank, err := e.effective(ctx, sub, Resource{Type: req.Type})
+		_, rank, err := e.effective(ctx, tenantID, sub, Resource{Type: req.Type})
 		if err != nil {
 			return nil, false, fmt.Errorf("authz: list resources for %q: %w", act, err)
 		}
@@ -118,14 +130,14 @@ func (e *RBAC) ListResources(ctx context.Context, sub Subject, act Action, resou
 		return nil, unbounded, nil
 	}
 
-	bs, err := e.store.BindingsForSubject(ctx, sub, resourceType)
+	bs, err := e.store.BindingsForSubject(ctx, tenantID, sub, resourceType)
 	if err != nil {
 		return nil, false, fmt.Errorf("authz: list resources for %q: %w", act, err)
 	}
 	seen := make(map[Resource]bool)
 	var out []Resource
 	for _, b := range bs {
-		if b.Subject != sub || b.Resource.Type != resourceType || b.Resource.ID == "" {
+		if b.Tenant != tenantID || b.Subject != sub || b.Resource.Type != resourceType || b.Resource.ID == "" {
 			continue // defensive: hold the store to its contract
 		}
 		if e.h.rank(resourceType, b.Role) >= lowest && !seen[b.Resource] {
@@ -141,7 +153,10 @@ func (e *RBAC) ListResources(ctx context.Context, sub Subject, act Action, resou
 // concretely via the store (SQL can list them), so the RBAC engine never
 // reports unbounded — the parameter exists for engines that cannot
 // enumerate (see the interface docs).
-func (e *RBAC) ListSubjects(ctx context.Context, act Action, res Resource) ([]Subject, bool, error) {
+func (e *RBAC) ListSubjects(ctx context.Context, tenantID tenant.ID, act Action, res Resource) ([]Subject, bool, error) {
+	if !tenantID.Valid() {
+		return nil, false, fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	}
 	reqs, ok := e.p[act]
 	if !ok {
 		return nil, false, fmt.Errorf("authz: unknown action %q", act)
@@ -154,13 +169,13 @@ func (e *RBAC) ListSubjects(ctx context.Context, act Action, res Resource) ([]Su
 			target = Resource{Type: req.Type}
 		}
 		minRank := e.h.rank(req.Type, req.Min)
-		bs, err := e.store.BindingsOnResource(ctx, target)
+		bs, err := e.store.BindingsOnResource(ctx, tenantID, target)
 		if err != nil {
 			return nil, false, fmt.Errorf("authz: list subjects for %q: %w", act, err)
 		}
 		for _, b := range bs {
-			if b.Resource != target {
-				continue
+			if b.Tenant != tenantID || b.Resource != target {
+				continue // defensive: hold the store to its contract
 			}
 			if e.h.rank(target.Type, b.Role) >= minRank && !seen[b.Subject] {
 				seen[b.Subject] = true
@@ -168,28 +183,41 @@ func (e *RBAC) ListSubjects(ctx context.Context, act Action, res Resource) ([]Su
 			}
 		}
 	}
+	sortSubjects(out)
+	return out, false, nil
+}
+
+// sortSubjects orders by (Type, ID, home tenant), so two subjects that
+// share an id across tenants still list in a fixed order.
+func sortSubjects(out []Subject) {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Type != out[j].Type {
 			return out[i].Type < out[j].Type
 		}
-		return out[i].ID < out[j].ID
+		if out[i].ID != out[j].ID {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Tenant.String() < out[j].Tenant.String()
 	})
-	return out, false, nil
 }
 
 // effective returns the highest-ranked role sub holds on exactly res,
 // mirroring Barista's EffectiveRole = max(direct, group-derived) once the
 // store has resolved indirection into bindings. Bindings whose role is not
 // in res.Type's ladder rank 0 and are ignored (fail closed).
-func (e *RBAC) effective(ctx context.Context, sub Subject, res Resource) (Role, int, error) {
-	bs, err := e.store.BindingsFor(ctx, sub, res)
+//
+// A binding of another scope, or of a subject that is not exactly sub
+// (home tenant included), is ignored too. The store should not have
+// returned it; the engine does not rely on that.
+func (e *RBAC) effective(ctx context.Context, tenantID tenant.ID, sub Subject, res Resource) (Role, int, error) {
+	bs, err := e.store.BindingsFor(ctx, tenantID, sub, res)
 	if err != nil {
 		return "", 0, err
 	}
 	best := 0
 	var bestRole Role
 	for _, b := range bs {
-		if b.Subject != sub || b.Resource != res {
+		if b.Tenant != tenantID || b.Subject != sub || b.Resource != res {
 			continue // defensive: exact-match contract
 		}
 		if r := e.h.rank(res.Type, b.Role); r > best {

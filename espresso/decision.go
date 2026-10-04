@@ -7,6 +7,7 @@ import (
 	espressofw "github.com/suryakencana007/espresso/v2"
 
 	"github.com/suryakencana007/tamper/authz"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // DenyWriter writes the app's deny response — status, code, and copy
@@ -70,7 +71,23 @@ type DecisionGate struct {
 // writers) is a 500 CONFIG_ERROR — never a silent pass.
 //
 // Stack ordering: must run AFTER RequireAuth so the subject id is in
-// context.
+// context, and AFTER the tenant gate on a pooled route.
+//
+// The question is asked with two tenants, and they are different facts:
+//
+//   - The SCOPE is the tenant a tenant gate put in the context
+//     (RequireTenant, RequireTenantAllowEntered, PinTenant) — whose
+//     resources these are. With no gate it is tenant.Single, which is
+//     what a single-tenant deployment has always asked in.
+//   - The SUBJECT's tenant is the token's home tenant. For a platform
+//     admin who entered this tenant that is their own tenant, not the
+//     routed one, so the Authorizer finds only what was granted to that
+//     guest inside this scope; the roles they hold at home are bindings
+//     of another scope and are never consulted.
+//
+// A pooled route mounted without a tenant gate asks in the single scope
+// with a tenanted subject. Nothing is granted to such a subject there,
+// so it denies.
 func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,12 +115,22 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 				}
 			}
 
-			subject := authz.Subject{Type: g.SubjectType, ID: userID}
+			scope, ok := TenantFromContext(r.Context())
+			if !ok {
+				scope = tenant.Single
+			}
+			// Never the routed tenant: the token says where its subject
+			// is from, and a guest must not be taken for a local user.
+			home := tenant.Single
+			if claims, ok := AccessClaimsFromContext(r.Context()); ok && claims != nil {
+				home = tenant.FromStored(claims.ActorTenantID())
+			}
+			subject := authz.Subject{Tenant: home, Type: g.SubjectType, ID: userID}
 			resource := authz.Resource{Type: g.ResourceType, ID: resourceID}
 
 			// Check 1 — visibility (the leak rule), when configured.
 			if g.VisibilityAction != "" {
-				visible, err := g.Authorizer.Check(r.Context(), subject, g.VisibilityAction, resource)
+				visible, err := g.Authorizer.Check(r.Context(), scope, subject, g.VisibilityAction, resource)
 				if err != nil {
 					_ = espressofw.ErrInternal("middleware: " + g.Label + " check failed").Wrap(err).
 						WriteResponse(w)
@@ -122,7 +149,7 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 			}
 
 			// Check 2 — the requested tier.
-			decision, err := g.Authorizer.Check(r.Context(), subject, g.Action, resource)
+			decision, err := g.Authorizer.Check(r.Context(), scope, subject, g.Action, resource)
 			if err != nil {
 				_ = espressofw.ErrInternal("middleware: " + g.Label + " check failed").Wrap(err).
 					WriteResponse(w)

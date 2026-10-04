@@ -8,8 +8,8 @@ INSERT INTO events (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetLatestHash :one
--- v1.8 follow-up #2: canonical_version DESC is the deterministic
--- tiebreaker for same-at rows. See audit_sqlite.go latestHash() docs.
+-- canonical_version DESC is a deterministic tiebreaker for same-at
+-- rows. See latestHashFrom in audit_sqlite.go.
 SELECT hash FROM events ORDER BY at DESC, canonical_version DESC, id DESC LIMIT 1;
 
 -- name: GetLatestAt :one
@@ -17,66 +17,6 @@ SELECT hash FROM events ORDER BY at DESC, canonical_version DESC, id DESC LIMIT 
 -- NewSQLiteLogger to initialize the in-memory monotonic-at watermark on
 -- open. See audit_sqlite.go SQLiteLogger.lastAt docs.
 SELECT at FROM events ORDER BY at DESC, canonical_version DESC, id DESC LIMIT 1;
-
--- name: ListEventsAll :many
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-ORDER BY at DESC, id DESC
-LIMIT ?;
-
--- name: ListEventsBefore :many
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE at < ?
-   OR (at = ? AND id < ?)
-ORDER BY at DESC, id DESC
-LIMIT ?;
-
--- name: ListEventsByActor :many
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE actor_user_id = ?
-ORDER BY at DESC, id DESC
-LIMIT ?;
-
--- name: ListEventsByResource :many
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE resource_type = ? AND resource_id = ?
-ORDER BY at DESC, id DESC
-LIMIT ?;
-
--- name: ListEventsByRequest :many
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE request_id = ?
-ORDER BY at DESC, id DESC
-LIMIT ?;
 
 -- name: ListEventsForVerify :many
 -- v1.8 Sprint 0 follow-up (TD-AUDIT-12): canonical_version ASC is the
@@ -91,25 +31,9 @@ SELECT
 FROM events
 ORDER BY at ASC, canonical_version ASC, id ASC;
 
--- name: ListEventsByCanonicalVersion :many
--- Returns every event at the given canonical_version in chain-ascending
--- order. Used by VerifyLegacy(N, "") - the v1.4 fix shape (TD-AUDIT-10)
--- closes the walk-window-scoping issue where loaded fixture events
--- with older timestamps fell behind the walker's starting point.
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE canonical_version = ?
-ORDER BY at ASC, id ASC;
-
 -- name: GetEventByID :one
--- Used by the --from-id walker-anchor flag (v1.4 - TD-AUDIT-10). Looks
--- up a single event by id so VerifyLegacy can validate the row exists
--- + carries the expected canonical_version before walking from it.
+-- Looks up a single event by id. RedactEvent uses it to tell a row
+-- that does not exist from a lookup that failed.
 SELECT
     id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
     action, resource_type, resource_id, cluster_id, request_id,
@@ -118,87 +42,6 @@ SELECT
     c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
 FROM events
 WHERE id = ?;
-
--- name: ListEventsForVerifyFromChainRestart :many
--- Walks the chain segment starting at the most-recent
--- system.audit.chain_restart row. The dispatcher picks the row's
--- (at, id), then this query returns every event from that row forward
--- (inclusive) in ascending chain order. Used by `barista audit verify`
--- to walk the v1.0+ chain when older-shape rows still live alongside.
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE at > ? OR (at = ? AND id >= ?)
-ORDER BY at ASC, id ASC;
-
--- name: GetLatestChainRestart :one
--- Returns the most-recent chain-restart event. Caller passes the
--- action string (audit.ActionAuditChainRestart) so sqlc doesn't
--- see the dotted literal inline. Used by `barista audit verify`
--- to identify the latest chain genesis row when multiple
--- canonical-version segments live in the same DB.
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE action = ?
-ORDER BY at DESC, canonical_version DESC, id DESC
-LIMIT 1;
-
--- name: GetLatestChainRestartAtVersion :one
--- Returns the most-recent chain-restart event at a specific
--- canonical_version. Used by `barista audit verify --legacy
--- --canonical-version=N` to walk the v1.0 (canonical_version=2)
--- segment in isolation when both v2 + v3 genesis rows are present.
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE action = ? AND canonical_version = ?
-ORDER BY at DESC, id DESC
-LIMIT 1;
-
--- name: ListEventsNonClusterScoped :many
--- Returns audit rows that aren't scoped to any cluster (cluster_id =
--- '': auth.*, system.*, anything the middleware emits without stamping
--- a cluster_id). Used as the degenerate-case fallback by the v1.1 task
--- 04 ListScoped path when the caller has zero reachable clusters - the
--- code-side IN clause cannot bind a zero-element slice, so we route
--- to this query instead.
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE cluster_id = ''
-ORDER BY at DESC, id DESC
-LIMIT ?;
-
--- name: ListEventsNonClusterScopedBefore :many
--- Cursor-paginated variant of ListEventsNonClusterScoped.
-SELECT
-    id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name,
-    action, resource_type, resource_id, cluster_id, request_id,
-    before_json, after_json, prev_hash, hash, canonical_version,
-    tenant_id, actor_tenant_id, row_salt,
-    c_actor_email, c_actor_name, c_actor_ip, c_before, c_after
-FROM events
-WHERE cluster_id = ''
-  AND (at < ? OR (at = ? AND id < ?))
-ORDER BY at DESC, id DESC
-LIMIT ?;
 
 -- name: CountAuditEventsByActionSince :many
 -- v1.2 Sprint 2 task 03: digest body source. Counts events grouped by
@@ -218,50 +61,8 @@ WHERE at > ?
 GROUP BY action
 ORDER BY count DESC, action ASC;
 
--- name: CountChainRestartV2 :one
--- Used by the boot path to decide whether to insert the v1.0 chain
--- restart genesis row. Caller passes the canonical version (2) to
--- count. Zero count on a fresh v1.0 boot (or a v0.9 upgrade) means
--- the boot path will insert the genesis row; non-zero means a prior
--- boot already inserted it.
-SELECT COUNT(*) FROM events WHERE canonical_version = ?;
-
--- name: CountEventsByCanonicalVersion :many
--- Returns per-canonical-version row counts across the whole audit DB.
--- Used by `barista audit verify` to print the distribution summary
--- ("canonical_version=2: 3, canonical_version=3: 9") after a clean
--- walk, so operators can sanity-check what segment shapes their DB
--- carries. Sorted by canonical_version ASC so the output is stable.
-SELECT canonical_version, COUNT(*) AS event_count
-FROM events
-GROUP BY canonical_version
-ORDER BY canonical_version ASC;
-
 -- name: PruneOlderThan :execrows
 DELETE FROM events WHERE at < ?;
-
--- name: CountEvents :one
-SELECT COUNT(*) FROM events;
-
--- name: UpdateEventHash :exec
--- Used by the v1.5 audit-chain encoder migration (audit.MigrateLegacyV2Hashes).
--- Writes the recomputed hash + prev_hash for a single existing event,
--- leaving every other column unchanged. The migration walks v=2 rows
--- in chain order; each row's recomputed hash becomes the next row's
--- prev_hash so the migrated chain stays self-consistent.
---
--- Idempotent on re-run: the WHERE id = ? clause matches at most one
--- row; re-running with the same hash + prev_hash is a no-op write.
-UPDATE events
-SET hash = ?, prev_hash = ?
-WHERE id = ?;
-
--- name: CountEventsByAction :one
--- Counts every row whose action column equals the given string. Used by
--- HasChainMigrate (v1.5 task 01) to check for an existing
--- system.audit.chain_migrate marker on boot so the encoder migration is
--- idempotent across pod restarts.
-SELECT COUNT(*) FROM events WHERE action = ?;
 
 -- name: DeleteEventByID :exec
 -- Used by the v1.5 load-fixture ConflictForce policy. Removes a single
@@ -305,3 +106,21 @@ SET actor_email = '',
     after_json  = '',
     row_salt    = x''
 WHERE id = ? AND canonical_version = 4;
+
+-- name: CountEventsNotAtV4 :many
+-- Returns, per canonical_version, how many rows are NOT at version 4.
+-- No rows on a healthy DB. NewSQLiteLogger uses it to refuse a DB
+-- that holds rows this package cannot verify, and to say how many
+-- there are at each version: one stray row and a whole legacy file
+-- are different findings.
+--
+-- The 4 is a literal on purpose. The partial index idx_events_not_v4
+-- (migration 006) covers exactly this predicate, and SQLite uses it
+-- only when the WHERE implies the index's own, which it cannot prove
+-- through a bound parameter. With the index the check reads only the
+-- rows it reports.
+SELECT canonical_version, COUNT(*) AS event_count
+FROM events
+WHERE canonical_version <> 4
+GROUP BY canonical_version
+ORDER BY canonical_version ASC;

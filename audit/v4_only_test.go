@@ -151,6 +151,107 @@ func TestNewSQLiteLogger_RefusesPreV4Rows(t *testing.T) {
 	}
 }
 
+// seedDirect inserts a row Log would never write, at the given version.
+func seedDirect(t *testing.T, l *SQLiteLogger, id string, version int, at time.Time) {
+	t.Helper()
+	e := singleTenantEvent(id, at)
+	e.CanonicalVersion = version
+	e.PrevHash = make([]byte, HashSize)
+	e.Hash = make([]byte, HashSize)
+	if err := InsertEventDirectForTest(context.Background(), l, e); err != nil {
+		t.Fatalf("seed %s at v%d: %v", id, version, err)
+	}
+}
+
+// reopenErr closes l and returns the error from opening the same file.
+func reopenErr(t *testing.T, l *SQLiteLogger, dbPath string) error {
+	t.Helper()
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := NewSQLiteLogger(dbPath, SQLiteLoggerOptions{})
+	if err == nil {
+		_ = reopened.Close()
+	}
+	return err
+}
+
+// The refusal says how many rows there are at each version, lowest
+// first. The count is the part that tells an operator what they are
+// looking at: one stray row in a v4 file is a row that was changed; a
+// file of older rows is an old file.
+func TestNewSQLiteLogger_RefusalCountsRowsPerVersion(t *testing.T) {
+	base := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		seed map[string]int // id -> version, besides three v4 rows
+		want string
+	}{
+		{"one stray row", map[string]int{"x": 3}, "1 at canonical_version=3"},
+		{"several versions, lowest first", map[string]int{"a": 3, "b": 2, "c": 3, "d": 2, "e": 2},
+			"3 at canonical_version=2, 2 at canonical_version=3"},
+		{"a version above 4", map[string]int{"x": 5}, "1 at canonical_version=5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "audit.db")
+			first, err := NewSQLiteLogger(dbPath, SQLiteLoggerOptions{})
+			if err != nil {
+				t.Fatalf("NewSQLiteLogger: %v", err)
+			}
+			sl := first.(*SQLiteLogger)
+			for i, id := range []string{"v4-1", "v4-2", "v4-3"} {
+				if _, err := sl.Log(context.Background(), singleTenantEvent(id, base.Add(time.Duration(i)*time.Hour))); err != nil {
+					t.Fatalf("Log: %v", err)
+				}
+			}
+			n := 0
+			for id, version := range tc.seed {
+				n++
+				seedDirect(t, sl, id, version, base.Add(-time.Duration(n)*time.Hour))
+			}
+
+			err = reopenErr(t, sl, dbPath)
+			if err == nil {
+				t.Fatal("NewSQLiteLogger opened a DB that holds rows at another version")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal should say %q, got %q", tc.want, err)
+			}
+			if !strings.Contains(err.Error(), "Keep the file") {
+				t.Errorf("the refusal should say to keep the file, got %q", err)
+			}
+		})
+	}
+}
+
+// A canonical_version that is not an integer cannot be read at all.
+// The file is still refused, and still not called disposable.
+func TestNewSQLiteLogger_RefusesUnreadableVersion(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
+	first, err := NewSQLiteLogger(dbPath, SQLiteLoggerOptions{})
+	if err != nil {
+		t.Fatalf("NewSQLiteLogger: %v", err)
+	}
+	sl := first.(*SQLiteLogger)
+	if _, err := sl.Log(context.Background(), singleTenantEvent("a", time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if _, err := SQLiteAuditDBForTest(sl).ExecContext(context.Background(),
+		`UPDATE events SET canonical_version = 'x' WHERE id = 'a'`); err != nil {
+		t.Fatalf("UPDATE: %v", err)
+	}
+
+	err = reopenErr(t, sl, dbPath)
+	if err == nil {
+		t.Fatal("NewSQLiteLogger opened a DB whose row has a non-integer canonical_version")
+	}
+	for _, want := range []string{"Keep the file", "altered", dbPath} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should contain %q, got %q", want, err)
+		}
+	}
+}
+
 // The version column is an input to both verify walks. A row relabelled
 // to another version while the logger is open is reported at that row.
 func TestVerify_RelabelledVersionIsTamper(t *testing.T) {

@@ -60,3 +60,4 @@ CREATE INDEX events_resource_idx ON events (resource_type, resource_id);
 CREATE INDEX events_request_idx ON events (request_id);
 CREATE INDEX idx_events_cluster_id ON events (cluster_id) WHERE cluster_id <> '';
 CREATE INDEX idx_events_tenant_id ON events (tenant_id) WHERE tenant_id <> '';
+CREATE INDEX idx_events_not_v4 ON events (canonical_version) WHERE canonical_version <> 4;

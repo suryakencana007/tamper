@@ -21,7 +21,8 @@ redacted. Everything that existed for older rows is removed.
 **Before you upgrade:**
 
 - **An audit DB written by an earlier version cannot be opened.**
-  `NewSQLiteLogger` returns an error that names the file. Archive the old file
+  `NewSQLiteLogger` returns an error that names the file and lists how many
+  rows it found at each other version (#54). Archive the old file
   and point the application at a new one. The same error appears when a row's
   version was changed after it was written, so do not delete a file because
   of it without knowing which case it is.
@@ -176,6 +177,11 @@ redacted. Everything that existed for older rows is removed.
   carry a `tid` claim, and verification pins it the same way `VerifyAccess`
   pins an access token. A pooled adapter should use these, so a pending token
   minted in one tenant cannot be finished in another.
+
+- **Audit DB migration 006** (#54, TD-26). A partial index over rows that are
+  not `canonical_version=4`. It is empty on a healthy DB and makes the check
+  that `NewSQLiteLogger` runs at every open read nothing. It is applied
+  automatically on the next open, like the earlier migrations.
 
 ### Fixed
 

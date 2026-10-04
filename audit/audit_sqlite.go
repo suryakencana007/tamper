@@ -71,21 +71,32 @@ func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 	}
 	l := &SQLiteLogger{store: store, opts: opts}
 
-	counts, err := store.Queries.CountEventsByCanonicalVersion(context.Background())
+	// Rows at any other version, counted per version. The count is part
+	// of the answer: one row at v3 in a large v4 file points at a row
+	// that was changed, while a file of nothing but v3 rows is an old
+	// file. The query is served by a partial index that is empty on a
+	// healthy DB, so this costs nothing on a normal open.
+	others, err := store.Queries.CountEventsNotAtV4(context.Background())
 	if err != nil {
 		_ = store.Close()
-		return nil, fmt.Errorf("audit: check canonical versions: %w", err)
+		// A version that cannot even be read (text, a fraction) lands
+		// here. This package never wrote it, so the guidance is the same.
+		return nil, fmt.Errorf("audit: check canonical versions in %s: %w. Keep the file: "+
+			"if a row's canonical_version cannot be read, the row was altered after it was written",
+			dbPath, err)
 	}
-	for _, c := range counts {
-		if c.CanonicalVersion != CanonicalVersion4 {
-			_ = store.Close()
-			return nil, fmt.Errorf(
-				"audit: %s holds %d row(s) at canonical_version=%d, which this version cannot "+
-					"verify (it reads and writes canonical_version=%d only). Keep the file. If it was "+
-					"written by an older version of tamper, archive it and point the application at "+
-					"a new audit DB. If it was not, a row was altered after it was written",
-				dbPath, c.EventCount, c.CanonicalVersion, CanonicalVersion4)
+	if len(others) > 0 {
+		_ = store.Close()
+		found := make([]string, 0, len(others))
+		for _, o := range others {
+			found = append(found, fmt.Sprintf("%d at canonical_version=%d", o.EventCount, o.CanonicalVersion))
 		}
+		return nil, fmt.Errorf(
+			"audit: %s holds rows this version cannot verify: %s (it reads and writes "+
+				"canonical_version=%d only). Keep the file. If it was written by an older "+
+				"version of tamper, archive it and point the application at a new audit DB. "+
+				"If it was not, a row was altered after it was written",
+			dbPath, strings.Join(found, ", "), CanonicalVersion4)
 	}
 
 	// Prime the monotonic-at watermark so the first Log after a restart

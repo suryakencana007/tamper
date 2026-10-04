@@ -1054,6 +1054,10 @@ design_ref: "§5 M5, §8 open item 1"
 > `walkChain` uses it to OVERRIDE every row's own column, so v4 rows sitting
 > after a v3 anchor read as tamper.
 >
+> **AMENDED 2026-10-04.** This paragraph describes a design that was removed.
+> v4 is now the only canonical version: there is no anchor, no `Tenancy`
+> option, and no v3 row. See `PHASE7-MULTITENANCY-SKETCH.md` §8 item 1.
+>
 > **A tenant-filtered export may claim** per-row authenticity and position —
 > each row ships its own prev_hash/hash, recomputable without access to anyone
 > else's data, and attribution cannot have been reassigned after the fact

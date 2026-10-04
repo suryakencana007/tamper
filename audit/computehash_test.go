@@ -32,16 +32,14 @@ func testEventForHash(version int) Event {
 // compared or migrated onto the other's storage.
 func TestComputeHash_MatchesLoggersOwnComputation(t *testing.T) {
 	prevHash := bytes.Repeat([]byte{1}, HashSize)
-	for _, version := range []int{CanonicalVersion3, CanonicalVersion4} {
-		e := testEventForHash(version)
-		got, err := ComputeHash(e, prevHash)
-		if err != nil {
-			t.Fatalf("version %d: ComputeHash: %v", version, err)
-		}
-		want := computeHash(prevHash, e, version)
-		if !bytes.Equal(got, want) {
-			t.Errorf("version %d: ComputeHash = %x, want %x (Logger's own internal computation)", version, got, want)
-		}
+	e := testEventForHash(CanonicalVersion4)
+	got, err := ComputeHash(e, prevHash)
+	if err != nil {
+		t.Fatalf("ComputeHash: %v", err)
+	}
+	want := hashChainLink(prevHash, canonicalPayloadV4(e, prevHash))
+	if !bytes.Equal(got, want) {
+		t.Errorf("ComputeHash = %x, want %x (Logger's own internal computation)", got, want)
 	}
 }
 
@@ -93,15 +91,15 @@ func TestComputeHash_RequiresIDAtAction(t *testing.T) {
 	}
 }
 
-// TestComputeHash_RejectsUnsetOrLegacyCanonicalVersion locks in the one
-// deliberate behavior difference from Logger.Log: no defaulting.
-func TestComputeHash_RejectsUnsetOrLegacyCanonicalVersion(t *testing.T) {
+// TestComputeHash_RejectsEveryVersionButV4 locks in the one deliberate
+// behavior difference from Logger.Log: no defaulting of a zero version.
+func TestComputeHash_RejectsEveryVersionButV4(t *testing.T) {
 	prevHash := make([]byte, HashSize)
-	for _, version := range []int{0, CanonicalVersion1, CanonicalVersion2, 99} {
+	for _, version := range []int{0, 1, 2, 3, 99} {
 		e := testEventForHash(CanonicalVersion4) // valid Event shape otherwise
 		e.CanonicalVersion = version
 		if _, err := ComputeHash(e, prevHash); err == nil {
-			t.Errorf("ComputeHash with CanonicalVersion=%d succeeded, want an error (ComputeHash does not default a zero/legacy version the way Logger.Log does)", version)
+			t.Errorf("ComputeHash with CanonicalVersion=%d succeeded, want an error (ComputeHash does not default a zero version the way Logger.Log does)", version)
 		}
 	}
 }

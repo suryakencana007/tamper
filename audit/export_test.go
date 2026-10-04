@@ -25,9 +25,6 @@ func seedThreeTenants(t *testing.T) *SQLiteLogger {
 	ctx := context.Background()
 	l := v4Logger(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	if _, err := l.BootstrapChainV4(ctx, base, "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
 	for i, tenantID := range []string{"acme", "globex", "acme", "initech", "globex", "acme"} {
 		e := tenantEvent(string(rune('a'+i)), base.Add(time.Duration(i+1)*time.Second), tenantID)
 		e.Actor.Email = tenantID + "-user@example.com"
@@ -72,23 +69,6 @@ func TestExport_ContainsNoOtherTenantsRows(t *testing.T) {
 	}
 }
 
-// TestExport_ExcludesTheChainAnchor: the v4 anchor is a property of the
-// chain, not of a customer, and a chain-machinery row inside a customer
-// export is noise at best and a hint about the pool at worst.
-func TestExport_ExcludesTheChainAnchor(t *testing.T) {
-	ctx := context.Background()
-	l := seedThreeTenants(t)
-	exp, err := l.ExportForTenant(ctx, tenant.New("acme"))
-	if err != nil {
-		t.Fatalf("ExportForTenant: %v", err)
-	}
-	for _, e := range exp.Events {
-		if isChainAnchorAction(e.Action) {
-			t.Errorf("the export contains chain-machinery row %s (%s)", e.ID, e.Action)
-		}
-	}
-}
-
 // TestExport_FiltersOnEventTenantNotActorTenant is the correctness bug
 // the manifest calls out by name. A support engineer belonging to tenant
 // A acting on tenant B's resource has actor-tenant A and event-tenant B.
@@ -100,10 +80,6 @@ func TestExport_FiltersOnEventTenantNotActorTenant(t *testing.T) {
 	ctx := context.Background()
 	l := v4Logger(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	if _, err := l.BootstrapChainV4(ctx, base, "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
-
 	// A support engineer whose home tenant is "vendor", acting INSIDE
 	// acme's tenant. This row belongs in acme's log.
 	crossTenant := tenantEvent("support-action", base.Add(time.Second), "acme")

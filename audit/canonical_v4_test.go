@@ -4,25 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-// Slice 7i-1 — canonical_version=4.
-//
-// The bar for this slice is not "v4 works". It is "v4 exists and NOTHING
-// ELSE MOVED": every pre-existing row keeps its own canonical_version
-// and its own hash byte-for-byte, a tenancy-disabled deployment never
-// writes a v4 row at all, and the mixed chain still walks.
+// canonical_version=4: the tenant is inside the hash, and PII is hashed
+// as salted commitments so a row can be redacted without breaking the
+// chain.
 
-// v4Logger builds a tenancy-configured logger over a fresh DB.
+// v4Logger builds a logger over a fresh DB and returns the concrete type.
 func v4Logger(t *testing.T) *SQLiteLogger {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "audit.db")
-	l, err := NewSQLiteLogger(dbPath, SQLiteLoggerOptions{Tenancy: true})
+	l, err := NewSQLiteLogger(dbPath, SQLiteLoggerOptions{})
 	if err != nil {
 		t.Fatalf("NewSQLiteLogger: %v", err)
 	}
@@ -31,19 +27,6 @@ func v4Logger(t *testing.T) *SQLiteLogger {
 	if !ok {
 		t.Fatalf("NewSQLiteLogger returned %T", l)
 	}
-	return sl
-}
-
-// v3Logger is the same, tenancy OFF — the "" path.
-func v3Logger(t *testing.T) *SQLiteLogger {
-	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "audit.db")
-	l, err := NewSQLiteLogger(dbPath, SQLiteLoggerOptions{})
-	if err != nil {
-		t.Fatalf("NewSQLiteLogger: %v", err)
-	}
-	t.Cleanup(func() { _ = l.Close() })
-	sl, _ := l.(*SQLiteLogger)
 	return sl
 }
 
@@ -59,73 +42,7 @@ func tenantEvent(id string, at time.Time, tenantID string) Event {
 	}
 }
 
-// --- the "" path does not move ------------------------------------------
-
-// TestV4_TenancyOffStillWritesV3 is invariant 1 for this slice, and it
-// is satisfied by NOT PARTICIPATING rather than by careful equivalence:
-// a single-tenant deployment never emits a v4 row, so there is no
-// equivalence to get wrong.
-func TestV4_TenancyOffStillWritesV3(t *testing.T) {
-	ctx := context.Background()
-	l := v3Logger(t)
-	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-
-	got, err := l.Log(ctx, makeEvent("e-1", base, Action("auth.login")))
-	if err != nil {
-		t.Fatalf("Log: %v", err)
-	}
-	if got.CanonicalVersion != CanonicalVersion3 {
-		t.Errorf("canonical_version = %d, want 3 — a tenancy-disabled logger "+
-			"started writing v4 rows", got.CanonicalVersion)
-	}
-	if len(got.RowSalt) != 0 {
-		t.Errorf("a v3 row carries a %d-byte salt; the '' path gained state it "+
-			"never had", len(got.RowSalt))
-	}
-	if len(got.Commitments.ActorEmail) != 0 {
-		t.Error("a v3 row carries commitments")
-	}
-}
-
-// TestV4_V3HashIsUnchangedByThisSlice is the byte-parity proof, pinned
-// as a literal. If any edit in this slice perturbed the v3 encoder — a
-// reordered field, an extra append, a changed default — this constant
-// stops matching and the whole pre-existing chain on every deployed DB
-// becomes unverifiable.
-//
-// The value was captured by BUILDING THE PRE-SLICE COMMIT and running
-// the v3 encoder there, not by printing what this branch computes. That
-// distinction is the whole reason the pin can witness a regression: a
-// constant copied from the code under test agrees with it by
-// construction and proves nothing.
-func TestV4_V3HashIsUnchangedByThisSlice(t *testing.T) {
-	e := Event{
-		ID:               "pin-1",
-		At:               time.Unix(1700000000, 0).UTC(),
-		Actor:            Actor{Type: ActorTypeUser, UserID: "u-1", Email: "alice@example.com", Name: "Alice", IP: "10.0.0.1"},
-		Action:           Action("auth.login"),
-		ResourceType:     ResourceType("user"),
-		ResourceID:       "u-1",
-		RequestID:        "req-1",
-		CanonicalVersion: CanonicalVersion3,
-		// Set, and deliberately IGNORED by the v3 encoder. If v3 ever
-		// started reading these the pin would move.
-		TenantID: "acme",
-	}
-	e.Actor.TenantID = "acme"
-	prev := make([]byte, HashSize)
-
-	const want = "d01d0a06f109bb033e5a42981d04536454b8680085fd19f0b60daee01d91daee"
-	got := hex.EncodeToString(computeHash(prev, e, CanonicalVersion3))
-	if got != want {
-		t.Errorf("the v3 canonical hash MOVED.\n got: %s\nwant: %s\n\n"+
-			"Every v3 row on every deployed audit DB verifies under the old "+
-			"value. If this change was intentional it is a new canonical "+
-			"version, not an edit to v3.", got, want)
-	}
-}
-
-// TestV4_TenantIsInsideTheHash is the justification for v4 existing.
+// TestV4_TenantIsInsideTheHash is the reason the tenant is in the payload.
 // An unhashed tenant column could be re-attributed from one customer to
 // another without breaking anything — and evidence that can be silently
 // re-attributed is not evidence.
@@ -139,7 +56,8 @@ func TestV4_TenantIsInsideTheHash(t *testing.T) {
 			TenantID:         eventTenant,
 		}
 		e.Commitments = ComputeCommitments(bytes.Repeat([]byte{7}, RowSaltSize), e)
-		return computeHash(make([]byte, HashSize), e, CanonicalVersion4)
+		prev := make([]byte, HashSize)
+		return hashChainLink(prev, canonicalPayloadV4(e, prev))
 	}
 	acme := mk("acme", "acme")
 	if bytes.Equal(acme, mk("globex", "acme")) {
@@ -249,104 +167,6 @@ func readLP(b []byte, off int) ([]byte, int, bool) {
 
 // --- mixed-version chains -----------------------------------------------
 
-// TestV4_MixedV3V4ChainVerifies. Per-row canonical_version dispatch,
-// exactly as v2/v3 already do. The v4 anchor lands first so the walk
-// root and encoder version are right for the rows that follow.
-func TestV4_MixedV3V4ChainVerifies(t *testing.T) {
-	ctx := context.Background()
-	l := v3Logger(t) // start tenancy-OFF so the first rows are genuinely v3
-	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-
-	for i, id := range []string{"v3-a", "v3-b"} {
-		if _, err := l.Log(ctx, makeEvent(id, base.Add(time.Duration(i)*time.Second), Action("auth.login"))); err != nil {
-			t.Fatalf("Log %s: %v", id, err)
-		}
-	}
-
-	// Flip the same DB to tenancy and emit the anchor, then v4 rows.
-	l.opts.Tenancy = true
-	emitted, err := l.BootstrapChainV4(ctx, base.Add(10*time.Second), "v4-anchor")
-	if err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
-	if !emitted {
-		t.Fatal("BootstrapChainV4 emitted nothing on a DB with no v4 anchor")
-	}
-	for i, id := range []string{"v4-a", "v4-b"} {
-		if _, err := l.Log(ctx, tenantEvent(id, base.Add(time.Duration(20+i)*time.Second), "acme")); err != nil {
-			t.Fatalf("Log %s: %v", id, err)
-		}
-	}
-
-	res, err := verifyChainPostMigrationStore(ctx, l)
-	if err != nil {
-		t.Fatalf("mixed v3/v4 chain failed to verify: %v", err)
-	}
-	if res.Count != 5 {
-		t.Errorf("walked %d rows, want 5", res.Count)
-	}
-
-	// And the versions really are mixed — otherwise this test proves
-	// only that a uniform chain verifies.
-	rows, err := l.store.Queries.ListEventsForVerify(ctx)
-	if err != nil {
-		t.Fatalf("ListEventsForVerify: %v", err)
-	}
-	seen := map[int64]int{}
-	for _, r := range rows {
-		seen[r.CanonicalVersion]++
-	}
-	if seen[int64(CanonicalVersion3)] != 2 || seen[int64(CanonicalVersion4)] != 3 {
-		t.Errorf("version mix = %v, want 2×v3 and 3×v4 (anchor + 2 rows)", seen)
-	}
-}
-
-// TestV4_PreExistingRowsKeepTheirHash is the byte-parity DoD line at the
-// row level: introducing v4 must not perturb a single stored hash.
-func TestV4_PreExistingRowsKeepTheirHash(t *testing.T) {
-	ctx := context.Background()
-	l := v3Logger(t)
-	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-
-	before := map[string]string{}
-	for i, id := range []string{"r-1", "r-2", "r-3"} {
-		got, err := l.Log(ctx, makeEvent(id, base.Add(time.Duration(i)*time.Second), Action("auth.login")))
-		if err != nil {
-			t.Fatalf("Log %s: %v", id, err)
-		}
-		before[id] = hex.EncodeToString(got.Hash)
-	}
-
-	l.opts.Tenancy = true
-	if _, err := l.BootstrapChainV4(ctx, base.Add(time.Minute), "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
-	if _, err := l.Log(ctx, tenantEvent("v4-a", base.Add(2*time.Minute), "acme")); err != nil {
-		t.Fatalf("Log v4-a: %v", err)
-	}
-
-	rows, err := l.store.Queries.ListEventsForVerify(ctx)
-	if err != nil {
-		t.Fatalf("ListEventsForVerify: %v", err)
-	}
-	for _, r := range rows {
-		want, ok := before[r.ID]
-		if !ok {
-			continue
-		}
-		if got := hex.EncodeToString(r.Hash); got != want {
-			t.Errorf("row %s hash CHANGED across the v4 migration:\n got %s\nwant %s",
-				r.ID, got, want)
-		}
-		if r.CanonicalVersion != int64(CanonicalVersion3) {
-			t.Errorf("row %s canonical_version = %d, want 3 — an existing row was "+
-				"re-canonicalised", r.ID, r.CanonicalVersion)
-		}
-	}
-}
-
-// --- tamper detection ----------------------------------------------------
-
 // TestV4_TamperedRowIsDetected: editing a v4 row's non-PII field in
 // place must break the walk.
 func TestV4_TamperedRowIsDetected(t *testing.T) {
@@ -354,9 +174,6 @@ func TestV4_TamperedRowIsDetected(t *testing.T) {
 	l := v4Logger(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 
-	if _, err := l.BootstrapChainV4(ctx, base, "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
 	for i, id := range []string{"a", "b", "c"} {
 		if _, err := l.Log(ctx, tenantEvent(id, base.Add(time.Duration(i+1)*time.Second), "acme")); err != nil {
 			t.Fatalf("Log %s: %v", id, err)
@@ -377,19 +194,15 @@ func TestV4_TamperedRowIsDetected(t *testing.T) {
 	}
 }
 
-// TestV4_PIITamperIsDetectedByCommitments is the check that keeps v4
-// from being WEAKER than v3 on the PII fields. Under v3 the chain hash
-// covered the plaintext, so editing an email broke the chain; under v4
-// it covers the commitment, so the chain alone no longer notices. This
-// is the check that re-binds the two.
+// TestV4_PIITamperIsDetectedByCommitments: the chain hash covers the
+// commitment, not the plaintext, so the chain walk alone does not notice
+// an edited email. VerifyCommitments is the check that does, and this
+// pins that it fires.
 func TestV4_PIITamperIsDetectedByCommitments(t *testing.T) {
 	ctx := context.Background()
 	l := v4Logger(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 
-	if _, err := l.BootstrapChainV4(ctx, base, "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
 	if _, err := l.Log(ctx, tenantEvent("a", base.Add(time.Second), "acme")); err != nil {
 		t.Fatalf("Log: %v", err)
 	}
@@ -415,7 +228,7 @@ func TestV4_PIITamperIsDetectedByCommitments(t *testing.T) {
 	}
 	if !errors.Is(err, ErrCommitmentMismatch) {
 		t.Errorf("VerifyCommitments err = %v, want ErrCommitmentMismatch — an edited "+
-			"email is invisible to BOTH checks, so v4 is weaker than v3 here", err)
+			"email is invisible to BOTH checks", err)
 	}
 }
 
@@ -456,9 +269,6 @@ func TestV4_RedactionKeepsTheChainVerifiable(t *testing.T) {
 	l := v4Logger(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 
-	if _, err := l.BootstrapChainV4(ctx, base, "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
 	for i, id := range []string{"a", "b", "c"} {
 		if _, err := l.Log(ctx, tenantEvent(id, base.Add(time.Duration(i+1)*time.Second), "acme")); err != nil {
 			t.Fatalf("Log %s: %v", id, err)
@@ -515,8 +325,8 @@ func TestV4_RedactionKeepsTheChainVerifiable(t *testing.T) {
 	}
 }
 
-// TestV4_RedactIsIdempotentAndScoped: re-redacting is a no-op, and a
-// pre-v4 row reports "not redacted" rather than erroring — a caller
+// TestV4_RedactIsIdempotentAndScoped: re-redacting is a no-op, and an
+// absent row reports "not redacted" rather than erroring — a caller
 // sweeping a subject's rows needs to learn which it could not reach, not
 // abort halfway.
 func TestV4_RedactIsIdempotentAndScoped(t *testing.T) {
@@ -524,9 +334,6 @@ func TestV4_RedactIsIdempotentAndScoped(t *testing.T) {
 	l := v4Logger(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 
-	if _, err := l.BootstrapChainV4(ctx, base, "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
 	if _, err := l.Log(ctx, tenantEvent("a", base.Add(time.Second), "acme")); err != nil {
 		t.Fatalf("Log: %v", err)
 	}
@@ -541,122 +348,5 @@ func TestV4_RedactIsIdempotentAndScoped(t *testing.T) {
 	}
 	if ok, err := l.RedactEvent(ctx, "no-such-row"); ok || err != nil {
 		t.Errorf("RedactEvent(missing) = (%v, %v), want (false, nil)", ok, err)
-	}
-}
-
-// TestV4_PreV4RowCannotBeRedacted pins the honest residual recorded in
-// sketch §8: a v3 row hashed its PII directly, so it cannot be redacted
-// without breaking its hash. Stated as a test so nobody later "fixes"
-// it by redacting one anyway.
-func TestV4_PreV4RowCannotBeRedacted(t *testing.T) {
-	ctx := context.Background()
-	l := v3Logger(t)
-	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	if _, err := l.Log(ctx, makeEvent("v3-row", base, Action("auth.login"))); err != nil {
-		t.Fatalf("Log: %v", err)
-	}
-	ok, err := l.RedactEvent(ctx, "v3-row")
-	if err != nil {
-		t.Fatalf("RedactEvent: %v", err)
-	}
-	if ok {
-		t.Error("a v3 row reported as redacted; its PII is inside its hash, so " +
-			"erasing it would break the chain")
-	}
-}
-
-// --- the anchor ---------------------------------------------------------
-
-// TestV4_AnchorCarriesTheRealLatestHash. The zero sentinel is true only
-// on an empty table; writing it onto a populated DB produces a row whose
-// linkage fails at the next boot — the migration breaking the guarantee
-// it is migrating.
-func TestV4_AnchorCarriesTheRealLatestHash(t *testing.T) {
-	ctx := context.Background()
-	l := v3Logger(t)
-	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-
-	last, err := l.Log(ctx, makeEvent("v3-a", base, Action("auth.login")))
-	if err != nil {
-		t.Fatalf("Log: %v", err)
-	}
-
-	l.opts.Tenancy = true
-	if _, err := l.BootstrapChainV4(ctx, base.Add(time.Second), "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
-	row, err := l.store.Queries.GetEventByID(ctx, "v4-anchor")
-	if err != nil {
-		t.Fatalf("GetEventByID: %v", err)
-	}
-	if !bytes.Equal(row.PrevHash, last.Hash) {
-		t.Errorf("anchor prev_hash = %x, want the real latest hash %x",
-			row.PrevHash, last.Hash)
-	}
-	if IsRedacted(row.PrevHash) {
-		t.Error("the anchor carries the zero sentinel on a populated DB; the next " +
-			"boot's linkage check fails")
-	}
-}
-
-// TestV4_BootstrapIsIdempotentAndGated. Two boots produce one anchor,
-// and a tenancy-disabled logger produces none — the latter being what
-// keeps a single-tenant DB byte-identical.
-func TestV4_BootstrapIsIdempotentAndGated(t *testing.T) {
-	ctx := context.Background()
-	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-
-	t.Run("idempotent", func(t *testing.T) {
-		l := v4Logger(t)
-		first, err := l.BootstrapChainV4(ctx, base, "anchor-1")
-		if err != nil || !first {
-			t.Fatalf("first bootstrap = (%v, %v), want (true, nil)", first, err)
-		}
-		second, err := l.BootstrapChainV4(ctx, base.Add(time.Hour), "anchor-2")
-		if err != nil {
-			t.Fatalf("second bootstrap: %v", err)
-		}
-		if second {
-			t.Error("a second boot emitted another v4 anchor; every restart would " +
-				"add a chain segment")
-		}
-		n, err := l.store.Queries.CountEvents(ctx)
-		if err != nil {
-			t.Fatalf("CountEvents: %v", err)
-		}
-		if n != 1 {
-			t.Errorf("event count = %d, want 1", n)
-		}
-	})
-
-	t.Run("gated on tenancy", func(t *testing.T) {
-		l := v3Logger(t)
-		emitted, err := l.BootstrapChainV4(ctx, base, "anchor-1")
-		if err != nil {
-			t.Fatalf("BootstrapChainV4: %v", err)
-		}
-		if emitted {
-			t.Error("a tenancy-DISABLED logger emitted a v4 anchor; the '' path's " +
-				"audit DB is no longer byte-identical")
-		}
-	})
-}
-
-// TestV4_AnchorCarriesNoTenant: the anchor is a property of the chain,
-// not of any customer. Giving it one would put a chain-machinery row
-// inside a tenant's export.
-func TestV4_AnchorCarriesNoTenant(t *testing.T) {
-	ctx := context.Background()
-	l := v4Logger(t)
-	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-	if _, err := l.BootstrapChainV4(ctx, base, "v4-anchor"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
-	row, err := l.store.Queries.GetEventByID(ctx, "v4-anchor")
-	if err != nil {
-		t.Fatalf("GetEventByID: %v", err)
-	}
-	if row.TenantID != "" {
-		t.Errorf("the v4 anchor carries tenant %q", row.TenantID)
 	}
 }

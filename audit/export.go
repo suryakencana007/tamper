@@ -88,14 +88,12 @@ type TenantExport struct {
 // slice into a self-consistent chain would be manufacturing evidence
 // that the original never contained.
 //
-// An UNSET tenant is an error, not an empty export. Before v0.4.0 this
-// took a string and "" returned no rows, because "" was ambiguous between
-// "the single-tenant scope" and "the caller forgot" and deny-by-default
-// won. tenant.ID resolves the ambiguity: the zero value errors, and
-// tenant.Single is a real scope — it exports exactly the rows STAMPED
-// with the single-tenant value, which in a pooled DB is the pre-tenancy
-// legacy segment and in a single-tenant DB is the whole log. A scope,
-// not a wildcard: it never returns another tenant's rows.
+// An UNSET tenant is an error, not an empty export: the zero tenant.ID
+// is what a caller who forgot to resolve a tenant passes. tenant.Single
+// is a real scope — it exports exactly the rows stamped with the
+// single-tenant value, which in a single-tenant DB is the whole log and
+// in a pooled DB is the rows written with no tenant. A scope, not a
+// wildcard: it never returns another tenant's rows.
 func (l *SQLiteLogger) ExportForTenant(ctx context.Context, tenantID tenant.ID) (TenantExport, error) {
 	if !tenantID.Valid() {
 		return TenantExport{}, fmt.Errorf("audit: export: tenant is required (unset tenant.ID)")

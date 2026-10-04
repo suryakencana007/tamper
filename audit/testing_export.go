@@ -5,10 +5,9 @@ import (
 	"database/sql"
 )
 
-// InsertEventDirectForTest writes a row bypassing Log's chain computation, so
-// a test can seed rows at an arbitrary CanonicalVersion with pre-computed
-// PrevHash and Hash. Log always stamps the current version, which is wrong
-// for replaying a v1.0/v2 fixture or for building a deliberately mixed chain.
+// InsertEventDirectForTest writes a row exactly as given, bypassing Log's
+// chain computation, so a test can seed a row Log would never write: a broken
+// link, a wrong hash, a canonical_version with no encoder.
 //
 // EXPORTED FOR TESTS ONLY. Production code must go through Logger.Log — this
 // writes whatever it is handed, including a chain that does not verify. That

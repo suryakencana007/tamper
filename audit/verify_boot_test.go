@@ -107,7 +107,7 @@ func TestVerifyChainPostMigration_ContentEdit(t *testing.T) {
 		t.Fatalf("UPDATE: %v", err)
 	}
 	_, err := VerifyChainPostMigration(ctx, l)
-	requireMismatch(t, err, 1, "b")
+	_ = requireMismatch(t, err, 1, "b")
 }
 
 // A row whose prev_hash no longer points at its predecessor is a linkage

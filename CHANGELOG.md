@@ -9,8 +9,8 @@ All notable changes to tamper are recorded here. Versions follow
 ## [Unreleased]
 
 Fixes for sharp edges in pooled deployments, and one breaking change to the
-audit log. Each is a separate change (#39, #40, #43, #46) and is described in
-`tech-debt.md`.
+audit log. Each is a separate change (#39, #40, #43, #46 to #52) and is
+described in `tech-debt.md`.
 
 ### ⚠️ Breaking — the audit log is `canonical_version=4` only (#46)
 
@@ -129,6 +129,37 @@ redacted. Everything that existed for older rows is removed.
   `IssueTokensForUserWithACR`. Those two write a session with no tenant, so
   it can no longer be refreshed; mint with `IssueTokensForUserInTenant`.
   Single-tenant deployments are unaffected.
+
+- **`audit` `List` and `ListScoped` apply every `Filter` field** (#49, TD-17).
+  `Since`, `Until`, `ActorEmail` and `Action` were declared and never read;
+  they now filter. `ResourceType` alone and `ResourceID` alone filter too.
+  Fields set together are ANDed; before, only the first one in a fixed order
+  was used. `Since` is inclusive, `Until` is exclusive, and the cursor pages
+  within the filter. `ListScoped` applies the filter on top of its cluster
+  scope. A caller that relied on a field being ignored gets fewer rows.
+
+- **A refused TOTP mint is a 401, not a 500** (#50, TD-18). When the session
+  mint at the end of `AuthRoutes.VerifyTOTP` returns `identity.ErrNotFound`,
+  the route answers `401 UNAUTHENTICATED`, the same bytes as a pending token
+  that is no longer good. This also applies to a single-tenant deployment: a
+  user deleted between the password step and the second factor gets 401 where
+  it got 500.
+
+- **Step-up denials and service-account rows carry an audit scope** (#51,
+  TD-20). A row written by `RequireFreshAuthWithAudit` now has
+  `Event.TenantID` (the routed tenant) and `Actor.TenantID` (the token's
+  `tid`). A row written by `Auditor` behind `RequireServiceAccount` now has the
+  principal's tenant as its scope when no tenant is pinned. Single-tenant rows
+  are unchanged.
+
+- **Every token verification failure prints one text** (#52, TD-23). The error
+  from `VerifyAccess`, `ParseAccess`, `Verify`, `VerifyTOTPPending` and
+  `VerifyTOTPPendingInTenant` now always reads
+  `auth: invalid token: token not valid`. It used to say which check failed,
+  which let a log line or an adapter's response tell a wrong-tenant token from
+  an expired one. `errors.Is(err, ErrInvalidToken)` is unchanged, and the
+  reason is still in the error chain (`errors.Is(err, jwt.ErrTokenExpired)`).
+  Code that matched on the old text must use `errors.Is`.
 
 ### Added
 

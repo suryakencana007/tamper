@@ -28,11 +28,17 @@ below. TD-17 is open.
 | TD-15 | #39 | Merged. Guard with an explicit opt-out. |
 | TD-10 | #40 | Merged. Contains behaviour changes. |
 | TD-08 | #43 | Merged. |
-| TD-09, TD-16, TD-21, TD-24, TD-25 | #46 | Open. The audit log is v4-only; these five items cannot occur any more. |
+| TD-09, TD-16, TD-21, TD-24, TD-25 | #46 | Merged. The audit log is v4-only; these five items cannot occur any more. |
+| TD-19 | #47 | Merged. |
+| TD-22 | #48 | Merged. |
+| TD-17 | #49 | Open. |
+| TD-18 | #50 | Open. |
+| TD-20 | #51 | Open. |
+| TD-23 | #52 | Open. |
 
-TD-17 is not fixed. Ten more items (TD-18 to TD-27) were found while the
-fixes were written and reviewed. They are listed after TD-17, and four of them
-(TD-18, TD-20, TD-21, TD-23) are also sharp edges that exist today.
+Ten more items (TD-18 to TD-27) were found while the fixes were written and
+reviewed. They are listed after TD-17. Of all the sharp edges found, the ones
+still open after the pull requests above are TD-26 and TD-27.
 
 Every fix had a code review, and the reviews changed the fixes:
 
@@ -68,13 +74,13 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-14 | The per-tenant route mounting pattern is static | gap | P2 | example + docs |
 | TD-15 | SCIM tenant scoping is off by default | sharp edge | P1 | Tamper |
 | TD-16 | `Verify` reports tamper on a mixed-version chain | resolved by #46 | — | — |
-| TD-17 | `audit.Filter` fields are ignored by `List` | sharp edge | P2 | Tamper |
-| TD-18 | A not-found from the TOTP mint is a 500 on the wire | sharp edge | P2 | Tamper |
+| TD-17 | `audit.Filter` fields are ignored by `List` | fixed by #49 | — | — |
+| TD-18 | A not-found from the TOTP mint is a 500 on the wire | fixed by #50 | — | — |
 | TD-19 | `Refresh` does not re-check the session's tenant | fixed by #47 | — | — |
-| TD-20 | Step-up-denied audit rows carry no tenant | sharp edge | P2 | Tamper |
+| TD-20 | Step-up-denied audit rows carry no tenant | fixed by #51 | — | — |
 | TD-21 | `HasChainRestartV2` / `V3` / `V4` count rows, not anchors | resolved by #46 | — | — |
 | TD-22 | The multitenant example is out of date | fixed by #48 | — | — |
-| TD-23 | A wrong-tenant token error has its own text | sharp edge | P2 | Tamper |
+| TD-23 | A wrong-tenant token error has its own text | fixed by #52 | — | — |
 | TD-24 | A v3 row in a v4 deployment is not flagged | resolved by #46 | — | — |
 | TD-25 | `VerifyLegacy` reports tamper on a mixed-version chain | resolved by #46 | — | — |
 | TD-26 | Generated SQL queries that nothing calls | gap | P2 | Tamper |
@@ -490,7 +496,7 @@ by the platform console gets no routes until the process restarts.
 `PinTenant`, so one surface serves dynamic tenants. That adapter must still
 check the user's stored tenant on the TOTP path (see TD-10).
 
-### TD-17 — `audit.Filter` fields are ignored by `List` *(sharp edge)*
+### TD-17 — `audit.Filter` fields are ignored by `List` *(fixed by #49)*
 
 **Evidence.** `audit.Filter` declares `Since`, `Until`, `ActorEmail`, and
 `Action` (`audit/audit.go:364`), and its comment says zero-valued fields mean
@@ -503,15 +509,21 @@ order: `RequestID`; `ResourceType` together with `ResourceID`; `ActorUserID`;
 range" gets unfiltered rows and no error. A console page built on these
 fields shows unrelated events.
 
-**Proposal for Tamper.** Implement the four fields, or remove them. Return an
-error for a field combination the logger cannot serve. Do this together with
-TD-11.
+**Fix: #49.** `List` and `ListScoped` share one query. Every field that is set
+is one condition, and the conditions are ANDed. `Since` is inclusive and
+`Until` is exclusive. `ResourceType` alone and `ResourceID` alone now filter
+too, and the cursor pages within the filter. The query is assembled in the
+`audit` package; only fixed fragments and placeholders are concatenated, and
+every value is bound.
+
+A caller that relied on a field being ignored gets fewer rows now. A tenant
+filter is still TD-11.
 
 **Proof.** In `TestTD08_AuditorStampsTenant`,
 `List(Filter{Action: "td.proof.mutation"})` returned 2 rows. Only 1 had that
 action; the other was the chain anchor.
 
-### TD-18 — A not-found from the TOTP mint is a 500 on the wire *(sharp edge)*
+### TD-18 — A not-found from the TOTP mint is a 500 on the wire *(fixed by #50)*
 
 **Evidence.** `mapAuthWireError` has no case for `identity.ErrNotFound`
 (`espresso/wire.go:142`). The error falls to the default branch, which is a
@@ -527,9 +539,16 @@ The refusal also comes late. `AuthRoutes.VerifyTOTP` checks the code first and
 mints after (`espresso/authroutes.go`). So when the mint is refused, a
 single-use recovery code has already been spent.
 
-**Proposal for Tamper.** Map `ErrNotFound` on this path to the same 401 as
-invalid credentials. This also changes the single-tenant path (a user deleted
-during the ceremony gets 401 instead of 500), so it is its own change.
+**Fix: #50.** `AuthRoutes.VerifyTOTP` answers `ErrNotFound` from the mint
+exactly as it answers a dead pending token: `401 UNAUTHENTICATED`, the same
+bytes. The mapping is at that call site only, so no other route changes. On
+the single-tenant path, a user deleted during the ceremony now gets 401 where
+it got 500.
+
+Still true after the fix: the refusal comes after the code check, so a
+single-use recovery code is spent by then. The port has no way to ask first.
+With tenant-bound pending tokens (#40) a cross-tenant attempt stops earlier,
+before any code is read.
 
 ### TD-19 — `Refresh` does not re-check the session's tenant *(fixed by #47)*
 
@@ -551,7 +570,7 @@ write a session with no tenant. For a user stored in a tenant, that session
 can no longer be refreshed. A pooled adapter must mint with
 `IssueTokensForUserInTenant`.
 
-### TD-20 — Two kinds of audit rows still carry no scope *(sharp edge)*
+### TD-20 — Two kinds of audit rows still carry no scope *(fixed by #51)*
 
 **Evidence.** #43 fills the tenant for user requests that pass `RequireTenant`
 or `PinTenant`. Two emitters are not covered:
@@ -566,10 +585,22 @@ or `PinTenant`. Two emitters are not covered:
 **Impact.** The same as TD-08 for those rows: they are missing from
 `ExportForTenant` of the real tenant.
 
-**Proposal for Tamper.** One shared event builder for both emitters. For
-service accounts, decide whether `RequireServiceAccount` should pin the
-principal's tenant as the routed tenant. That is a design decision: #43
-deliberately has no fallback from the actor's tenant to the row's scope.
+**Fix: #51.** One function, `eventScope`, decides the scope for both
+emitters:
+
+- The scope is the routed tenant, the one `RequireTenant` or `PinTenant`
+  pinned.
+- For a user actor there is no fallback, as in #43.
+- A service account is the exception. Its tenant comes from the validated
+  credential and it acts in no other tenant, so with nothing pinned its tenant
+  is the scope. A pinned tenant still wins.
+
+The step-up denial's actor also carries its home tenant from the token. A
+step-up gate must be mounted inside `RequireTenant` for its denial to be
+scoped.
+
+The service-account rule is a decision the owner may want to revisit: the
+alternative is for `RequireServiceAccount` to pin the tenant in the context.
 
 ### TD-21 — `HasChainRestartV2` / `V3` / `V4` count rows, not anchors *(resolved by #46)*
 
@@ -603,7 +634,7 @@ served on the `globex` route when only the adapter checked. The adapter
 compares the user row, not the token. With the gate it gets a 401 that is
 byte-identical to an invalid token's.
 
-### TD-23 — A wrong-tenant token error has its own text *(sharp edge)*
+### TD-23 — A wrong-tenant token error has its own text *(fixed by #52)*
 
 **Evidence.** `VerifyAccess` and `VerifyTOTPPendingInTenant` return
 `ErrInvalidToken` with the text "token not valid" on a tenant mismatch
@@ -617,8 +648,11 @@ a generic 401. It does not hold for an adapter or a log line that shows the
 error text: "token not valid" then means "a real token, aimed at the wrong
 tenant".
 
-**Proposal for Tamper.** Return one fixed text for every `ErrInvalidToken`
-case, and keep the detail for a debug log.
+**Fix: #52.** Every verification failure returns one error whose text is
+always `auth: invalid token: token not valid`. The reason is kept in the error
+chain (`errors.Is(err, jwt.ErrTokenExpired)` still works), and it is never
+part of the text. The errors the `Issue*` methods return for a bad argument
+keep their text; they are caller bugs.
 
 ### TD-24 — A v3 row in a v4 deployment is not flagged *(resolved by #46)*
 
@@ -645,6 +679,11 @@ it reported tamper on a chain where versions were interleaved.
 `ListEventsByCanonicalVersion`, `UpdateEventHash`. The generated layer was
 left alone, because CI regenerates it with sqlc and compares, and sqlc was not
 available where #46 was written.
+
+#49 replaces the per-filter list queries with one assembled query, so these
+are unused as well: `ListEventsAll`, `ListEventsBefore`, `ListEventsByActor`,
+`ListEventsByRequest`, `ListEventsByResource`, `ListEventsNonClusterScoped`,
+`ListEventsNonClusterScopedBefore`.
 
 **Impact.** Dead code only. `UpdateEventHash` is worth removing for its own
 sake: nothing in a tamper-evident log should be able to rewrite a stored hash.
@@ -723,8 +762,8 @@ Suggested slice order if this work moves into Tamper:
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
    answered.
-8. **TD-12, TD-13, TD-14, TD-17, TD-18, TD-20, TD-23, TD-26** — the rest.
-   TD-17 fits well with TD-11, and TD-20 with TD-08.
+8. **TD-17, TD-18, TD-20, TD-23** — open as #49 to #52.
+9. **TD-12, TD-13, TD-14, TD-26** — the rest. TD-26 needs sqlc.
 
 ## Process limits
 

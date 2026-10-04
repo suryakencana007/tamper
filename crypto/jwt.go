@@ -58,6 +58,7 @@ var (
 	errWrongPurpose   = errors.New("token purpose is not the one this entry point accepts")
 	errMissingSubject = errors.New("token has no subject")
 	errWrongTenant    = errors.New("token tid does not match the tenant it was verified for")
+	errBadHomeTenant  = errors.New("htid without a different tid")
 )
 
 // ErrTenantRequired — [JWTService.VerifyAccess] was handed an UNSET
@@ -757,5 +758,20 @@ func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	if claims.Subject == "" {
 		return nil, invalidToken(errMissingSubject)
 	}
+	// An htid is only ever minted beside a different, non-empty tid
+	// (IssueAccessEntered). A token that says otherwise was not minted
+	// here, and its htid would be recorded as the audit actor's tenant.
+	if claims.HomeTenantID != "" && (claims.TenantID == "" || claims.HomeTenantID == claims.TenantID) {
+		return nil, invalidToken(errBadHomeTenant)
+	}
 	return claims, nil
 }
+
+// Entered reports whether the token is an entered one: minted by
+// IssueAccessEntered for a subject who is acting outside their home
+// tenant.
+func (c *AccessClaims) Entered() bool { return c.HomeTenantID != "" }
+
+// AccessTTL returns the lifetime of the access tokens this service
+// mints.
+func (j *JWTService) AccessTTL() time.Duration { return j.ttl }

@@ -72,7 +72,7 @@ not a separate service. Three properties shape every flow:
 | `StartTOTPEnrollment`, `CompleteTOTPEnrollment`, `EnrollTOTP`, `VerifyTOTP`, `VerifyRecoveryCode`, `DisableTOTP`, `ClearTOTP` | TOTP lifecycle. |
 | `ResolveByIdentity`, `ProvisionUserWithIdentity`, `Link`, `Unlink`, `ListIdentities` | Multi-IdP account linking and JIT provisioning. |
 | `Invite`, `AcceptInvitation` | Onboarding without SSO, through a single-use token. |
-| `EnterTenant(user, target, authTime, acr)`, `EnterableTenants(user)` | A user of one tenant enters another one they are a member of. Access token only, no refresh session. |
+| `EnterTenant(session, target)`, `EnterableTenants(user)` | A user of one tenant enters another one they are a member of. `session` is the claims of the home access token. Access token only, no refresh session. |
 
 Ports: `Store` (required), `InvitationStore` and `MembershipStore`
 (optional). `MemStore` is the
@@ -134,6 +134,7 @@ engine only compares.
 |---|---|
 | `Routes(provider, RouteConfig)` | Builds `Surfaces`: the auth, OIDC, SAML, and SCIM routes, plus middleware already bound to the engines. |
 | `RequireAuth`, `RequireAuthWS` | Bearer JWT → user id, claims, and audit actor in the context. |
+| `RequireTenantAllowEntered`, `EnteredFromContext` | `RequireTenant` for a route that platform admins may use: it also accepts a token entered into the routed tenant. `RequireTenant` itself refuses one. |
 | `PinTenant(resolve)` | Pins the tenant on a route **before** login. |
 | `RequireTenant(resolve)` | Checks that the token `tid` equals the route tenant. Anything else is a 401. |
 | `RequireEntitlement(store, capability, resolve)` | Gate for paid features. |
@@ -249,18 +250,29 @@ Rotation never moves `auth_time` forward and never changes the tenant.
 ```
 POST /t/platform/auth/enter/acme        (application route, home token)
   ├─ RequireAuth ─> RequireTenant(platform)
-  └─ Core.EnterTenant(user, acme, claims.auth_time, claims.acr)
-      ├─ Store.UserByID ─> missing ─────────────┐
-      ├─ single tenant on either side ──────────┤─> ErrNotFound (one error)
+  └─ Core.EnterTenant(claims, acme)
+      ├─ claims are an entered token ───────────┐
+      ├─ Store.UserByID ─> missing ─────────────┤
+      ├─ claims.tid is not the stored tenant ───┤─> ErrNotFound (one error)
+      ├─ single tenant, or acme is home ────────┤
       ├─ MembershipStore.IsMember ─> false ─────┘
       │                           ─> error ─> error (never a yes)
       ├─ inactive ─> ErrUserInactive
-      └─ IssueAccessEntered ─> access {sub, tid=acme, htid=platform}
-                               no refresh token, no session row
+      ├─ IssueAccessEntered ─> access {sub, tid=acme, htid=platform}
+      │                        auth_time and acr copied from the claims
+      │                        no refresh token, no session row
+      └─ Hooks.OnTenantEntered(user, acme)
 ```
 
-The entered token is accepted by `RequireTenant(acme)` and by no other
-tenant's routes. When it expires the client calls the route again, and the
+The entered token is for `acme` only, and only on routes that invite guests:
+
+```
+RequireTenant(acme)               ─> refuses an entered token (401, same body
+                                     as a wrong-tenant token)
+RequireTenantAllowEntered(acme)   ─> accepts it; EnteredFromContext = platform
+```
+
+When the token expires the client calls the enter route again, and the
 membership is checked again. In the audit log, a row written while entered has
 `Event.TenantID = acme` and `Actor.TenantID = platform`.
 

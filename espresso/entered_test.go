@@ -48,7 +48,7 @@ func TestEnteredToken_AuditRowIsTheTenantsAndNamesTheHomeTenant(t *testing.T) {
 
 	j := tenantJWT(t)
 	h := RequireAuth(j)(
-		RequireTenant(routeTo(tenantA))(
+		RequireTenantAllowEntered(routeTo(tenantA))(
 			NewAuditor(logger, nil).Mutation(auditTestAction, auditTestResource, "")(
 				http.HandlerFunc(noContent))))
 	serveMutation(t, h, enteredToken(t, j, tenantA))
@@ -82,39 +82,110 @@ func TestEnteredToken_AuditRowIsTheTenantsAndNamesTheHomeTenant(t *testing.T) {
 	}
 }
 
-// An entered token is accepted on the tenant it was entered into, and
-// refused everywhere else exactly as any wrong-tenant token is. In
-// particular htid opens nothing: the token does not work on the
-// admin's own home tenant.
-func TestEnteredToken_OpensOnlyTheTenantEntered(t *testing.T) {
+// serveGate sends one request through RequireAuth and the given tenant
+// gate.
+func serveGate(j *crypto.JWTService, gate func(http.Handler) http.Handler, bearer string, inner http.HandlerFunc) *httptest.ResponseRecorder {
+	h := RequireAuth(j)(gate(inner))
+	req := httptest.NewRequest(http.MethodPost, "/things", nil)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// RequireTenant keeps the promise it made before entered tokens
+// existed: the subject is a user of the routed tenant. An entered token
+// is refused even on the tenant it was entered into, with the refusal a
+// wrong-tenant token gets. Every existing route — "my account" handlers,
+// authorization gates keyed by the user id — is therefore closed to
+// guests until it opts in.
+func TestRequireTenant_RefusesAnEnteredToken(t *testing.T) {
 	j := tenantJWT(t)
 	entered := enteredToken(t, j, tenantA)
-	ordinaryOther := tokenFor(t, j, tenant.New(tenantB))
 
-	serve := func(routed, bearer string) *httptest.ResponseRecorder {
-		h := RequireAuth(j)(RequireTenant(routeTo(routed))(http.HandlerFunc(noContent)))
-		req := httptest.NewRequest(http.MethodPost, "/things", nil)
-		req.Header.Set("Authorization", "Bearer "+bearer)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec
-	}
-
-	if rec := serve(tenantA, entered); rec.Code != http.StatusNoContent {
-		t.Fatalf("entered token on the tenant entered: status %d, want 204", rec.Code)
-	}
-
-	// The reference refusal: an ordinary globex token on an acme route.
-	want := serve(tenantA, ordinaryOther)
+	want := serveGate(j, RequireTenant(routeTo(tenantA)), tokenFor(t, j, tenant.New(tenantB)), noContent)
 	if want.Code == http.StatusNoContent {
 		t.Fatal("fixture: a wrong-tenant token was accepted")
 	}
-	for name, routed := range map[string]string{"its home tenant": tenantPlatform, "a third tenant": tenantB, "an untenanted route": ""} {
-		got := serve(routed, entered)
+
+	reached := false
+	got := serveGate(j, RequireTenant(routeTo(tenantA)), entered, func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if reached {
+		t.Fatal("RequireTenant let an entered token through to the handler")
+	}
+	if got.Code != want.Code || got.Body.String() != want.Body.String() {
+		t.Errorf("entered token on RequireTenant: %d %s; want the ordinary wrong-tenant refusal %d %s",
+			got.Code, got.Body.String(), want.Code, want.Body.String())
+	}
+
+	// The tenant's own token is unaffected.
+	if rec := serveGate(j, RequireTenant(routeTo(tenantA)), tokenFor(t, j, tenant.New(tenantA)), noContent); rec.Code != http.StatusNoContent {
+		t.Errorf("the tenant's own token on RequireTenant: status %d, want 204", rec.Code)
+	}
+}
+
+// RequireTenantAllowEntered accepts the tenant's own tokens and tokens
+// entered into it, and refuses everything else exactly as RequireTenant
+// does. In particular htid opens nothing: the token does not work on
+// the admin's own home tenant.
+func TestRequireTenantAllowEntered_OpensOnlyTheTenantEntered(t *testing.T) {
+	j := tenantJWT(t)
+	entered := enteredToken(t, j, tenantA)
+
+	var home tenant.ID
+	var isEntered, called bool
+	var routed tenant.ID
+	inner := func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		home, isEntered = EnteredFromContext(r.Context())
+		routed, _ = TenantFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}
+
+	if rec := serveGate(j, RequireTenantAllowEntered(routeTo(tenantA)), entered, inner); rec.Code != http.StatusNoContent {
+		t.Fatalf("entered token on the tenant entered: status %d, want 204", rec.Code)
+	}
+	if !called || !isEntered || home != tenant.New(tenantPlatform) || routed != tenant.New(tenantA) {
+		t.Errorf("handler saw entered=%v home=%q routed=%q; want true / platform / %s", isEntered, home, routed, tenantA)
+	}
+
+	// The tenant's own token passes too, and is not a guest.
+	isEntered = true
+	if rec := serveGate(j, RequireTenantAllowEntered(routeTo(tenantA)), tokenFor(t, j, tenant.New(tenantA)), inner); rec.Code != http.StatusNoContent {
+		t.Fatalf("the tenant's own token: status %d, want 204", rec.Code)
+	}
+	if isEntered {
+		t.Error("EnteredFromContext reported an ordinary token as entered")
+	}
+
+	// The reference refusal: an ordinary globex token on an acme route.
+	want := serveGate(j, RequireTenantAllowEntered(routeTo(tenantA)), tokenFor(t, j, tenant.New(tenantB)), noContent)
+	if want.Code == http.StatusNoContent {
+		t.Fatal("fixture: a wrong-tenant token was accepted")
+	}
+	for name, other := range map[string]string{"its home tenant": tenantPlatform, "a third tenant": tenantB, "an untenanted route": ""} {
+		got := serveGate(j, RequireTenantAllowEntered(routeTo(other)), entered, noContent)
 		if got.Code != want.Code || got.Body.String() != want.Body.String() {
 			t.Errorf("entered token on %s: %d %s; want the ordinary wrong-tenant refusal %d %s",
 				name, got.Code, got.Body.String(), want.Code, want.Body.String())
 		}
+	}
+}
+
+// The gate that existing "my account" and authorization routes sit
+// behind. An entered token never reaches RequireDecision's Authorizer,
+// so the roles the admin holds at home are never asked about this
+// tenant's resources.
+func TestEnteredToken_NeverReachesAGateBehindRequireTenant(t *testing.T) {
+	j := tenantJWT(t)
+	reached := false
+	inner := func(w http.ResponseWriter, _ *http.Request) { reached = true; w.WriteHeader(http.StatusNoContent) }
+	rec := serveGate(j, RequireTenant(routeTo(tenantA)), enteredToken(t, j, tenantA), inner)
+	if reached || rec.Code == http.StatusNoContent {
+		t.Fatalf("an entered token reached what is mounted behind RequireTenant (status %d)", rec.Code)
 	}
 }
 

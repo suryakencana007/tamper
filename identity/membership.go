@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/tenant"
 )
 
@@ -52,7 +53,7 @@ func WithMemberships(s MembershipStore) Option {
 
 // WithEnterTenantTTL sets the lifetime of the access tokens EnterTenant
 // mints. Without it they live as long as an ordinary access token. A
-// value longer than the JWT service's own TTL is cut to it.
+// value longer than the JWT service's own TTL fails New.
 //
 // This is the revocation window: an entered token has no refresh
 // session, so a membership that is removed keeps working for at most
@@ -68,49 +69,58 @@ func WithEnterTenantTTL(d time.Duration) Option {
 	return func(c *Core) { c.enterTTL = d }
 }
 
-// EnterTenant mints an access token that lets userID act inside
+// EnterTenant mints an access token that lets a user act inside
 // target, a tenant other than the one the user is stored in. It is the
 // only supported cross-tenant mint: IssueTokensForUserInTenant refuses
 // every tenant but the user's own, and stays that way.
 //
-// The token carries tid=target, so every route of that tenant accepts
-// it exactly as it accepts a token of the tenant's own users, and
-// htid=<home tenant>, so the audit trail records where the actor is
-// from. It is valid for target only — not for the home tenant, not for
-// any other tenant the user may also enter.
+// session is the VERIFIED claims of the access token the user is
+// entering from — what espresso.AccessClaimsFromContext returns behind
+// RequireAuth and RequireTenant. The Core takes the claims, not a bare
+// user id, so that three things cannot be got wrong by a caller:
+//
+//   - The session must be a HOME session. An entered token cannot be
+//     used to enter again: it is a guest pass for one tenant, and a
+//     chain of them would renew itself without the home session.
+//   - The session's tid must be the tenant the user is stored in.
+//   - auth_time and acr are copied from it. Entering never makes an old
+//     login look fresh, and there is no fallback to "now".
+//
+// The token returned carries tid=target and htid=<home tenant>. It is
+// valid for target only — not for the home tenant, not for any other
+// tenant the user may also enter — and espresso.RequireTenant refuses
+// it unless the route opted in with RequireTenantAllowEntered.
 //
 // The result has NO refresh token and no session row is written,
 // whatever WithRefreshTTL says. When the token expires the caller
 // enters again, and the membership is checked again.
-//
-// authTime and acr describe how and when the user authenticated. Pass
-// the values from the session the user is entering FROM (the claims of
-// their current access token). Unlike the IssueTokensFor* family there
-// is no fallback: a non-positive authTime or an empty acr is
-// ErrInvalidInput. A fallback to "now" would hand a fresh step-up to
-// anyone who enters a tenant.
 //
 // Refusals, in the order they are decided:
 //
 //   - ErrNoMembershipStore, ErrNoTokenService — the Core is not wired
 //     for this. Programmer errors.
 //   - ErrTenantRequired — target is the zero value.
-//   - ErrInvalidInput — authTime or acr is missing, or target IS the
-//     user's home tenant (there is nothing to enter; use the session
-//     the user already has).
-//   - ErrNotFound — the user does not exist, OR is not a member of
-//     target, OR the single tenant is on either side. One error, built
-//     in one place: "not a member" must not be distinguishable from
-//     "no such user".
+//   - ErrInvalidInput — session is nil, or has no subject, auth_time or
+//     acr. A caller bug, decided from the arguments alone.
+//   - ErrNotFound — everything else that is a "no": the session is an
+//     entered one, the user does not exist, the session's tenant is not
+//     the user's, the single tenant is on either side, target is the
+//     user's own tenant, or the user is not a member of target. One
+//     error, built in one place, so that none of these can be told from
+//     another.
 //   - ErrUserInactive — decided after membership, so it is only ever
 //     said about a tenant the user could have entered.
 //
 // An error from the MembershipStore is returned wrapped, never read as
 // a yes.
 //
+// What EnterTenant does NOT check: that the home session is still
+// alive. An access token is stateless; one that was valid a minute
+// before a logout can still enter until it expires.
+//
 // EnterTenant decides that the user may be IN the tenant. What they may
 // do there is still the application's authorization decision.
-func (c *Core) EnterTenant(ctx context.Context, userID string, target tenant.ID, authTime int64, acr string) (Tokens, error) {
+func (c *Core) EnterTenant(ctx context.Context, session *crypto.AccessClaims, target tenant.ID) (Tokens, error) {
 	if c.memberships == nil {
 		return Tokens{}, ErrNoMembershipStore
 	}
@@ -120,14 +130,19 @@ func (c *Core) EnterTenant(ctx context.Context, userID string, target tenant.ID,
 	if err := c.tenantGate(target); err != nil {
 		return Tokens{}, err
 	}
-	if authTime <= 0 || acr == "" {
-		return Tokens{}, fmt.Errorf("%w: entering a tenant needs the auth_time and acr of the current session", ErrInvalidInput)
+	if session == nil || session.Subject == "" || session.AuthTime <= 0 || session.ACR == "" {
+		return Tokens{}, fmt.Errorf("%w: entering a tenant needs the claims of the current session", ErrInvalidInput)
 	}
+	userID := session.Subject
 
-	// The one refusal for every "no": a missing user, a pair of tenants
-	// that cannot be entered, and a missing membership.
+	// The one refusal for every "no".
 	notFound := func() error { return fmt.Errorf("%w: user %s", ErrNotFound, userID) }
 
+	// Said outright, although the tenant comparison below would refuse
+	// it too: an entered session's tid is never the user's home tenant.
+	if session.Entered() {
+		return Tokens{}, notFound()
+	}
 	user, err := c.store.UserByID(ctx, userID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Tokens{}, fmt.Errorf("identity: lookup user to enter tenant: %w", err)
@@ -136,13 +151,12 @@ func (c *Core) EnterTenant(ctx context.Context, userID string, target tenant.ID,
 		return Tokens{}, notFound()
 	}
 	home := tenant.FromStored(user.TenantID)
-	// The single tenant is "no tenancy". Nobody enters it, and a user
-	// stored in it has no other tenant to go to.
-	if home.IsSingle() || target.IsSingle() {
+	// The session must belong to the tenant the user is stored in. The
+	// single tenant is "no tenancy": nobody enters it, and a user stored
+	// in it has no other tenant to go to. And a user does not enter
+	// their own tenant; they are already there.
+	if session.TenantID != home.String() || home.IsSingle() || target.IsSingle() || home == target {
 		return Tokens{}, notFound()
-	}
-	if home == target {
-		return Tokens{}, fmt.Errorf("%w: %s is the user's own tenant", ErrInvalidInput, target)
 	}
 
 	member, err := c.memberships.IsMember(ctx, userID, target)
@@ -157,9 +171,12 @@ func (c *Core) EnterTenant(ctx context.Context, userID string, target tenant.ID,
 		return Tokens{}, ErrUserInactive
 	}
 
-	access, err := c.jwt.IssueAccessEntered(userID, target, home, authTime, acr, c.enterTTL)
+	access, err := c.jwt.IssueAccessEntered(userID, target, home, session.AuthTime, session.ACR, c.enterTTL)
 	if err != nil {
 		return Tokens{}, fmt.Errorf("identity: issue entered access token: %w", err)
+	}
+	if c.hooks.OnTenantEntered != nil {
+		c.hooks.OnTenantEntered(ctx, user, target)
 	}
 	return Tokens{Access: access}, nil
 }
@@ -171,8 +188,10 @@ func (c *Core) EnterTenant(ctx context.Context, userID string, target tenant.ID,
 // would refuse taken out: the user's home tenant, the single tenant,
 // and unset ids. A user stored in the single tenant has an empty list.
 //
-// ErrNotFound for a user with no row, ErrUserInactive for a deactivated
-// one, ErrNoMembershipStore on a Core without WithMemberships.
+// ErrNotFound for a user with no row, ErrNoMembershipStore on a Core
+// without WithMemberships. A deactivated user gets ErrUserInactive only
+// when the list would not be empty — the same rule EnterTenant follows:
+// "inactive" is said only about a tenant the user could have entered.
 func (c *Core) EnterableTenants(ctx context.Context, userID string) ([]tenant.ID, error) {
 	if c.memberships == nil {
 		return nil, ErrNoMembershipStore
@@ -183,9 +202,6 @@ func (c *Core) EnterableTenants(ctx context.Context, userID string) ([]tenant.ID
 			return nil, fmt.Errorf("%w: user %s", ErrNotFound, userID)
 		}
 		return nil, fmt.Errorf("identity: lookup user to list tenants: %w", err)
-	}
-	if !user.Active {
-		return nil, ErrUserInactive
 	}
 	home := tenant.FromStored(user.TenantID)
 	if home.IsSingle() {
@@ -206,6 +222,9 @@ func (c *Core) EnterableTenants(ctx context.Context, userID string) ([]tenant.ID
 		}
 		seen[id] = struct{}{}
 		out = append(out, id)
+	}
+	if !user.Active && len(out) > 0 {
+		return nil, ErrUserInactive
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out, nil

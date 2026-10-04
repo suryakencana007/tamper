@@ -132,8 +132,8 @@ func TestEnterIsRefusedWithoutAMembership(t *testing.T) {
 	}
 }
 
-// An entered token is not a way to enter further. The admin here is a
-// member of both tenants, so only the route's own rule can refuse.
+// An entered token is not a way to enter further, although the admin
+// here really is a member of both tenants.
 func TestEnteredTokenCannotEnterFurther(t *testing.T) {
 	srv, store := newServer(t)
 
@@ -146,8 +146,10 @@ func TestEnteredTokenCannotEnterFurther(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("enter acme: status %d", status)
 	}
-	if status, tok := enter(t, srv, tenantAcme, tenantGlobex, entered); status != http.StatusNotFound || tok != "" {
-		t.Errorf("entering globex with a token entered into acme: status %d, token %q; want 404 and no token", status, tok)
+	// Refused twice over: the route's RequireTenant does not take an
+	// entered token, and Core.EnterTenant would not take its claims.
+	if status, tok := enter(t, srv, tenantAcme, tenantGlobex, entered); status == http.StatusOK || tok != "" {
+		t.Errorf("entering globex with a token entered into acme: status %d, token %q; want a refusal and no token", status, tok)
 	}
 	// From home it works: the right is real, the path was wrong.
 	if status, _ := enter(t, srv, tenantPlatform, tenantGlobex, admin.Token); status != http.StatusOK {

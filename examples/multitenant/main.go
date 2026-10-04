@@ -159,11 +159,13 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 		r.Post(prefix+"/refresh", readCookie(espresso.HandlerCtx(auth.Refresh)))
 		r.Post(prefix+"/logout", readCookie(espresso.HandlerCtx(auth.Logout)))
 
-		// Phase 8. whoami answers for ANY valid token of this tenant —
-		// its own users and platform admins who entered it. /me above is
-		// different: it is "my account in this tenant", and an entered
-		// admin has none.
-		r.Get("/t/"+tenantID+"/whoami", surfaces.RequireAuth(requireTenant(http.HandlerFunc(whoami))))
+		// Phase 8. whoami is the one route here that platform admins may
+		// use: RequireTenantAllowEntered accepts this tenant's own tokens
+		// AND tokens entered into it. Every route above uses RequireTenant,
+		// which refuses an entered token — they are "my account" routes,
+		// and an entered admin has no account in this tenant.
+		guestsToo := tamperespresso.RequireTenantAllowEntered(func(*http.Request) string { return tenantID })
+		r.Get("/t/"+tenantID+"/whoami", surfaces.RequireAuth(guestsToo(http.HandlerFunc(whoami))))
 		// One enter route per other tenant, mounted on the HOME tenant and
 		// gated like every other route of it: the caller proves who they
 		// are with their home session, then asks to go somewhere else.

@@ -86,7 +86,8 @@ mutation proofs because of it. Do not weaken them.
 another": `identity.MembershipStore`, `Core.EnterTenant`, the `htid` claim.
 Read it before touching them. Two things are decided and not to be loosened in
 passing: entering gives an access token only (no refresh session), and no
-token is ever valid for more than one tenant.
+token is ever valid for more than one tenant. `RequireTenant` refuses an
+entered token; a route takes guests only through `RequireTenantAllowEntered`.
 
 ### The M5 decision, settled
 

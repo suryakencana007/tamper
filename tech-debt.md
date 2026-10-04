@@ -177,28 +177,43 @@ It should:
 - add an origin claim, for example `htid` (home tenant), so that `RequireAuth`
   can set `Actor.TenantID` correctly (see TD-07, TD-08).
 
-**Fix: #55.** `Core.EnterTenant(user, target, authTime, acr)` is the
-supported cross-tenant mint.
+**Fix: #55.** `Core.EnterTenant(session, target)` is the supported
+cross-tenant mint. `session` is the verified claims of the user's home access
+token.
 
 - It asks `MembershipStore.IsMember` before it mints. A non-member, a missing
   user, and the single tenant on either side get the same `ErrNotFound`.
+- The session must be a home session of the tenant the user is stored in. An
+  entered token cannot be used to enter again.
 - The token has `tid` = the tenant entered and a new claim `htid` = the
-  user's home tenant. `RequireTenant` is unchanged and compares `tid`, so the
-  token works in the tenant entered and nowhere else, not even at home.
+  user's home tenant. It works in the tenant entered and nowhere else, not
+  even at home.
+- **`RequireTenant` refuses an entered token.** Only a route mounted with
+  `RequireTenantAllowEntered` accepts one. Existing routes assume the subject
+  is a user of the routed tenant ("my account" handlers, `RequireDecision`),
+  so they stay closed to guests until the application opts them in.
 - There is **no refresh session**. When the token expires the caller enters
   again and the membership is checked again. `WithEnterTenantTTL` makes the
   token shorter. This answers the "second problem" above by design.
-- `auth_time` and `acr` are copied from the caller's session, so entering
-  never renews a step-up.
+- `auth_time` and `acr` are copied from the session, so entering never renews
+  a step-up.
+- `Hooks.OnTenantEntered` runs after a successful entry. The application
+  writes the audit row for the entry there.
 - The audit actor carries the home tenant. A row written while entered has
   scope = the tenant entered and actor tenant = the home tenant.
 - `IssueTokensForUserInTenant` is unchanged: only the user's own tenant.
 
 `examples/multitenant` shows the flow over HTTP with a `platform` tenant.
 
-Known limits, also in the sketch: a removed membership, or a deactivated
-admin, keeps working until the entered token expires. What the admin may do
-inside the tenant is still the application's `authz` decision (TD-03).
+Known limits, also in the sketch:
+
+- A removed membership, or a deactivated admin, keeps working until the
+  entered token expires.
+- The home session is not checked for liveness: a home access token that has
+  not expired can still enter after a logout.
+- Entering is not throttled, and a refused entry is not recorded.
+- On a route that accepts guests, what the guest may do is still the
+  application's `authz` decision. The subject is the bare user id (TD-03).
 
 ### TD-03 — `authz` does not know about tenants
 

@@ -26,23 +26,17 @@ func enterTenant(core *identity.Core, target string) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, errorBody{"unauthenticated"})
 			return
 		}
-		// Enter from the home session only. An entered token is a guest
-		// pass for one tenant; it is not a credential to ask for more.
-		if claims.HomeTenantID != "" {
-			writeJSON(w, http.StatusNotFound, errorBody{"not found"})
-			return
-		}
-
-		// auth_time and acr come from the session being entered FROM, so
-		// entering never makes an old login look fresh.
-		tok, err := core.EnterTenant(r.Context(), claims.Subject, tenant.New(target), claims.AuthTime, claims.ACR)
+		// The claims go in whole. The Core takes the user, auth_time and
+		// acr from them, and refuses a session that is itself entered: an
+		// entered token is a guest pass, not a credential to ask for more.
+		tok, err := core.EnterTenant(r.Context(), claims, tenant.New(target))
 		switch {
 		case err == nil:
 			// An access token and nothing else. No refresh cookie is set:
 			// when this expires the client calls this route again.
 			writeJSON(w, http.StatusOK, enterResponse{Token: tok.Access, Tenant: target})
 		case errors.Is(err, identity.ErrNotFound):
-			// Not a member, or no such user: one answer for both.
+			// Not a member, no such user, not a home session: one answer.
 			writeJSON(w, http.StatusNotFound, errorBody{"not found"})
 		case errors.Is(err, identity.ErrUserInactive):
 			writeJSON(w, http.StatusUnauthorized, errorBody{"user is inactive"})

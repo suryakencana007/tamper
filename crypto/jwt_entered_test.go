@@ -163,3 +163,28 @@ func TestIssueAccessEntered_TTL(t *testing.T) {
 		})
 	}
 }
+
+// A token whose htid does not sit beside a different, non-empty tid was
+// not minted by IssueAccessEntered. It is refused, so its htid can never
+// reach an audit row.
+func TestParseAccess_RefusesAnImpossibleHomeTenant(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	svc := newTestJWT(t, "secret")
+	svc.Testing().SetNow(func() time.Time { return now })
+
+	for name, pair := range map[string][2]string{
+		"htid with no tid":  {"", "platform"},
+		"htid equal to tid": {"acme", "acme"},
+	} {
+		tok, err := svc.issueAccess("admin-1", pair[0], pair[1], now.Unix(), ACRLocalPassword, time.Hour)
+		if err != nil {
+			t.Fatalf("%s: mint: %v", name, err)
+		}
+		if _, err := svc.ParseAccess(tok); !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("%s: ParseAccess err = %v, want ErrInvalidToken", name, err)
+		}
+		if _, err := svc.VerifyAccess(tok, tenant.FromStored(pair[0])); !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("%s: VerifyAccess err = %v, want ErrInvalidToken", name, err)
+		}
+	}
+}

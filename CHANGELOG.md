@@ -170,13 +170,20 @@ redacted. Everything that existed for older rows is removed.
   - `identity.MembershipStore` (`IsMember`, `MembershipsFor`), enabled with
     `identity.WithMemberships`. A user keeps one home tenant; a membership is
     a right to act inside another.
-  - `identity.Core.EnterTenant` mints an access token for a tenant the user
-    is a member of, and `EnterableTenants` lists them. There is no refresh
-    session: when the token expires, enter again. `WithEnterTenantTTL`
-    shortens the token. New error: `ErrNoMembershipStore`.
-  - `crypto.AccessClaims.HomeTenantID` (`htid`), `ActorTenantID()`, and
-    `crypto.JWTService.IssueAccessEntered`. Ordinary tokens carry no `htid`
-    and are byte-identical to before.
+  - `identity.Core.EnterTenant(session, target)` mints an access token for a
+    tenant the user is a member of. `session` is the verified claims of the
+    user's home access token; an entered token cannot enter again.
+    `EnterableTenants` lists the tenants. There is no refresh session: when
+    the token expires, enter again. `WithEnterTenantTTL` shortens the token
+    and must not exceed the access token TTL. `Hooks.OnTenantEntered` runs
+    after a successful entry. New error: `ErrNoMembershipStore`.
+  - `crypto.AccessClaims.HomeTenantID` (`htid`), `Entered()`,
+    `ActorTenantID()`, `crypto.JWTService.IssueAccessEntered` and
+    `AccessTTL()`. Ordinary tokens carry no `htid` and are byte-identical to
+    before.
+  - `espresso.RequireTenantAllowEntered` and `EnteredFromContext`.
+    **`RequireTenant` refuses an entered token**: every existing route stays
+    closed to guests until the application mounts it with the new gate.
   - The audit actor that `espresso.RequireAuth` puts in the context carries
     the token's home tenant. For an ordinary token that is `tid`, as before.
   - `identity.MemStore` implements the port.

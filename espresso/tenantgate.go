@@ -85,13 +85,58 @@ func TenantFromContext(ctx context.Context) (tenant.ID, bool) {
 //     token predates it or was minted without one;
 //   - token `tid` non-empty, route tenant empty — a tenant token on an
 //     untenanted route;
-//   - any mismatch between the two.
+//   - any mismatch between the two;
+//   - an ENTERED token (identity.Core.EnterTenant), even when its `tid`
+//     matches. See below.
+//
+// An entered token belongs to a platform admin acting inside this
+// tenant. Its subject is NOT a user of this tenant, and most routes are
+// written for the tenant's own users: "my account" routes act on the
+// subject's row wherever it is stored, and an authorization check finds
+// whatever roles the subject holds at home. So this gate keeps the
+// promise it made before entered tokens existed — the subject is a user
+// of the routed tenant — and a route that is meant for platform admins
+// says so with [RequireTenantAllowEntered].
 //
 // Panics if resolve is nil. That is a boot-time programmer error and
 // the same posture crypto.NewJWTService takes on an empty secret:
 // tenancy misconfiguration fails at construction, never as a per-request
 // denial that looks like ordinary traffic (§6.4).
 func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.Handler {
+	return requireTenant(resolve, false)
+}
+
+// RequireTenantAllowEntered is [RequireTenant] for a route that platform
+// admins may use too: it accepts the tenant's own tokens AND entered
+// tokens whose `tid` is the routed tenant. Everything else about the
+// gate is the same, including the refusal.
+//
+// Opting a route in is a statement about the handler behind it:
+//
+//   - It must not treat the subject as a user of this tenant. Do not
+//     mount "my account" handlers (the AuthRoutes TOTP and profile
+//     routes, identity linking) behind this gate; they would act on the
+//     admin's home account.
+//   - Its authorization must know the subject may be a guest. The user
+//     id alone finds the roles the admin holds in their home tenant.
+//     Read [EnteredFromContext] or the claims, and decide what a guest
+//     may do.
+func RequireTenantAllowEntered(resolve func(*http.Request) string) func(http.Handler) http.Handler {
+	return requireTenant(resolve, true)
+}
+
+// EnteredFromContext reports whether the request was made with an
+// entered token, and if so the subject's home tenant. False behind
+// [RequireTenant], which refuses such tokens.
+func EnteredFromContext(ctx context.Context) (home tenant.ID, entered bool) {
+	claims, ok := AccessClaimsFromContext(ctx)
+	if !ok || claims == nil || !claims.Entered() {
+		return tenant.ID{}, false
+	}
+	return tenant.New(claims.HomeTenantID), true
+}
+
+func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(http.Handler) http.Handler {
 	if resolve == nil {
 		panic("tamper/espresso: RequireTenant requires a resolve function — " +
 			"a nil resolver would be a tenant gate that pins nothing")
@@ -110,6 +155,13 @@ func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.H
 			// The same single equality crypto.VerifyAccess
 			// applies. Absent, empty and mismatched all land here.
 			if claims.TenantID != routed {
+				writeUnauthenticated(w, "invalid token")
+				return
+			}
+			// A guest of this tenant, on a route that did not invite
+			// guests. The same refusal: the response must not say the
+			// token is good for this tenant somewhere else.
+			if claims.Entered() && !allowEntered {
 				writeUnauthenticated(w, "invalid token")
 				return
 			}

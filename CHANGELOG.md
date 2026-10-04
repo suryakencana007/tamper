@@ -6,6 +6,140 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
+## [Unreleased]
+
+Fixes for sharp edges in pooled deployments, and one breaking change to the
+audit log. Each is a separate change (#39, #40, #43, #46) and is described in
+`tech-debt.md`.
+
+### ⚠️ Breaking — the audit log is `canonical_version=4` only (#46)
+
+Every audit row is now written and read at `canonical_version=4`: the tenant
+is inside the hash, and PII is hashed as salted commitments so it can be
+redacted. Everything that existed for older rows is removed.
+
+**Before you upgrade:**
+
+- **An audit DB written by an earlier version cannot be opened.**
+  `NewSQLiteLogger` returns an error that names the file. Archive the old file
+  and point the application at a new one. The same error appears when a row's
+  version was changed after it was written, so do not delete a file because
+  of it without knowing which case it is.
+- **Upgrade every writer of one audit DB together.** An old binary that still
+  appends a v3 row makes `Verify` report tamper at that row, and the next open
+  by the new binary refuses the file.
+- **A single-tenant deployment's audit hashes change.** It now writes v4 rows
+  with an empty tenant. Nothing else on the single-tenant path changes.
+- **An application that writes its own chain-restart anchors at boot must stop.**
+  `Log` refuses every version but 4, and the anchor actions are gone.
+
+**What changes:**
+
+- `Log` writes v4 with no option. It accepts an event whose
+  `CanonicalVersion` is zero or `CanonicalVersion4` and refuses any other.
+- `RedactEvent` works on every row, for every deployment.
+- `Verify` and `VerifyChainPostMigration` walk every row from the first one.
+  There are no anchors.
+- `ComputeHash` accepts only `CanonicalVersion4`.
+- `Log` always generates the row salt and the PII commitments itself. A
+  `RowSalt`, `Commitments`, `PrevHash` or `Hash` already set on the event is
+  replaced.
+- `RedactEvent` returns an error when the row lookup fails. It used to report
+  every lookup error as "no such row".
+- `ListScoped` returns the tenant, the salt and the commitments on each event.
+  They were missing before.
+- A logger built by `tamper.New` writes v4. `tamper.Config` did not change.
+
+**Removed:**
+
+- `SQLiteLoggerOptions.Tenancy`
+- `CanonicalVersion1`, `CanonicalVersion2`, `CanonicalVersion3`
+- `SQLiteLogger.VerifyLegacy`
+- `SQLiteLogger.BootstrapChainV4`, `HasChainRestartV2`, `HasChainRestartV3`,
+  `HasChainRestartV4`, `HasChainMigrate`
+- `SQLiteLogger.MigrateLegacyV2Hashes`, `RehashChainInPlace`, `MigrationResult`
+- `SQLiteLogger.CountByCanonicalVersion`, `CanonicalVersionCount`,
+  `ListByCanonicalVersion`
+- `ActionAuditChainRestart`, `ActionAuditChainMigrate`,
+  `ReservedActionPrefix`, `IsReservedAction`
+- `CanonicalPayloadV2ForDebug`
+- `VerifyBootResult.Segments`
+
+### ⚠️ Changed — behaviour
+
+- **`identity.Core.IssueTokensForUserInTenant` denies a mismatched tenant**
+  (#40, TD-10). It now loads the user and refuses unless the tenant on the
+  stored row equals the tenant asked for. Before, it minted for any user in
+  any tenant and only refused an unset tenant.
+
+  Four consequences:
+
+  - A user id with no row is now refused. It used to mint, because the method
+    never read the store.
+  - A mismatch and a missing user return the same `identity.ErrNotFound`, so
+    the two cannot be told apart.
+  - A deactivated user is refused with `identity.ErrUserInactive`. The tenant
+    is checked first, so an inactive user addressed from another tenant still
+    gets `ErrNotFound`.
+  - The method costs one `UserByID` read per mint.
+
+  A user stored in the single tenant, minted with `tenant.Single`, gets the
+  same tokens as before. `IssueTokensForUser` and `IssueTokensForUserWithACR`
+  are unchanged. The method can no longer be used to give a user a session in
+  a tenant they are not stored in.
+
+- **`identity.Store.UserByID` must return the user's tenant, and the leak
+  suite checks it** (#40, TD-10). The mint above compares the tenant on the
+  row `UserByID` returns, so that row must carry `User.TenantID`.
+  `tenanttest.RunLeakSuite` has a new `UserByID` case. A store whose by-id
+  query does not select the tenant column now fails the suite; fix the query,
+  because every tenant-bound mint would fail with it.
+
+- **`crypto.JWTService.VerifyTOTPPending` rejects a tenant-bound pending
+  token** (#40, TD-10). It is now the `tenant.Single` form of
+  `VerifyTOTPPendingInTenant`. A token minted by `IssueTOTPPending` carries no
+  `tid` and verifies as before.
+
+- **A tenant-bound credential on an unscoped SCIM surface is refused** (#39,
+  TD-15). With `SCIMConfig.Tenancy` off, a request whose validated principal
+  carries a non-empty `TenantID` now gets a 500 `CONFIG_ERROR` before any
+  store method runs. Before, it was served from the unscoped store, so tenant
+  A's service account could read and change tenant B's directory. A principal
+  with an empty `TenantID` is unchanged. If your validator returns a tenant,
+  set `SCIMConfig.Tenancy: true`. If your unscoped stores are already confined
+  to one tenant by other means, set `SCIMConfig.TenantBoundStores` instead
+  (see Added).
+
+- **Rows written by `espresso.Auditor` now carry the tenant** (#43, TD-08).
+  `Event.TenantID` is the tenant pinned by `RequireTenant` or `PinTenant`.
+  `Actor.TenantID` is the token's `tid`. Before, both were empty, so
+  `audit.ExportForTenant` never returned these rows. A request with no `tid`
+  and no pinned tenant produces the same event as before. Rows written before
+  this change are not migrated.
+
+### Added
+
+- **`espresso.SCIMConfig.TenantBoundStores`** (#39, TD-15). The opt-out for
+  the SCIM refusal above. Set it when the unscoped stores given to
+  `NewSCIMRoutes` are already confined to one tenant: one `SCIMRoutes` per
+  tenant over a tenant-bound store, or stores that scope themselves from the
+  principal. Tamper cannot verify this. Setting it on a store shared by
+  several tenants re-opens the leak. `Tenancy` and `TenantBoundStores`
+  together are rejected by `NewSCIMRoutes`.
+
+- **`crypto.JWTService.IssueTOTPPendingInTenant` and
+  `VerifyTOTPPendingInTenant`** (#40, TD-10). A TOTP-pending token can now
+  carry a `tid` claim, and verification pins it the same way `VerifyAccess`
+  pins an access token. A pooled adapter should use these, so a pending token
+  minted in one tenant cannot be finished in another.
+
+### Fixed
+
+- **`examples/multitenant`** (#40). The post-TOTP session now carries the
+  tenant, and the example issues tenant-bound pending tokens.
+
+---
+
 ## [0.6.0] — 2026-08-31
 
 Additive. No breaking changes, no database changes, no call-site changes.

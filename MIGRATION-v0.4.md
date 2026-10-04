@@ -1,5 +1,12 @@
 # Migrating to tamper v0.4.0
 
+> **Note for readers on a later version.** The audit section of this guide
+> describes v0.4.0. After that release the audit log became
+> `canonical_version=4` only, and several names used below were removed:
+> `ListByCanonicalVersion`, `BootstrapChainV4`, `VerifyLegacy`, the
+> `Tenancy` logger option, and the chain-restart anchors. See the
+> `[Unreleased]` section of `CHANGELOG.md` for what replaced them.
+
 v0.4.0 is the one deliberate breaking release of Phase 7. Everything from
 v0.2.x to v0.3.x was additive: an empty tenant meant "today's behavior" and
 nothing you had written needed to change. This release ends that, on purpose,

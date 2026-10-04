@@ -34,6 +34,30 @@ nothing also exits with success (see `PHASE7-HANDOFF.md`).
 | `TestTD10_PostTOTPMintCarriesTheUsersTenant` | TD-10, fails closed | FAIL (problem confirmed) |
 | `TestTD10_PendingTokenCannotMintIntoAnotherTenant` | TD-10 fails open, TD-02 | FAIL (problem confirmed) |
 
+## Re-run against the fixes
+
+On 2026-10-02 the same six tests were run again against the fixes. The tests
+were not changed. The results for the three audit tests are from the designs
+that existed then.
+
+**After #46 the three audit tests no longer compile.** They use the `Tenancy`
+option, `BootstrapChainV4`, `HasChainRestartV4` and `VerifyChainPostMigration`
+on chains that mix v3 and v4. #46 makes v4 the only version and deletes that
+API, so the situations these tests build cannot be built any more. The tests
+that replace them are in `audit/v4_only_test.go` and
+`audit/verify_boot_test.go`.
+
+| Test | Result with the fixes | Why |
+|---|---|---|
+| `TestTD15_SCIMDefaultConfigIsTenantScoped` | PASS | All three requests now get `500` and the store is never called. |
+| `TestTD08_AuditorStampsTenant` | PASS | The row has `Event.TenantID="acme"` and `Actor.TenantID="acme"`; the export has 1 row. |
+| `TestTD10_PendingTokenCannotMintIntoAnotherTenant` | PASS | The mint is refused with `identity: not found`. |
+| `TestTD10_PostTOTPMintCarriesTheUsersTenant` | still FAIL, expected | It calls the `tenant.Single` shim `Core.IssueTokensForUser`, which stays tenant-less by design. The fix is in the adapter, which must call `IssueTokensForUserInTenant`. The regression tests in #40 check that path. |
+| `TestTD09_NewCanWriteAuditV4` | still FAIL, expected | It uses the default config. v4 is opt-in through `Audit.Tenancy: true`. The regression tests in #42 set the flag. |
+| `TestTD09_TenancyWithoutBootstrap` | PASS with #45 | `Verify` hashes each row under its own version, so every case verifies clean with no anchor and no repair: the anchored v3 DB with a v4 row gives `tamper=false`. `HasChainRestartV4` still answers `true` and the late bootstrap still returns `emitted=false`; neither matters for `Verify` any more (TD-21). |
+
+So the output below shows the state **before** the fixes.
+
 ## Output
 
 The file names in the output are the temporary names used during the run.

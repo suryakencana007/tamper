@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 )
@@ -208,7 +209,8 @@ func Redact(e *Event) {
 // Returns (false, nil) for a row that does not exist. Reporting that as
 // "not redacted" rather than erroring is deliberate: a caller sweeping a
 // subject's rows should learn which ids it could not reach, not abort
-// halfway through.
+// halfway through. A lookup that FAILS is an error: the row may well
+// exist, and its PII is still there.
 //
 // IDEMPOTENT. Re-redacting an already-redacted row rewrites the same
 // empty values over themselves and leaves the commitments alone.
@@ -217,8 +219,14 @@ func (l *SQLiteLogger) RedactEvent(ctx context.Context, id string) (bool, error)
 		return false, nil
 	}
 	if _, err := l.store.Queries.GetEventByID(ctx, id); err != nil {
-		// Absent is not an error here — see the doc comment.
-		return false, nil //nolint:nilerr // a missing row is "nothing redacted", not a failure
+		if errors.Is(err, sql.ErrNoRows) {
+			// Absent is not an error here — see the doc comment.
+			return false, nil
+		}
+		// Anything else is a failed lookup, not a missing row. Reporting
+		// it as "nothing to redact" would tell an erasure sweep that the
+		// PII is gone while it is still in the DB.
+		return false, fmt.Errorf("audit: redact event %s: look up row: %w", id, err)
 	}
 	if err := l.store.Queries.RedactEventPII(ctx, id); err != nil {
 		return false, fmt.Errorf("audit: redact event %s: %w", id, err)

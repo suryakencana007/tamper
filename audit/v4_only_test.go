@@ -142,7 +142,9 @@ func TestNewSQLiteLogger_RefusesPreV4Rows(t *testing.T) {
 		_ = reopened.Close()
 		t.Fatal("NewSQLiteLogger opened a DB that holds a canonical_version=3 row")
 	}
-	for _, want := range []string{"canonical_version=3", "fresh audit DB", dbPath} {
+	// Both causes are named, and the file is never called disposable: a
+	// relabelled row is tampering, and the error cannot tell which it is.
+	for _, want := range []string{"canonical_version=3", dbPath, "Keep the file", "new audit DB", "altered"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error should contain %q, got %q", want, err)
 		}
@@ -215,5 +217,139 @@ func TestRedaction_SingleTenantShape(t *testing.T) {
 	}
 	if _, err := VerifyChainPostMigration(ctx, l); err != nil {
 		t.Fatalf("boot guard after redaction: %v", err)
+	}
+}
+
+// Log never trusts a salt or commitments that arrive on the event. An
+// event read back from List and logged again, with its PII changed,
+// must be stored with commitments to the PII it holds NOW.
+func TestLog_ReplacesSuppliedSaltAndCommitments(t *testing.T) {
+	ctx := context.Background()
+	l := v4Logger(t)
+	base := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+
+	if _, err := l.Log(ctx, singleTenantEvent("a", base)); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	stale := eventByID(t, l, "a") // carries a's RowSalt and Commitments
+	oldSalt := append([]byte(nil), stale.RowSalt...)
+	stale.ID = "b"
+	stale.At = base.Add(time.Second)
+	stale.Actor.Email = "mallory@example.com" // PII no longer matches the commitments
+
+	if _, err := l.Log(ctx, stale); err != nil {
+		t.Fatalf("Log of a re-used event: %v", err)
+	}
+	got := eventByID(t, l, "b")
+	if string(got.RowSalt) == string(oldSalt) {
+		t.Error("Log kept the salt that arrived on the event")
+	}
+	if checked, err := VerifyCommitments(got); !checked || err != nil {
+		t.Fatalf("VerifyCommitments = %v, %v on a row Log just wrote; the commitments "+
+			"were not computed from the row's own PII", checked, err)
+	}
+
+	// An all-zero salt would mark a row holding plaintext as redacted.
+	zero := singleTenantEvent("c", base.Add(2*time.Second))
+	zero.RowSalt = make([]byte, RowSaltSize)
+	if _, err := l.Log(ctx, zero); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if got := eventByID(t, l, "c"); IsRedacted(got.RowSalt) {
+		t.Error("Log stored the all-zero salt it was handed; the row reads as redacted while holding PII")
+	}
+	if vr, err := l.Verify(ctx); err != nil || vr.Tamper || vr.Total != 3 {
+		t.Fatalf("Verify = %+v err=%v, want 3 clean rows", vr, err)
+	}
+}
+
+// The email filled in by EmailLookup is part of what the row commits to.
+func TestLog_CommitsToTheEnrichedEmail(t *testing.T) {
+	ctx := context.Background()
+	l, err := NewSQLiteLogger(filepath.Join(t.TempDir(), "audit.db"), SQLiteLoggerOptions{
+		EmailLookup: func(context.Context, string) (string, bool) { return "alice@example.com", true },
+	})
+	if err != nil {
+		t.Fatalf("NewSQLiteLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	if _, err := l.Log(ctx, Event{
+		ID: "a", At: time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC),
+		Actor: Actor{Type: ActorTypeUser, UserID: "u-1"}, Action: "auth.login",
+	}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	got := eventByID(t, l, "a")
+	if got.Actor.Email != "alice@example.com" {
+		t.Fatalf("email was not enriched: %q", got.Actor.Email)
+	}
+	if checked, err := VerifyCommitments(got); !checked || err != nil {
+		t.Fatalf("VerifyCommitments = %v, %v; the commitment was taken before the enrichment", checked, err)
+	}
+}
+
+// A failed lookup is an error, not "no such row". An erasure sweep that
+// is told (false, nil) records the PII as gone.
+func TestRedactEvent_FailedLookupIsAnError(t *testing.T) {
+	l := v4Logger(t)
+	if _, err := l.Log(context.Background(), singleTenantEvent("a", time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC))); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	redacted, err := l.RedactEvent(ctx, "a")
+	if err == nil {
+		t.Fatalf("RedactEvent on a cancelled context returned (%v, nil); the row exists and still holds its PII", redacted)
+	}
+	if redacted {
+		t.Error("RedactEvent reported true alongside an error")
+	}
+	if e := eventByID(t, l, "a"); e.Actor.Email == "" {
+		t.Error("the row was redacted although the call failed")
+	}
+}
+
+// ListScoped builds its own SELECT. The events it returns must carry
+// what List's do: the tenant, the salt and the commitments.
+func TestListScoped_ReturnsTenantSaltAndCommitments(t *testing.T) {
+	ctx := context.Background()
+	l := v4Logger(t)
+	e := tenantEvent("a", time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC), "acme")
+	e.Actor.TenantID = "vendor"
+	e.ClusterID = "c-1"
+	if _, err := l.Log(ctx, e); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	want := eventByID(t, l, "a")
+
+	for name, clusters := range map[string][]string{"with clusters": {"c-1"}, "no clusters": nil} {
+		t.Run(name, func(t *testing.T) {
+			if clusters == nil {
+				// The no-cluster path only returns unscoped rows.
+				if _, err := SQLiteAuditDBForTest(l).ExecContext(ctx, `UPDATE events SET cluster_id = '' WHERE id = 'a'`); err != nil {
+					t.Fatalf("UPDATE: %v", err)
+				}
+			}
+			page, err := l.ListScoped(ctx, clusters, Filter{Limit: 10})
+			if err != nil {
+				t.Fatalf("ListScoped: %v", err)
+			}
+			if len(page.Events) != 1 {
+				t.Fatalf("ListScoped returned %d events, want 1", len(page.Events))
+			}
+			got := page.Events[0]
+			if got.TenantID != "acme" || got.Actor.TenantID != "vendor" {
+				t.Errorf("tenant fields = %q / %q, want acme / vendor", got.TenantID, got.Actor.TenantID)
+			}
+			if string(got.RowSalt) != string(want.RowSalt) {
+				t.Errorf("RowSalt = %x, want %x", got.RowSalt, want.RowSalt)
+			}
+			if checked, err := VerifyCommitments(got); !checked || err != nil {
+				t.Errorf("VerifyCommitments = %v, %v on an event from ListScoped; it came back "+
+					"without its salt or commitments", checked, err)
+			}
+		})
 	}
 }

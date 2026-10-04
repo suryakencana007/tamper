@@ -350,3 +350,40 @@ func TestV4_RedactIsIdempotentAndScoped(t *testing.T) {
 		t.Errorf("RedactEvent(missing) = (%v, %v), want (false, nil)", ok, err)
 	}
 }
+
+// TestV4_GoldenVector pins the encoder to bytes, not to itself. Every
+// other test compares Log against canonicalPayloadV4, so a reordered or
+// renamed field would pass them all while making every stored chain
+// read as tamper. This one fails.
+//
+// If it fails, the encoding changed. That is a new canonical version,
+// not an edit: do not update the constant.
+func TestV4_GoldenVector(t *testing.T) {
+	e := Event{
+		ID: "evt-golden",
+		At: time.Unix(1700000000, 123456789).UTC(),
+		Actor: Actor{
+			Type: ActorTypeServiceAccount, UserID: "sa-1", Email: "svc@example.com",
+			Name: "provisioner", IP: "203.0.113.7", TenantID: "vendor",
+		},
+		Action:       Action("user.update"),
+		ResourceType: ResourceUser,
+		ResourceID:   "u-42",
+		RequestID:    "req-7",
+		ClusterID:    "c-1", // not hashed
+		TenantID:     "acme",
+		Before:       []byte(`{"active":true}`),
+		After:        []byte(`{"active":false}`),
+	}
+	e.RowSalt = bytes.Repeat([]byte{0xA5}, RowSaltSize)
+	e.Commitments = ComputeCommitments(e.RowSalt, e)
+	prev := bytes.Repeat([]byte{0x11}, HashSize)
+
+	// Computed once by this package and once by an independent
+	// implementation of the layout documented on canonicalPayloadV4 and
+	// commit (sha256, BigEndian u32 length prefixes); both agreed.
+	const want = "1d4cfb62d296120a4622a605d547e194f25c229207421369c78ec57b87423c17"
+	if got := HashHex(hashChainLink(prev, canonicalPayloadV4(e, prev))); got != want {
+		t.Fatalf("v4 hash = %s, want %s", got, want)
+	}
+}

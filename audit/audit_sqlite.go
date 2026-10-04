@@ -55,10 +55,12 @@ type SQLiteLoggerOptions struct {
 // is disabled, rather than passing an empty path through.
 //
 // It refuses a DB that holds a row at any canonical_version other than
-// CanonicalVersion4. This package has one encoder; such a row could
-// only ever be reported as tamper, on every verify, forever. Saying so
-// once at open, with what to do about it, is the honest version of
-// that.
+// CanonicalVersion4, because such a row cannot be verified and nothing
+// should be appended behind it. There are two ways a DB gets one, and
+// the error names both rather than guessing: the file was written by an
+// older version of this package, or a row's version was changed after
+// it was written. The second is tampering, so the error never tells the
+// operator to discard the file.
 func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 	if dbPath == "" {
 		return nil, errEmptyDBPath
@@ -78,9 +80,10 @@ func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 		if c.CanonicalVersion != CanonicalVersion4 {
 			_ = store.Close()
 			return nil, fmt.Errorf(
-				"audit: %s holds %d row(s) at canonical_version=%d; this version reads and writes "+
-					"canonical_version=%d only and cannot verify them — start a fresh audit DB "+
-					"(archive this file first if its history must be kept)",
+				"audit: %s holds %d row(s) at canonical_version=%d, which this version cannot "+
+					"verify (it reads and writes canonical_version=%d only). Keep the file. If it was "+
+					"written by an older version of tamper, archive it and point the application at "+
+					"a new audit DB. If it was not, a row was altered after it was written",
 				dbPath, c.EventCount, c.CanonicalVersion, CanonicalVersion4)
 		}
 	}
@@ -100,7 +103,8 @@ func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 // Log appends an event to the chain. The caller pre-sets ID + At so
 // the audit middleware can use a request-scoped clock + UUID; this
 // method fills in CanonicalVersion, RowSalt, Commitments, PrevHash and
-// Hash, and returns the event as stored.
+// Hash, and returns the event as stored. A RowSalt, Commitments,
+// PrevHash or Hash already on the event is replaced, never trusted.
 //
 // Every row is written at CanonicalVersion4. An event may leave
 // CanonicalVersion zero or set it to CanonicalVersion4; any other value
@@ -215,14 +219,18 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	// here, once, at write time — the verify path reads the stored
 	// commitments back and never re-derives them, which is what lets a
 	// redacted row still hash to what it hashed to originally.
-	if len(e.RowSalt) == 0 {
-		salt, serr := NewRowSalt()
-		if serr != nil {
-			return Event{}, serr
-		}
-		e.RowSalt = salt
-		e.Commitments = ComputeCommitments(salt, e)
+	//
+	// Always a fresh salt, and always commitments computed HERE, after
+	// the email enrichment above. An event that arrives carrying its own
+	// (a row read back from List and logged again, say) would otherwise
+	// be stored with commitments to PII it no longer holds, or with an
+	// all-zero salt that marks plaintext as redacted.
+	salt, serr := NewRowSalt()
+	if serr != nil {
+		return Event{}, serr
 	}
+	e.RowSalt = salt
+	e.Commitments = ComputeCommitments(salt, e)
 
 	prev, err := latestHashFrom(ctx, q)
 	if err != nil {
@@ -300,6 +308,16 @@ func latestHashFrom(ctx context.Context, q *sqlitestore.Queries) ([]byte, error)
 	return row, nil
 }
 
+// scopedEventColumns is the column list of ListScoped's hand-built
+// query, in the order its Scan reads them. It must name every column
+// fromRow maps: an event returned without its tenant, salt and
+// commitments cannot be verified or exported by the caller.
+const scopedEventColumns = "id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name, " +
+	"action, resource_type, resource_id, cluster_id, request_id, " +
+	"before_json, after_json, prev_hash, hash, canonical_version, " +
+	"tenant_id, actor_tenant_id, row_salt, " +
+	"c_actor_email, c_actor_name, c_actor_ip, c_before, c_after"
+
 // ListScoped is the per-cluster-scoped variant of List (v1.1 task 04).
 // Returns events whose cluster_id is empty (non-cluster-scoped:
 // auth.*, retention prune, etc.) OR is in the caller's reachable
@@ -373,10 +391,7 @@ func (l *SQLiteLogger) ListScoped(ctx context.Context, clusterIDs []string, f Fi
 			return Page{}, fmt.Errorf("audit: parse cursor: %w", perr)
 		}
 		query = fmt.Sprintf(
-			"SELECT id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name, "+
-				"action, resource_type, resource_id, cluster_id, request_id, "+
-				"before_json, after_json, prev_hash, hash, canonical_version "+
-				"FROM events "+
+			"SELECT "+scopedEventColumns+" FROM events "+
 				"WHERE (cluster_id = '' OR cluster_id IN (%s)) "+
 				"AND (at < ? OR (at = ? AND id < ?)) "+
 				"ORDER BY at DESC, id DESC "+
@@ -386,10 +401,7 @@ func (l *SQLiteLogger) ListScoped(ctx context.Context, clusterIDs []string, f Fi
 		args = append(args, cursorAt, cursorAt, cursorID, limit)
 	} else {
 		query = fmt.Sprintf(
-			"SELECT id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name, "+
-				"action, resource_type, resource_id, cluster_id, request_id, "+
-				"before_json, after_json, prev_hash, hash, canonical_version "+
-				"FROM events "+
+			"SELECT "+scopedEventColumns+" FROM events "+
 				"WHERE (cluster_id = '' OR cluster_id IN (%s)) "+
 				"ORDER BY at DESC, id DESC "+
 				"LIMIT ?",
@@ -412,6 +424,8 @@ func (l *SQLiteLogger) ListScoped(ctx context.Context, clusterIDs []string, f Fi
 			&i.ActorType, &i.ActorName, &i.Action, &i.ResourceType,
 			&i.ResourceID, &i.ClusterID, &i.RequestID, &i.BeforeJson,
 			&i.AfterJson, &i.PrevHash, &i.Hash, &i.CanonicalVersion,
+			&i.TenantID, &i.ActorTenantID, &i.RowSalt,
+			&i.CActorEmail, &i.CActorName, &i.CActorIp, &i.CBefore, &i.CAfter,
 		); err != nil {
 			return Page{}, fmt.Errorf("audit: scan scoped row: %w", err)
 		}

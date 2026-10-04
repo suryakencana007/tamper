@@ -23,23 +23,17 @@
 //
 // It runs with no external services: an in-memory store and nothing else.
 //
-// SCOPE NOTE. The manifest's shape for this slice also mentions a
-// verified domain and an OIDC provider per tenant on an embedded fake
-// IdP. Neither is buildable at 7b-3: per-tenant OIDC registries are 7e-1
-// and verified domains are 7f-1, both M3, and this slice gates only on
-// 7b-2. Building them now would mean an app-side tenant->provider map
-// against the still-process-wide registry that 7e-1 exists to replace —
-// an implementation two slices early, which is the trap the phase rules
-// name. The federated path is still exercised, through the Core's
-// tenant-scoped ResolveByIdentityInTenant / ProvisionUserWithIdentityInTenant,
-// which is the part 7b-2 actually made tenant-aware. The OIDC leg joins
-// at M3.
+// SCOPE NOTE. There is no OIDC or SAML leg here, and no verified
+// domain. The federated path is still exercised at the Core, through the
+// tenant-scoped ResolveByIdentity / ProvisionUserWithIdentity an OIDC
+// callback would call. examples/federation shows the transport side.
 package main
 
 import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -103,10 +97,9 @@ func run() error {
 // makes this pooled rather than N processes, and it is the smallest
 // wiring that puts a real tenant boundary in the request path.
 func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamper.Provider, error) {
-	// Tenancy.Enabled makes the Core route every scoped read through the
-	// *InTenant methods. It also asserts at BOOT that the store can serve
-	// them — swap tenantStore for one that cannot and New fails here,
-	// naming the type, rather than leaking on the first cross-tenant read.
+	// There is no tenancy switch to turn on. Every identity.Store is
+	// tenant-scoped, so a store that cannot scope by tenant does not
+	// compile, and the Core denies any call made without a tenant.
 	provider, err := tamper.New(tamper.Config{
 		JWT: crypto.JWTConfig{Secret: jwtSecret, TTL: 15 * time.Minute, Issuer: "multitenant-example"},
 		Identity: &tamper.IdentityConfig{
@@ -140,7 +133,14 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 		readCookie := auth.ReadRefreshCookie()
 		r.Post(prefix+"/register", espresso.Doppio(auth.Register))
 		r.Post(prefix+"/login", espresso.Doppio(auth.Login))
-		r.Get(prefix+"/me", surfaces.RequireAuth(espresso.HandlerCtx(auth.Me)))
+		// Every authenticated route gets BOTH gates. RequireAuth says the
+		// token is genuine; RequireTenant says it was minted for THIS
+		// tenant, by comparing its `tid` with the tenant the route names.
+		// The route's tenant comes from the route, never from the token.
+		// A route that has only RequireAuth accepts any tenant's token —
+		// add RequireTenant to every route you mount beside this one.
+		requireTenant := tamperespresso.RequireTenant(func(*http.Request) string { return tenantID })
+		r.Get(prefix+"/me", surfaces.RequireAuth(requireTenant(espresso.HandlerCtx(auth.Me))))
 		r.Post(prefix+"/refresh", readCookie(espresso.HandlerCtx(auth.Refresh)))
 		r.Post(prefix+"/logout", readCookie(espresso.HandlerCtx(auth.Logout)))
 	}

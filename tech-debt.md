@@ -73,7 +73,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-19 | `Refresh` does not re-check the session's tenant | fixed by #47 | — | — |
 | TD-20 | Step-up-denied audit rows carry no tenant | sharp edge | P2 | Tamper |
 | TD-21 | `HasChainRestartV2` / `V3` / `V4` count rows, not anchors | resolved by #46 | — | — |
-| TD-22 | The multitenant example is out of date | gap | P2 | example |
+| TD-22 | The multitenant example is out of date | fixed by #48 | — | — |
 | TD-23 | A wrong-tenant token error has its own text | sharp edge | P2 | Tamper |
 | TD-24 | A v3 row in a v4 deployment is not flagged | resolved by #46 | — | — |
 | TD-25 | `VerifyLegacy` reports tamper on a mixed-version chain | resolved by #46 | — | — |
@@ -578,7 +578,7 @@ rows, so their answer was wrong in both directions.
 
 **Resolved by #46.** The methods and the anchors are deleted.
 
-### TD-22 — The multitenant example is out of date
+### TD-22 — The multitenant example is out of date *(fixed by #48)*
 
 **Evidence.** In `examples/multitenant`, the `/me` route uses `RequireAuth`
 without `RequireTenant` (`main.go:143`). The cross-tenant check for that route
@@ -592,8 +592,16 @@ proving ground for pooled tenancy, and people copy it. An authenticated route
 added next to `/me` gets no tenant check at all, because the pattern shown
 puts the check in one handler's adapter and not in a gate on the route.
 
-**Proposal.** Add `RequireTenant` to the authenticated routes and update the
-comments.
+**Fix: #48.** The `/me` route is now `RequireAuth` → `RequireTenant` →
+handler, with a comment that every authenticated route beside it needs both.
+The adapter's stored-tenant check stays as a second fence. The stale comments
+are rewritten.
+
+A test shows why the gate is needed and not only tidy: a token signed with the
+deployment's key, for a user stored in `globex`, but with `tid=acme`, was
+served on the `globex` route when only the adapter checked. The adapter
+compares the user row, not the token. With the gate it gets a 401 that is
+byte-identical to an invalid token's.
 
 ### TD-23 — A wrong-tenant token error has its own text *(sharp edge)*
 

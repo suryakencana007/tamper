@@ -17,12 +17,15 @@ import (
 // wiring time and every request under that prefix is scoped by
 // construction.
 //
-// This is how an app carries a tenant today. IdentityService's methods
-// take (email, password) with no tenant — the transport has no tenant
-// concept until espresso.RequireTenant lands in 7c-2 — so the tenant
-// rides on the ADAPTER rather than on the call. Closing over it is also
-// the safer shape: there is no code path here that can forget to pass a
-// tenant, because there is no path that passes one.
+// IdentityService's methods take (email, password) with no tenant, so
+// the tenant rides on the ADAPTER rather than on the call. Closing over
+// it is also the safer shape: there is no code path here that can
+// forget to pass a tenant, because there is no path that passes one.
+//
+// The adapter is the second fence, not the first. On an authenticated
+// route the first is espresso.RequireTenant, mounted in main.go, which
+// refuses a token whose `tid` is not this tenant before any method here
+// runs.
 //
 // It is deliberately NOT read from the request context. tamper's
 // tenant.WithTenant documents why: an implicit tenant is a cross-tenant
@@ -67,14 +70,13 @@ func (t tenantIdentity) Login(ctx context.Context, email, password string) (tamp
 	return tamperespresso.AuthResult{User: &u, Tokens: tok}, nil
 }
 
-// Me is where a cross-tenant access token is rejected, and it is worth
-// being precise about why it lives here.
+// Me checks the user's STORED tenant, although RequireTenant has already
+// checked the token's `tid` on the route.
 //
-// The access token carries no tenant yet — the `tid` claim is 7c-1 and
-// VerifyAccessInTenant is 7c-2 — so RequireAuth validates the signature
-// and hands over a user id that is genuine but says nothing about which
-// tenant the request was routed to. The app closes that gap with the
-// fact tamper DOES carry: identity.User.TenantID, populated since 7b-1.
+// The two checks read different facts. The gate compares the token with
+// the route. This compares the user row with the adapter's tenant, and
+// it is what still holds if a route is ever mounted without the gate,
+// or if a token and its user's row have come to disagree.
 //
 // The mismatch returns ErrNotFound, never a permission error. A deny and
 // a miss must be indistinguishable, or the response tells the caller

@@ -405,7 +405,11 @@ func (l *SQLiteLogger) list(ctx context.Context, f Filter, where []string, args 
 	query += " ORDER BY at DESC, id DESC LIMIT ?"
 	args = append(args, limit)
 
-	rows, err := l.store.DB.QueryContext(ctx, query, args...)
+	// gosec reads the concatenation above as possible injection. It is
+	// not: query is built only from eventColumns, the fixed condition
+	// strings passed to add, and "?" placeholders. Every caller-supplied
+	// value is in args (TestList_FilterValuesAreBound).
+	rows, err := l.store.DB.QueryContext(ctx, query, args...) //nolint:gosec // G202: fixed fragments and placeholders only; values are bound
 	if err != nil {
 		return Page{}, fmt.Errorf("audit: list: %w", err)
 	}

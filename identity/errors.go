@@ -158,6 +158,13 @@ var (
 	// loudly, exactly like ErrNoTokenService and ErrNoKeySet, rather
 	// than a silent no-op that looks like a delivery problem.
 	ErrNoInvitationStore = errors.New("identity: core has no invitation store")
+
+	// ErrNoMembershipStore — EnterTenant or EnterableTenants was invoked
+	// on a Core constructed without WithMemberships. A programmer error
+	// surfaced loudly, like ErrNoInvitationStore: a Core with no
+	// membership store has no cross-tenant path, and saying "not found"
+	// instead would look like a missing membership row.
+	ErrNoMembershipStore = errors.New("identity: core has no membership store")
 )
 
 // ThrottledError carries the retry hint alongside ErrThrottled.

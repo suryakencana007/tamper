@@ -36,6 +36,8 @@ type Core struct {
 	hooks        Hooks
 	throttling   Throttling      // zero value = no rate limiting (pre-7k-1 behavior)
 	invitations  InvitationStore // nil = invitation verbs error (opt-in, 7j-1)
+	memberships  MembershipStore // nil = EnterTenant errors (opt-in, Phase 8)
+	enterTTL     time.Duration   // 0 = entered tokens live as long as ordinary ones
 	now          func() time.Time
 	newID        func() string
 }

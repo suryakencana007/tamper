@@ -22,7 +22,12 @@ redacted. Everything that existed for older rows is removed.
 
 - **An audit DB written by an earlier version cannot be opened.**
   `NewSQLiteLogger` returns an error that names the file. Archive the old file
-  if its history must be kept, and start a fresh one.
+  and point the application at a new one. The same error appears when a row's
+  version was changed after it was written, so do not delete a file because
+  of it without knowing which case it is.
+- **Upgrade every writer of one audit DB together.** An old binary that still
+  appends a v3 row makes `Verify` report tamper at that row, and the next open
+  by the new binary refuses the file.
 - **A single-tenant deployment's audit hashes change.** It now writes v4 rows
   with an empty tenant. Nothing else on the single-tenant path changes.
 - **An application that writes its own chain-restart anchors at boot must stop.**
@@ -36,6 +41,13 @@ redacted. Everything that existed for older rows is removed.
 - `Verify` and `VerifyChainPostMigration` walk every row from the first one.
   There are no anchors.
 - `ComputeHash` accepts only `CanonicalVersion4`.
+- `Log` always generates the row salt and the PII commitments itself. A
+  `RowSalt`, `Commitments`, `PrevHash` or `Hash` already set on the event is
+  replaced.
+- `RedactEvent` returns an error when the row lookup fails. It used to report
+  every lookup error as "no such row".
+- `ListScoped` returns the tenant, the salt and the commitments on each event.
+  They were missing before.
 - A logger built by `tamper.New` writes v4. `tamper.Config` did not change.
 
 **Removed:**

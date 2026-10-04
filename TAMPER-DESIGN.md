@@ -68,11 +68,12 @@ Shipped subpackages:
 - **`crypto/`** — JWT issue/verify, bcrypt password hashing, refresh-token
   generate/hash, TOTP enroll/verify, KEK keyset + secretbox envelope
   encryption (the `rotate-kek` substrate).
-- **`audit/`** — hash-chain core with per-row `canonical_version` dispatch
-  (v2 legacy pipe / v3 length-prefixed), `Logger` + `SQLiteLogger` +
-  `NoopLogger`, chain anchors (`chain_restart` / `chain_migrate`), in-place
-  migration, `VerifyChainPostMigration` boot guard, and the
-  `audit/sqlitestore` persistence layer.
+- **`audit/`** — hash-chain core at one canonical version (v4: the tenant
+  inside the hash, PII as salted commitments so a row can be redacted),
+  `Logger` + `SQLiteLogger` + `NoopLogger`, per-tenant export, the
+  `VerifyChainPostMigration` boot guard, and an internal SQLite persistence
+  layer. (Earlier versions also carried v2/v3 encoders, chain anchors and
+  in-place migration; those were removed when v4 became the only version.)
 - **`authz/`** — the `Authorizer` PDP interface (Check / CheckBulk /
   ListResources / ListSubjects), the built-in `RBAC` engine over a pluggable
   `BindingStore`, and `MemStore`. Phase 1 complete: Barista's cluster + org

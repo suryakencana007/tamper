@@ -635,8 +635,16 @@ available where #46 was written.
 **Impact.** Dead code only. `UpdateEventHash` is worth removing for its own
 sake: nothing in a tamper-evident log should be able to rewrite a stored hash.
 
-**Proposal for Tamper.** Delete the queries from `queries/events.sql` and
-regenerate with the pinned sqlc version.
+Two more things wait for the same regeneration:
+
+- `NewSQLiteLogger` checks for rows before v4 with the existing
+  count-by-version query. That scans the whole table on every open, with no
+  context. A query that stops at the first such row would be cheaper.
+- `sqlitestore.Open` runs its migrations before that check, so a file that is
+  then refused has already been migrated.
+
+**Proposal for Tamper.** Delete the queries from `queries/events.sql`, add
+the cheaper existence check, and regenerate with the pinned sqlc version.
 
 ### TD-27 — Barista must move to the v4-only audit API
 

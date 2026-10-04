@@ -18,6 +18,48 @@ import (
 // return one stable status code and don't leak which check failed.
 var ErrInvalidToken = errors.New("auth: invalid token")
 
+// invalidTokenError is what every VERIFICATION failure returns.
+//
+// Its text is one fixed string, whatever went wrong. A message that
+// varied would tell whoever can read it which check failed, and the
+// case that matters is the tenant check: "expired" or "bad signature"
+// says the token is no good, while a different message for a wrong
+// tenant says the token is genuine and merely aimed elsewhere. The
+// status code was already uniform; the text now is too, so an adapter
+// or a log line that prints the error discloses nothing either.
+//
+// The reason is not thrown away. It is the second error in Unwrap, so
+// server-side code that wants it can ask — errors.Is(err,
+// jwt.ErrTokenExpired), or errors.Unwrap on the chain for a debug log.
+// It is never part of Error(), so it reaches a caller only if something
+// deliberately puts it there.
+type invalidTokenError struct{ cause error }
+
+func (e *invalidTokenError) Error() string { return ErrInvalidToken.Error() + ": token not valid" }
+
+func (e *invalidTokenError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrInvalidToken}
+	}
+	return []error{ErrInvalidToken, e.cause}
+}
+
+// invalidToken wraps the reason a token failed verification.
+func invalidToken(cause error) error { return &invalidTokenError{cause: cause} }
+
+// The reasons this package adds on top of the JWT library's own. They
+// exist so the cause is not lost; they are unexported because nothing
+// outside should branch on them.
+var (
+	errUnknownKeyID   = errors.New("no verification key for the token's kid")
+	errMalformedToken = errors.New("token is malformed")
+	errWrongAlgorithm = errors.New("token alg does not match the verification key")
+	errBadSignature   = errors.New("signature does not verify")
+	errWrongPurpose   = errors.New("token purpose is not the one this entry point accepts")
+	errMissingSubject = errors.New("token has no subject")
+	errWrongTenant    = errors.New("token tid does not match the tenant it was verified for")
+)
+
 // ErrTenantRequired — [JWTService.VerifyAccess] was handed an UNSET
 // tenant id (the zero [tenant.ID], not [tenant.Single]). The
 // tenant-bound totp-pending pair ([JWTService.IssueTOTPPendingInTenant],
@@ -172,12 +214,12 @@ func (j *JWTService) resolveVerifier(kid string) (Signer, error) {
 	if len(j.verifiers) > 0 {
 		s, ok := j.verifiers[kid]
 		if !ok {
-			return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+			return nil, invalidToken(errUnknownKeyID)
 		}
 		return s, nil
 	}
 	if j.signer == nil {
-		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return nil, invalidToken(errUnknownKeyID)
 	}
 	return j.signer, nil
 }
@@ -195,28 +237,28 @@ func (j *JWTService) parseClaims(tokenStr string, claims jwt.Claims) error {
 	if j.signer == nil && len(j.verifiers) == 0 {
 		tok, err := jwt.ParseWithClaims(tokenStr, claims, j.keyFunc, j.parserOptions()...)
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+			return invalidToken(err)
 		}
 		if !tok.Valid {
-			return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+			return invalidToken(errMalformedToken)
 		}
 		return nil
 	}
 
 	parts := strings.Split(tokenStr, ".")
 	if len(parts) != 3 {
-		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return invalidToken(errMalformedToken)
 	}
 	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return invalidToken(errMalformedToken)
 	}
 	var hdr struct {
 		Alg string `json:"alg"`
 		Kid string `json:"kid"`
 	}
 	if err := json.Unmarshal(headerRaw, &hdr); err != nil {
-		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return invalidToken(errMalformedToken)
 	}
 	verifier, err := j.resolveVerifier(hdr.Kid)
 	if err != nil {
@@ -225,24 +267,24 @@ func (j *JWTService) parseClaims(tokenStr string, claims jwt.Claims) error {
 	// The token does not get to choose its algorithm. Accepting the
 	// header's alg would be the classic confusion attack.
 	if hdr.Alg != verifier.Alg() {
-		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return invalidToken(errWrongAlgorithm)
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return invalidToken(errMalformedToken)
 	}
 	if err := verifier.Verify(parts[0]+"."+parts[1], sig); err != nil {
-		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return invalidToken(errBadSignature)
 	}
 	claimsRaw, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return invalidToken(errMalformedToken)
 	}
 	if err := json.Unmarshal(claimsRaw, claims); err != nil {
-		return fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return invalidToken(errMalformedToken)
 	}
 	if err := jwt.NewValidator(j.parserOptions()...).Validate(claims); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return invalidToken(err)
 	}
 	return nil
 }
@@ -450,15 +492,14 @@ func (j *JWTService) VerifyAccess(tokenStr string, tenantID tenant.ID) (*AccessC
 		return nil, err
 	}
 	if claims.TenantID != tenantID.String() {
-		// Deliberately the SAME message the generic invalid branch uses.
-		return nil, fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return nil, invalidToken(errWrongTenant)
 	}
 	return claims, nil
 }
 
 func (j *JWTService) keyFunc(t *jwt.Token) (any, error) {
 	if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-		return nil, fmt.Errorf("%w: unexpected signing method %q", ErrInvalidToken, t.Method.Alg())
+		return nil, errWrongAlgorithm
 	}
 	return j.secret, nil
 }
@@ -610,14 +651,13 @@ func (j *JWTService) VerifyTOTPPendingInTenant(tokenStr string, tenantID tenant.
 		return "", err
 	}
 	if claims.Purpose != purposeTOTPPending {
-		return "", fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
+		return "", invalidToken(errWrongPurpose)
 	}
 	if claims.Subject == "" {
-		return "", fmt.Errorf("%w: sub is missing", ErrInvalidToken)
+		return "", invalidToken(errMissingSubject)
 	}
 	if claims.TenantID != tenantID.String() {
-		// Deliberately the SAME message the generic invalid branch uses.
-		return "", fmt.Errorf("%w: token not valid", ErrInvalidToken)
+		return "", invalidToken(errWrongTenant)
 	}
 	return claims.Subject, nil
 }
@@ -641,10 +681,10 @@ func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
 		return nil, err
 	}
 	if claims.Purpose != "" && claims.Purpose != purposeAccess {
-		return nil, fmt.Errorf("%w: wrong purpose %q", ErrInvalidToken, claims.Purpose)
+		return nil, invalidToken(errWrongPurpose)
 	}
 	if claims.Subject == "" {
-		return nil, fmt.Errorf("%w: sub is missing", ErrInvalidToken)
+		return nil, invalidToken(errMissingSubject)
 	}
 	return claims, nil
 }

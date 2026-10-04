@@ -38,6 +38,7 @@ not a separate service. Three properties shape every flow:
 |---|---|
 | `NewJWTService`, `WithSigner`, `WithVerifiers` | The JWT service. HS256 is built in. Other signers plug in through the `Signer` interface, with `kid` rotation. |
 | `IssueAccess(userID, tenant, authTime, acr)` | Creates an access token with the claims `sub`, `tid`, `auth_time`, `acr`, `purpose`. |
+| `IssueAccessEntered(userID, tenant, homeTenant, authTime, acr, ttl)` | Creates an *entered* token: `tid` is the tenant entered, `htid` is the user's home tenant. It checks no right; `Core.EnterTenant` is the entry point. |
 | `VerifyAccess(token, tenant)` | Verifies the token and pins the tenant: `tid` must match exactly. |
 | `ParseAccess(token)` | Verifies the token without the tenant check. `RequireAuth` uses it; the tenant check comes later in `RequireTenant`. |
 | `IssueTOTPPending` / `VerifyTOTPPending` | A 5-minute token used between "password is correct" and "TOTP is correct". |
@@ -71,8 +72,10 @@ not a separate service. Three properties shape every flow:
 | `StartTOTPEnrollment`, `CompleteTOTPEnrollment`, `EnrollTOTP`, `VerifyTOTP`, `VerifyRecoveryCode`, `DisableTOTP`, `ClearTOTP` | TOTP lifecycle. |
 | `ResolveByIdentity`, `ProvisionUserWithIdentity`, `Link`, `Unlink`, `ListIdentities` | Multi-IdP account linking and JIT provisioning. |
 | `Invite`, `AcceptInvitation` | Onboarding without SSO, through a single-use token. |
+| `EnterTenant(session, target)`, `EnterableTenants(user)` | A user of one tenant enters another one they are a member of. `session` is the claims of the home access token. Access token only, no refresh session. |
 
-Ports: `Store` (required), `InvitationStore` (optional). `MemStore` is the
+Ports: `Store` (required), `InvitationStore` and `MembershipStore`
+(optional). `MemStore` is the
 reference implementation. `identity/tenanttest.RunLeakSuite` is the
 cross-tenant leak test. Every `Store` implementation must pass it.
 
@@ -131,6 +134,7 @@ engine only compares.
 |---|---|
 | `Routes(provider, RouteConfig)` | Builds `Surfaces`: the auth, OIDC, SAML, and SCIM routes, plus middleware already bound to the engines. |
 | `RequireAuth`, `RequireAuthWS` | Bearer JWT → user id, claims, and audit actor in the context. |
+| `RequireTenantAllowEntered`, `EnteredFromContext` | `RequireTenant` for a route that platform admins may use: it also accepts a token entered into the routed tenant. `RequireTenant` itself refuses one. |
 | `PinTenant(resolve)` | Pins the tenant on a route **before** login. |
 | `RequireTenant(resolve)` | Checks that the token `tid` equals the route tenant. Anything else is a 401. |
 | `RequireEntitlement(store, capability, resolve)` | Gate for paid features. |
@@ -240,6 +244,37 @@ POST /refresh (cookie)
 ```
 
 Rotation never moves `auth_time` forward and never changes the tenant.
+
+### 4.4a Entering another tenant (platform admin)
+
+```
+POST /t/platform/auth/enter/acme        (application route, home token)
+  ├─ RequireAuth ─> RequireTenant(platform)
+  └─ Core.EnterTenant(claims, acme)
+      ├─ claims are an entered token ───────────┐
+      ├─ Store.UserByID ─> missing ─────────────┤
+      ├─ claims.tid is not the stored tenant ───┤─> ErrNotFound (one error)
+      ├─ single tenant, or acme is home ────────┤
+      ├─ MembershipStore.IsMember ─> false ─────┘
+      │                           ─> error ─> error (never a yes)
+      ├─ inactive ─> ErrUserInactive
+      ├─ IssueAccessEntered ─> access {sub, tid=acme, htid=platform}
+      │                        auth_time and acr copied from the claims
+      │                        no refresh token, no session row
+      └─ Hooks.OnTenantEntered(user, acme)
+```
+
+The entered token is for `acme` only, and only on routes that invite guests:
+
+```
+RequireTenant(acme)               ─> refuses an entered token (401, same body
+                                     as a wrong-tenant token)
+RequireTenantAllowEntered(acme)   ─> accepts it; EnteredFromContext = platform
+```
+
+When the token expires the client calls the enter route again, and the
+membership is checked again. In the audit log, a row written while entered has
+`Event.TenantID = acme` and `Actor.TenantID = platform`.
 
 ### 4.5 Federated login (OIDC / SAML / social)
 

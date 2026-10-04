@@ -170,6 +170,13 @@ user row per (person, tenant) with your application owning the membership
 table that links them, and the person's cross-tenant identity living in your
 domain rather than in tamper's.
 
+*Added after v0.4.0:* for the support-engineer half of this — an operator's
+own staff acting inside customers' tenants — there is now a second shape that
+keeps one row. Store the person in one tenant of yours and give them
+memberships: `identity.MembershipStore` and `Core.EnterTenant`
+(`PHASE8-PLATFORM-ADMIN-SKETCH.md`). It does not fit the consultant, who needs
+a full account, with a refresh session, in each customer.
+
 If that is your shape, do not upgrade until you have modelled it. A
 `tenant_id` picked to make the `UPDATE` succeed is a cross-tenant grant with a
 migration script in front of it.

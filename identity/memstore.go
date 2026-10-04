@@ -31,11 +31,14 @@ type MemStore struct {
 	// row by id without holding the token.
 	invitations map[string]Invitation
 	invHashToID map[string]string
+	// memberships: user id -> the tenants that user may enter.
+	memberships map[string]map[tenant.ID]struct{}
 }
 
 var (
 	_ Store           = (*MemStore)(nil)
 	_ InvitationStore = (*MemStore)(nil)
+	_ MembershipStore = (*MemStore)(nil)
 )
 
 // tenantKey composes a per-tenant index key. NUL cannot appear in an
@@ -54,6 +57,7 @@ func NewMemStore() *MemStore {
 		identities:  make(map[string]Identity),
 		invitations: make(map[string]Invitation),
 		invHashToID: make(map[string]string),
+		memberships: make(map[string]map[tenant.ID]struct{}),
 	}
 }
 
@@ -469,4 +473,43 @@ func (m *MemStore) MarkAccepted(_ context.Context, id string, at time.Time) erro
 	inv.AcceptedAt = at
 	m.invitations[id] = inv
 	return nil
+}
+
+// --- memberships (Phase 8) ---------------------------------------------
+
+// AddMembership lets userID enter tenantID.
+func (m *MemStore) AddMembership(userID string, tenantID tenant.ID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.memberships[userID] == nil {
+		m.memberships[userID] = make(map[tenant.ID]struct{})
+	}
+	m.memberships[userID][tenantID] = struct{}{}
+}
+
+// RemoveMembership takes the right away again. Removing one that does
+// not exist is a no-op.
+func (m *MemStore) RemoveMembership(userID string, tenantID tenant.ID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.memberships[userID], tenantID)
+}
+
+// IsMember implements MembershipStore.
+func (m *MemStore) IsMember(_ context.Context, userID string, tenantID tenant.ID) (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.memberships[userID][tenantID]
+	return ok, nil
+}
+
+// MembershipsFor implements MembershipStore.
+func (m *MemStore) MembershipsFor(_ context.Context, userID string) ([]tenant.ID, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]tenant.ID, 0, len(m.memberships[userID]))
+	for id := range m.memberships[userID] {
+		out = append(out, id)
+	}
+	return out, nil
 }

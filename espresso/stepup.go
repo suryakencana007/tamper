@@ -223,7 +223,7 @@ func emitStepUpDenied(ctx context.Context, auditLog audit.Logger, claims *crypto
 	currentACR := ""
 	if claims != nil {
 		actorID = claims.Subject
-		actorTenant = claims.TenantID
+		actorTenant = claims.ActorTenantID()
 		currentACR = claims.ACR
 	}
 	// The same actor RequireAuth stashes — id and home tenant off the

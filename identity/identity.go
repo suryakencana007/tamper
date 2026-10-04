@@ -24,6 +24,8 @@ package identity
 import (
 	"context"
 	"time"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // User is the identity-core projection of an account. Applications
@@ -156,4 +158,16 @@ type Hooks struct {
 	// password-registration side effect from a federated-provision one
 	// (Barista runs the same default-org enroll from both).
 	OnProvisioned func(ctx context.Context, user User, identity Identity, firstUser bool)
+
+	// OnTenantEntered runs after EnterTenant has minted a token: user,
+	// stored in their home tenant, may now act inside target. It is the
+	// place to write the audit row for the entry itself — scoped to
+	// target, with the user's home tenant on the actor — so the entered
+	// tenant's log shows that an outside actor came in even if they only
+	// read. The Core has no audit log of its own.
+	//
+	// Best-effort like the other hooks: it owns its error handling, and
+	// the token is returned whatever it does. It does not run for a
+	// refused entry.
+	OnTenantEntered func(ctx context.Context, user User, target tenant.ID)
 }

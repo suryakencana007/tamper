@@ -39,15 +39,24 @@ type tenantStore struct {
 	// Keeping it lets the test assert on the signal itself rather than on
 	// a proxy for it.
 	bootstrapped map[string]bool
+
+	// memberships: user id -> the OTHER tenants that user may enter
+	// (identity.MembershipStore). A real app keeps this in its own table,
+	// written by whatever grants a platform admin access to a customer.
+	memberships map[string]map[tenant.ID]bool
 }
 
-var _ identity.Store = (*tenantStore)(nil)
+var (
+	_ identity.Store           = (*tenantStore)(nil)
+	_ identity.MembershipStore = (*tenantStore)(nil)
+)
 
 func newTenantStore() *tenantStore {
 	return &tenantStore{
 		users: map[string]identity.User{}, sessions: map[string]identity.RefreshSession{},
 		byHash: map[string]string{}, idents: map[string]identity.Identity{},
 		bootstrapped: map[string]bool{},
+		memberships:  map[string]map[tenant.ID]bool{},
 	}
 }
 
@@ -317,3 +326,42 @@ func (s *tenantStore) EnableTOTP(context.Context, string, []byte, []string, time
 }
 func (s *tenantStore) SetRecoveryCodeHashes(context.Context, string, []string) error { return nil }
 func (s *tenantStore) ClearTOTP(context.Context, string) error                       { return nil }
+
+// --- identity.MembershipStore -------------------------------------------
+
+// grantMembership lets a user enter a tenant other than their own. In a
+// real app this is an admin action with its own authorization and its
+// own audit row.
+func (s *tenantStore) grantMembership(userID string, tenantID tenant.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.memberships[userID] == nil {
+		s.memberships[userID] = map[tenant.ID]bool{}
+	}
+	s.memberships[userID][tenantID] = true
+}
+
+// revokeMembership takes it away. It stops the NEXT entry; a token that
+// was already minted lives until it expires.
+func (s *tenantStore) revokeMembership(userID string, tenantID tenant.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.memberships[userID], tenantID)
+}
+
+// IsMember is deny-by-default: an unknown user or tenant is false.
+func (s *tenantStore) IsMember(_ context.Context, userID string, tenantID tenant.ID) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.memberships[userID][tenantID], nil
+}
+
+func (s *tenantStore) MembershipsFor(_ context.Context, userID string) ([]tenant.ID, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]tenant.ID, 0, len(s.memberships[userID]))
+	for id := range s.memberships[userID] {
+		out = append(out, id)
+	}
+	return out, nil
+}

@@ -36,6 +36,8 @@ type Core struct {
 	hooks        Hooks
 	throttling   Throttling      // zero value = no rate limiting (pre-7k-1 behavior)
 	invitations  InvitationStore // nil = invitation verbs error (opt-in, 7j-1)
+	memberships  MembershipStore // nil = EnterTenant errors (opt-in, Phase 8)
+	enterTTL     time.Duration   // 0 = entered tokens live as long as ordinary ones
 	now          func() time.Time
 	newID        func() string
 }
@@ -95,6 +97,14 @@ func New(store Store, jwt *crypto.JWTService, opts ...Option) (*Core, error) {
 	}
 	if c.defaultACR == "" {
 		return nil, fmt.Errorf("identity: default ACR must not be empty")
+	}
+	// An entered token is never longer-lived than an ordinary one; the
+	// JWT service cuts it. A longer value here would boot, be cut on
+	// every mint, and leave the operator believing in a window that is
+	// not the one in effect.
+	if jwt != nil && c.enterTTL > jwt.AccessTTL() {
+		return nil, fmt.Errorf("identity: WithEnterTenantTTL(%s) is longer than the access token TTL (%s)",
+			c.enterTTL, jwt.AccessTTL())
 	}
 	// The optional-interface upgrade and its boot assertion were here.
 	// v0.4.0 folded TenantScopedStore into Store, so there is no longer a

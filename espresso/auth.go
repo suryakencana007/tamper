@@ -166,12 +166,17 @@ func RequireAuth(jwt *crypto.JWTService) func(http.Handler) http.Handler {
 // service-layer emissions that go through audit.ActorFromContext
 // inherit the authenticated user's id.
 //
-// The actor also carries the token's `tid` as Actor.TenantID — the
-// tenant the credential was minted for, which is a fact the signature
-// vouches for and therefore safe to record before RequireTenant has
-// run. It is the actor's HOME tenant and nothing more: it is NOT the
-// row's scope (audit.Event.TenantID), which only the routed tenant may
-// fill, because a scope read out of the credential would let the token
+// The actor also carries the actor's HOME tenant as Actor.TenantID — a
+// fact the signature vouches for and therefore safe to record before
+// RequireTenant has run. For an ordinary token that is the token's
+// `tid`. For an ENTERED token (identity.Core.EnterTenant: a platform
+// admin acting inside a customer's tenant) it is `htid`, the tenant the
+// admin is stored in, not the tenant they entered: a row written while
+// entered must say who acted and where they came from.
+//
+// It is the home tenant and nothing more: it is NOT the row's scope
+// (audit.Event.TenantID), which only the routed tenant may fill,
+// because a scope read out of the credential would let the token
 // decide whose log its own actions land in. A token with no `tid`
 // leaves the field "", so the single-tenant actor is the one this
 // function always stashed.
@@ -182,7 +187,7 @@ func decorateAuthed(ctx context.Context, claims *crypto.AccessClaims) context.Co
 	return audit.WithActor(ctx, audit.Actor{
 		Type:     audit.ActorTypeUser,
 		UserID:   userID,
-		TenantID: claims.TenantID,
+		TenantID: claims.ActorTenantID(),
 	})
 }
 

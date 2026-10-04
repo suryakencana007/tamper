@@ -420,6 +420,39 @@ Saying it costs nothing and closes a question every evaluator will ask.
    `PruneOlderThan`. That window closes the day v4 ships and grows every month
    it slips.
 
+   **AMENDED 2026-10-04: `canonical_version=4` is the ONLY version.** The
+   decision above is unchanged — one chain, the tenant in the row, redaction
+   through commitments. What changes is everything around it that existed for
+   older rows. Decided by the repo owner: nothing is in production, so there
+   is no legacy data to keep readable.
+
+   - Every row is written at v4. `Log` refuses an explicit older version, and
+     `SQLiteLoggerOptions.Tenancy` is removed: the v4 encoder is not an option
+     any more. Redaction works for every deployment.
+   - The v1, v2 and v3 encoders, `VerifyLegacy`, the chain-restart anchors
+     (`BootstrapChainV4`, `HasChainRestartV2/V3/V4`, the reserved action
+     prefix) and the in-place migration helpers are deleted.
+   - `Verify` and the boot guard walk every row from the first one. There is
+     no anchor and no walk root.
+   - `NewSQLiteLogger` refuses a DB that holds a row at any other version. Such
+     a DB needs a fresh audit file.
+
+   **This reverses one line of this sketch on purpose.** §6 invariant 1 and
+   7i-1 said a deployment without tenancy "keeps writing v3 forever, so its
+   bytes are unchanged". A single-tenant deployment now writes v4 rows with an
+   empty tenant. Its audit hashes are not the hashes it would have written
+   before Phase 7. Everything else on the `""` path is unaffected.
+
+   **What it removes.** The honest residual above is gone, because there are no
+   rows before v4. So is the whole class of problems that came from a chain
+   holding more than one version: a late or missing anchor reported as tamper,
+   a v3 row whose tenant is not in its hash sitting inside a v4 deployment, and
+   `VerifyLegacy` failing on an interleaved chain.
+
+   **What it costs.** An audit DB written by an earlier version cannot be
+   opened. Barista's audit CLI and its boot path use the deleted API and must
+   be changed with this. That was not done or tested here.
+
    **Reserved, named but not built** (rule 7): a per-tenant rolling accumulator
    carried as a hashed v4 field plus a periodic
    `system.audit.tenant_checkpoint`, which would give tenant-scoped

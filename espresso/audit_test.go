@@ -80,20 +80,17 @@ func serveMutation(t *testing.T, h http.Handler, bearer string) {
 // TestAuditor_PooledRowIsScopedAndExported is the regression test for
 // TD-08, adapted from its reproduction proof: a mutation made in tenant
 // "acme" through RequireAuth -> RequireTenant -> Auditor.Mutation lands
-// in a v4 chain with both tenant facts recorded, and it is in acme's
+// in the chain with both tenant facts recorded, and it is in acme's
 // export and in nobody else's.
 func TestAuditor_PooledRowIsScopedAndExported(t *testing.T) {
 	ctx := context.Background()
 	logger, err := audit.NewSQLiteLogger(filepath.Join(t.TempDir(), "audit.db"),
-		audit.SQLiteLoggerOptions{Tenancy: true})
+		audit.SQLiteLoggerOptions{})
 	if err != nil {
 		t.Fatalf("NewSQLiteLogger: %v", err)
 	}
 	defer func() { _ = logger.Close() }()
 	sl := logger.(*audit.SQLiteLogger)
-	if _, err := sl.BootstrapChainV4(ctx, time.Now().UTC(), "anchor-v4"); err != nil {
-		t.Fatalf("BootstrapChainV4: %v", err)
-	}
 
 	j := tenantJWT(t)
 	acme := tenant.New(tenantA)

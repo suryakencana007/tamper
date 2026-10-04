@@ -197,12 +197,17 @@ func TestMultiWriter_FailedAppendReleasesTheWriteLock(t *testing.T) {
 	a, _ := twoReplicas(t)
 	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 
-	// canonical_version=1 is rejected AFTER the transaction opens.
-	if _, err := a.Log(ctx, Event{
-		ID: "v1-row", At: base, Action: Action("auth.login"),
-		CanonicalVersion: CanonicalVersion1,
-	}); err == nil {
-		t.Fatal("a canonical_version=1 row was accepted")
+	// A duplicate id fails at the INSERT, which is AFTER the transaction
+	// opened and took the write lock.
+	if _, err := a.Log(ctx, makeEvent("dup", base, Action("auth.login"))); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	_, err := a.Log(ctx, makeEvent("dup", base.Add(time.Millisecond), Action("auth.login")))
+	if err == nil {
+		t.Fatal("a second row with the same id was accepted")
+	}
+	if !IsUniqueViolation(err) {
+		t.Fatalf("the failed append should be a unique violation, got: %v", err)
 	}
 
 	done := make(chan error, 1)

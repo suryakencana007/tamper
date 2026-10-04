@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 )
@@ -32,14 +33,12 @@ import (
 // than merely inconvenient: with the salt gone, the commitment is not
 // invertible even by someone holding a candidate address.
 //
-// WHAT THIS COSTS, STATED PLAINLY. Under v3 the chain hash covered the
-// plaintext, so editing an email broke the chain. Under v4 the chain
-// hash covers the commitment, so editing the plaintext alone does NOT
-// break it. That is not a weakening ONLY because VerifyCommitments
-// exists and is run alongside the chain walk — it is the check that
-// re-binds plaintext to commitment while the salt is still present. A
-// deployment that walks the chain and skips VerifyCommitments has
-// strictly less tamper-evidence on PII than it had at v3.
+// WHAT THIS COSTS, STATED PLAINLY. The chain hash covers the commitment,
+// not the plaintext, so editing a stored email alone does NOT break the
+// chain. VerifyCommitments is the check that re-binds plaintext to
+// commitment while the salt is still present, and it must be run
+// alongside the chain walk. A deployment that walks the chain and skips
+// VerifyCommitments does not notice an edit to stored PII.
 
 // CommitmentSize is the length of a field commitment, in bytes.
 const CommitmentSize = sha256.Size
@@ -121,10 +120,9 @@ func ComputeCommitments(salt []byte, e Event) Commitments {
 // re-derived.
 //
 // An all-zero salt, not a missing one, so the column stays NOT NULL and
-// a redaction is a visible state rather than an absence. A row that
-// never had a salt (pre-v4) is also reported as redacted here, and that
-// is correct for the only use this has: "do not try to re-derive the
-// commitments for this row."
+// a redaction is a visible state rather than an absence. An empty salt
+// is also reported as redacted, which is correct for the only use this
+// has: "do not try to re-derive the commitments for this row."
 func IsRedacted(salt []byte) bool {
 	for _, b := range salt {
 		if b != 0 {
@@ -146,8 +144,7 @@ func IsRedacted(salt []byte) bool {
 //     when the row was written.
 //
 // Returns (false, nil) — "not checkable", not "failed" — for any row
-// that cannot be re-derived: a pre-v4 row, or a redacted one whose salt
-// is zeroed. A redacted row is not a tampered row, and reporting it as
+// that cannot be re-derived: one whose salt is zeroed or missing. A redacted row is not a tampered row, and reporting it as
 // one would make every erasure look like an attack.
 func VerifyCommitments(e Event) (checked bool, err error) {
 	if e.CanonicalVersion != CanonicalVersion4 {
@@ -201,7 +198,7 @@ func Redact(e *Event) {
 	}
 }
 
-// RedactEvent erases a v4 row's PII in place and persists it.
+// RedactEvent erases a row's PII in place and persists it.
 //
 // The chain still verifies afterwards: the canonical payload hashed the
 // COMMITMENTS, and those are left exactly as they were. What changes is
@@ -209,19 +206,11 @@ func Redact(e *Event) {
 // them un-invertible — which is what makes the erasure irreversible
 // rather than a column hidden behind a view.
 //
-// Returns (false, nil) for a row that is absent or not v4. A pre-v4 row
-// hashed its PII directly, so it cannot be redacted without breaking its
-// hash; that is the honest residual recorded in sketch §8 item 1, and it
-// closes only by those rows ageing out through PruneOlderThan. Reporting
-// it as "not redacted" rather than erroring is deliberate: a caller
-// sweeping a subject's rows should learn which ones it could not reach,
-// not abort halfway through.
-//
-// If EVERY call returns (false, nil), check the logger's construction
-// before suspecting the data: rows are only written at v4 when the
-// logger has SQLiteLoggerOptions.Tenancy set, and that option is the
-// erasure switch too — despite its name, it is legal and supported for
-// single-tenant deployments (#25, see the option's doc).
+// Returns (false, nil) for a row that does not exist. Reporting that as
+// "not redacted" rather than erroring is deliberate: a caller sweeping a
+// subject's rows should learn which ids it could not reach, not abort
+// halfway through. A lookup that FAILS is an error: the row may well
+// exist, and its PII is still there.
 //
 // IDEMPOTENT. Re-redacting an already-redacted row rewrites the same
 // empty values over themselves and leaves the commitments alone.
@@ -229,13 +218,15 @@ func (l *SQLiteLogger) RedactEvent(ctx context.Context, id string) (bool, error)
 	if l == nil || l.store == nil {
 		return false, nil
 	}
-	before, err := l.store.Queries.GetEventByID(ctx, id)
-	if err != nil {
-		// Absent is not an error here — see the doc comment.
-		return false, nil //nolint:nilerr // a missing row is "nothing redacted", not a failure
-	}
-	if before.CanonicalVersion != int64(CanonicalVersion4) {
-		return false, nil
+	if _, err := l.store.Queries.GetEventByID(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Absent is not an error here — see the doc comment.
+			return false, nil
+		}
+		// Anything else is a failed lookup, not a missing row. Reporting
+		// it as "nothing to redact" would tell an erasure sweep that the
+		// PII is gone while it is still in the DB.
+		return false, fmt.Errorf("audit: redact event %s: look up row: %w", id, err)
 	}
 	if err := l.store.Queries.RedactEventPII(ctx, id); err != nil {
 		return false, fmt.Errorf("audit: redact event %s: %w", id, err)

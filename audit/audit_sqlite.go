@@ -29,66 +29,24 @@ type SQLiteLogger struct {
 	opts  SQLiteLoggerOptions
 
 	mu sync.Mutex
-	// lastAt is the monotonic-at watermark (v1.8 follow-up #3).
-	// Initialized to the DB's latest `at` on NewSQLiteLogger. Log()
-	// under mu enforces e.At > lastAt by bumping by 1ns on
-	// collision, then updates lastAt. Prevents same-at clock
-	// collisions (Windows microsecond clock) from producing rows
-	// whose chain-linkage order doesn't match ORDER BY (at,
-	// canonical_version, id) — see Log() docs for the full
-	// rationale.
+	// lastAt is the monotonic-at watermark, primed from the DB's latest
+	// `at` at open. Log, under mu, bumps a colliding or earlier e.At to
+	// lastAt+1ns and then advances lastAt, so ORDER BY at follows the
+	// order rows were chained in.
 	lastAt time.Time
 }
 
 // SQLiteLoggerOptions configures a SQLiteLogger at construction time.
-// All fields are optional; the zero value of SQLiteLoggerOptions
-// matches the v1.0 behavior (no email enrichment).
-//
-// EmailLookup is a v1.1 addition (closes TD-AUDIT-04). The
-// `auditor.Mutation` middleware path resolves user_id → email at
-// request time via its own EmailLookup, but service-direct audit
-// emissions (e.g. GroupService.bootstrap, ServiceAccountService.Create)
-// only carry a user_id from the RequireAuth-stashed Actor. When
-// EmailLookup is non-nil, Log calls it at emit time for
-// ActorTypeUser events with empty Email + non-empty UserID. Failures
-// or (_, false) returns are silently tolerated — the audit row still
-// records user_id, just not email.
-//
-// EmailLookup MUST be context-safe and reasonably fast (a single
-// SELECT against the users table). Slow lookups block the Log call.
+// All fields are optional.
 type SQLiteLoggerOptions struct {
+	// EmailLookup resolves a user id to an email at Log time, for an
+	// ActorTypeUser event that carries a UserID and no Email — the shape
+	// a service-direct emission has, where the actor came from the
+	// request context rather than from the audit middleware. A nil
+	// lookup or a (_, false) answer leaves the email empty.
+	//
+	// It runs inside Log, so it must be context-safe and fast.
 	EmailLookup func(ctx context.Context, userID string) (email string, ok bool)
-
-	// Tenancy switches new emissions to canonical_version=4, which
-	// carries TWO independent capabilities (Phase 7, 7i-1): the tenant
-	// enters the hashed payload, AND PII moves to per-row salted
-	// commitments — the only encoding [SQLiteLogger.RedactEvent] can
-	// erase. This flag is the single switch for both; there is no
-	// commitments-only option.
-	//
-	// A SINGLE-TENANT DEPLOYMENT THAT WANTS ERASURE SHOULD THEREFORE SET
-	// THIS TOO (#25). The name says "tenancy" but the mechanism is the v4
-	// encoder, and it is perfectly at home with no tenants: leave
-	// TenantID empty on every event, call [SQLiteLogger.BootstrapChainV4]
-	// once at boot, and redaction works — the tenant fields simply encode
-	// as empty strings. Do NOT reach for an explicit CanonicalVersion on
-	// the event instead; Log rejects that when this flag is off, because
-	// without the v4 anchor such a row would later be reported as tamper
-	// by Verify (see the guard in Log).
-	//
-	// FALSE IS THE DEFAULT AND IT IS BYTE-IDENTICAL TO PRE-7i-1. A
-	// deployment that wants neither capability keeps writing v3 rows with
-	// v3 hashes forever, no v4 anchor is emitted, and nothing about its
-	// audit DB changes — which is invariant 1 of the phase, satisfied by
-	// not participating rather than by careful equivalence. The cost of
-	// staying here is that PII sits in plaintext in an append-only chain
-	// whose only lifecycle is PruneOlderThan.
-	//
-	// Existing rows are never rewritten either way. v4 applies to rows
-	// written from here on; every older row keeps its own
-	// canonical_version and its own hash, and the verify walk dispatches
-	// per row exactly as it already does for v2 and v3.
-	Tenancy bool
 }
 
 // NewSQLiteLogger opens (or creates) the audit DB at dbPath and
@@ -96,9 +54,13 @@ type SQLiteLoggerOptions struct {
 // — call sites should construct NewNoopLogger() instead when audit
 // is disabled, rather than passing an empty path through.
 //
-// opts is optional config — pass SQLiteLoggerOptions{} for the v1.0
-// behavior, or supply an EmailLookup to enrich service-direct
-// emissions (v1.1+ — TD-AUDIT-04).
+// It refuses a DB that holds a row at any canonical_version other than
+// CanonicalVersion4, because such a row cannot be verified and nothing
+// should be appended behind it. There are two ways a DB gets one, and
+// the error names both rather than guessing: the file was written by an
+// older version of this package, or a row's version was changed after
+// it was written. The second is tampering, so the error never tells the
+// operator to discard the file.
 func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 	if dbPath == "" {
 		return nil, errEmptyDBPath
@@ -108,10 +70,27 @@ func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 		return nil, fmt.Errorf("audit: %w", err)
 	}
 	l := &SQLiteLogger{store: store, opts: opts}
-	// v1.8 follow-up #3: prime the monotonic-at watermark from the
-	// DB so the first Log after a process restart picks up where the
-	// prior process left off. sql.ErrNoRows on a fresh DB leaves
-	// lastAt zero (which Log() treats as "no prior row, no bump").
+
+	counts, err := store.Queries.CountEventsByCanonicalVersion(context.Background())
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("audit: check canonical versions: %w", err)
+	}
+	for _, c := range counts {
+		if c.CanonicalVersion != CanonicalVersion4 {
+			_ = store.Close()
+			return nil, fmt.Errorf(
+				"audit: %s holds %d row(s) at canonical_version=%d, which this version cannot "+
+					"verify (it reads and writes canonical_version=%d only). Keep the file. If it was "+
+					"written by an older version of tamper, archive it and point the application at "+
+					"a new audit DB. If it was not, a row was altered after it was written",
+				dbPath, c.EventCount, c.CanonicalVersion, CanonicalVersion4)
+		}
+	}
+
+	// Prime the monotonic-at watermark so the first Log after a restart
+	// picks up where the previous process left off. sql.ErrNoRows on a
+	// fresh DB leaves lastAt zero, which Log treats as "no prior row".
 	if latestAt, err := store.Queries.GetLatestAt(context.Background()); err == nil {
 		l.lastAt = latestAt.UTC()
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -123,23 +102,16 @@ func NewSQLiteLogger(dbPath string, opts SQLiteLoggerOptions) (Logger, error) {
 
 // Log appends an event to the chain. The caller pre-sets ID + At so
 // the audit middleware can use a request-scoped clock + UUID; this
-// method fills in PrevHash + Hash. Returns the event with both hash
-// fields populated.
+// method fills in CanonicalVersion, RowSalt, Commitments, PrevHash and
+// Hash, and returns the event as stored. A RowSalt, Commitments,
+// PrevHash or Hash already on the event is replaced, never trusted.
 //
-// CanonicalVersion is defaulted to CanonicalVersion3 on every fresh
-// emission (v1.1+ canonical shape — Actor.Type + Actor.Name
-// included). The boot path's v1.1 chain-restart row also lands as
-// CanonicalVersion3; v1.0 rows that pre-date this version carry
-// CanonicalVersion2 and v0.9 rows carry CanonicalVersion1. Older
-// segments are walkable via `audit verify --legacy
-// --canonical-version=N`.
+// Every row is written at CanonicalVersion4. An event may leave
+// CanonicalVersion zero or set it to CanonicalVersion4; any other value
+// is an error. There is no way to write another version.
 //
-// EmailLookup enrichment (v1.1 — TD-AUDIT-04): when the actor is
-// ActorTypeUser + Email is empty + UserID is non-empty + opts.EmailLookup
-// is non-nil, Log resolves user_id → email at emit time. This closes
-// the service-direct emission gap where the actor was stashed by
-// RequireAuth with user_id but no email — only the `auditor.Mutation`
-// middleware path used to enrich there.
+// When the actor is ActorTypeUser with a UserID and no Email, and
+// opts.EmailLookup is set, Log resolves the email at emit time.
 func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	if err := validateRequiredFields(e); err != nil {
 		return Event{}, err
@@ -147,40 +119,21 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	if e.Actor.Type == "" {
 		e.Actor.Type = ActorTypeUser
 	}
-	if e.CanonicalVersion == 0 {
-		// A tenancy-configured logger writes v4; everyone else keeps
-		// writing v3. An explicit CanonicalVersion on the event still
-		// wins, which is what lets the boot bootstraps emit anchors at
-		// a chosen version.
-		if l.opts.Tenancy {
-			e.CanonicalVersion = CanonicalVersion4
-		} else {
-			e.CanonicalVersion = CanonicalVersion3
-		}
-	} else if e.CanonicalVersion == CanonicalVersion4 && !l.opts.Tenancy {
-		// The trap #25 documents: on a logger built without Tenancy,
-		// BootstrapChainV4 refuses to emit the v4 anchor, and Verify's
-		// walk takes its encoder from the NEWEST anchor — overriding
-		// every later row's own column. An explicit v4 row written here
-		// would verify today and read as FORGED on the next audit
-		// verify, while the boot guard (which honours the per-row
-		// column) stays green. A row that becomes a false tamper report
-		// later is strictly worse than an error now, so this fails
-		// loudly at the only moment the mistake is cheap.
-		return Event{}, errors.New(
-			"audit: event requests canonical_version=4 but the logger was built " +
-				"without SQLiteLoggerOptions.Tenancy — the v4 chain anchor cannot " +
-				"exist, and this row would later be reported as tamper by Verify. " +
-				"Set Tenancy: true (legal for single-tenant deployments: leave " +
-				"TenantID empty and call BootstrapChainV4 at boot) instead of " +
-				"forcing the version per event")
+	switch e.CanonicalVersion {
+	case 0:
+		e.CanonicalVersion = CanonicalVersion4
+	case CanonicalVersion4:
+	default:
+		// Refused rather than written. A row at another version has no
+		// encoder: Verify would report it as tamper on every walk, and
+		// the next open of this DB would refuse the whole file.
+		return Event{}, fmt.Errorf(
+			"audit: event requests canonical_version=%d; only canonical_version=%d is written "+
+				"(leave Event.CanonicalVersion zero)", e.CanonicalVersion, CanonicalVersion4)
 	}
 
-	// v1.1 — service-direct emission email enrichment (TD-AUDIT-04).
-	// Only triggers when the actor is a user with a user_id but no
-	// email. SA + system actors don't have emails; user actors that
-	// already have one are left alone. The lookup is best-effort:
-	// (_, false) or a nil lookup leaves Email empty.
+	// Email enrichment: only for a user actor with a user_id and no
+	// email. Best-effort — (_, false) or a nil lookup leaves it empty.
 	if e.Actor.Type == ActorTypeUser &&
 		e.Actor.Email == "" &&
 		e.Actor.UserID != "" &&
@@ -197,15 +150,11 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	//
 	// Appending to a hash chain is read-latest-hash, compute, insert —
 	// a read-modify-write, and it is only atomic if something makes it
-	// so. Until this change the only thing was l.mu, which is
-	// IN-PROCESS: two replicas sharing one audit DB both read the same
-	// latest hash, both computed against it, and both inserted. The
-	// result is two rows claiming the same predecessor — a forked chain
-	// that the boot verify reports as tamper, on a database nobody
-	// tampered with. Reproduced in
-	// TestMultiWriter_ConcurrentLoggersKeepTheChainIntact, which failed
-	// with stored_prev=000...0 before this transaction existed: one
-	// writer saw an empty table while another had already inserted.
+	// so. l.mu is IN-PROCESS: two replicas sharing one audit DB would
+	// both read the same latest hash, both compute against it, and both
+	// insert, giving two rows that claim the same predecessor — a
+	// forked chain that verify reports as tamper on a database nobody
+	// tampered with (TestMultiWriter_ConcurrentLoggersKeepTheChainIntact).
 	//
 	// BEGIN IMMEDIATE, not a plain BeginTx. SQLite's default deferred
 	// transaction takes a READ lock and only tries to upgrade at the
@@ -223,8 +172,8 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	// ignored silently, and "the fix is present but inert" is the exact
 	// failure mode this whole subsystem exists to make impossible.
 	//
-	// l.mu is kept. It costs nothing and keepssame-process writers off the
-	// database lock entirely, so the transaction only ever contends
+	// l.mu is kept. It costs nothing and keeps same-process writers off
+	// the database lock entirely, so the transaction only ever contends
 	// across processes.
 	conn, err := l.store.DB.Conn(ctx)
 	if err != nil {
@@ -246,31 +195,13 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	}()
 	q := sqlitestore.New(conn)
 
-	// v1.8 follow-up #3 — enforce strictly monotonic `at`. Two
-	// time.Now() calls inside the boot bootstraps
-	// (bootstrapAuditChainRestart's v=2 + v=3 emits +
-	// bootstrapAuditChainMigrate's marker emit) can collide on
-	// low-resolution clocks (Windows microsecond TEXT storage),
-	// producing rows that share the same `at`. The verify-path
-	// walker uses ORDER BY (at, canonical_version, id) ASC — when
-	// two same-`at` rows ALSO share canonical_version, the id-ASC
-	// tiebreak is arbitrary UUID ordering that may not match the
-	// actual chain-linkage order. Bumping by 1ns on collision so
-	// `at` is strictly increasing across all Log emissions makes
-	// ORDER BY at ASC follow chain order naturally, regardless of
-	// canonical_version or id collisions.
+	// Enforce a strictly increasing `at`. The verify walks order rows by
+	// `at`, so two rows sharing one would be walked in an order decided
+	// by their ids rather than by how they were chained. A colliding or
+	// earlier e.At is bumped to watermark+1ns.
 	//
-	// PR #293 (Sprint 0 follow-up) + #300 (v1.8 follow-up #2)
-	// fixed same-`at` ordering on the verify-path + write-path
-	// SELECT queries respectively. This fix closes the
-	// remaining class — v=3 vs v=3 same-`at` collisions where the
-	// canonical_version tiebreak doesn't help.
-	// The watermark is the LATER of the in-process one and the DB's, for
-	// the same reason the hash read moved inside the transaction: the
-	// in-process value knows nothing about another replica's writes. Max
-	// rather than replace, so a single-writer deployment behaves exactly
-	// as before — at open the two are primed equal and every append
-	// advances both, so the DB value can only match or trail.
+	// The watermark is the LATER of the in-process one and the DB's: the
+	// in-process value knows nothing about another replica's writes.
 	watermark := l.lastAt
 	if dbAt, aerr := q.GetLatestAt(ctx); aerr == nil {
 		if dbAt = dbAt.UTC(); dbAt.After(watermark) {
@@ -283,41 +214,30 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 		e.At = watermark.Add(time.Nanosecond)
 	}
 
-	// v4 rows commit to their PII before the payload is built, because
+	// The row commits to its PII before the payload is built, because
 	// the payload hashes the COMMITMENTS rather than the values. Done
 	// here, once, at write time — the verify path reads the stored
 	// commitments back and never re-derives them, which is what lets a
 	// redacted row still hash to what it hashed to originally.
-	if e.CanonicalVersion == CanonicalVersion4 && len(e.RowSalt) == 0 {
-		salt, serr := NewRowSalt()
-		if serr != nil {
-			return Event{}, serr
-		}
-		e.RowSalt = salt
-		e.Commitments = ComputeCommitments(salt, e)
+	//
+	// Always a fresh salt, and always commitments computed HERE, after
+	// the email enrichment above. An event that arrives carrying its own
+	// (a row read back from List and logged again, say) would otherwise
+	// be stored with commitments to PII it no longer holds, or with an
+	// all-zero salt that marks plaintext as redacted.
+	salt, serr := NewRowSalt()
+	if serr != nil {
+		return Event{}, serr
 	}
+	e.RowSalt = salt
+	e.Commitments = ComputeCommitments(salt, e)
 
 	prev, err := latestHashFrom(ctx, q)
 	if err != nil {
 		return Event{}, err
 	}
 	e.PrevHash = prev
-	// Hash under the event's stated canonical version. New rows
-	// default to CanonicalVersion3 (set above); test fixtures that
-	// emit v2-shape rows (chain-restart genesis at v1.0; replays of
-	// v1.0 audit segments) get hashed under the v1.0 pipe-separated
-	// encoder so the row's stored hash round-trips through
-	// canonicalPayloadLegacyV2 in the verify path. CanonicalVersion1
-	// rows are rejected at write time — the v1.0 bootstrap migration
-	// promoted every v1 row to v2 long before this code path runs;
-	// emitting a fresh v1 row is by definition anomalous.
-	if e.CanonicalVersion == CanonicalVersion1 {
-		return Event{}, fmt.Errorf("audit: refusing to write canonical_version=1 row; v1.0 bootstrap migration should have promoted all v1 rows to v2")
-	}
-	e.Hash = computeHash(prev, e, e.CanonicalVersion)
-	if len(e.Hash) == 0 {
-		return Event{}, fmt.Errorf("audit: computeHash returned empty hash for canonical_version=%d (unknown encoder)", e.CanonicalVersion)
-	}
+	e.Hash = hashChainLink(prev, canonicalPayloadV4(e, prev))
 
 	// Update the watermark BEFORE the INSERT so a SQL error
 	// doesn't leave lastAt behind the (uninserted) e.At — a
@@ -364,48 +284,14 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Event) (Event, error) {
 	return e, nil
 }
 
-// latestHash returns the most-recent event's hash, or HashSize zero
-// bytes when the table is empty (genesis prev_hash sentinel). Caller
-// holds l.mu.
+// latestHashFrom returns the most-recent event's hash, or HashSize zero
+// bytes when the table is empty (the genesis prev_hash). It takes an
+// explicit Queries so the chain append reads it INSIDE its transaction.
 //
-// Ordering tie-break rationale: the underlying GetLatestHash query
-// orders by (at DESC, canonical_version DESC, id DESC) (v1.8
-// follow-up #2). The canonical_version DESC middle key is required
-// because two time.Now() calls inside the boot bootstraps
-// (bootstrapAuditChainRestart's v=2 + v=3 anchor inserts, then
-// bootstrapAuditChainMigrate's marker insert) can return identical
-// at values on low-resolution clocks — observed on Windows in v1.9
-// Task 00's harness boot. Without the canonical_version tiebreak,
-// SELECT ORDER BY at DESC, id DESC would pick whichever UUID sorted
-// lexically higher at a colliding at, sometimes returning the v=2
-// chain_restart row's hash instead of the v=3 row's hash that was
-// inserted later in chain order — corrupting the next row's
-// prev_hash and tripping the v1.8 boot guard at next boot.
-//
-// PR #293 fixed the inverse case on the verify path
-// (ListEventsForVerify ORDER BY at ASC, canonical_version ASC, id
-// ASC). This is the write-path analog: at DESC means "most recent
-// first," canonical_version DESC means "higher version is more
-// recent at the same at" (since v=3 chain rows always follow v=2
-// chain_restart in chain order).
-func (l *SQLiteLogger) latestHash(ctx context.Context) ([]byte, error) {
-	return latestHashFrom(ctx, l.store.Queries)
-}
-
-// latestHashFrom is latestHash against an explicit Queries, so the chain
-// append can read it INSIDE its transaction.
-//
-// HONEST SCOPE, because the tempting claim is wrong. This is not what
-// makes the append safe — BEGIN IMMEDIATE is. Once the write lock is
-// held no other writer can commit, so even a read through the pooled
-// handle would return the same value. Swapping this back for
-// l.latestHash leaves every multi-writer test green, and that was
-// checked rather than assumed.
-//
-// It is kept because it makes the invariant LOCAL: the read and the
-// insert are visibly the same transaction, so the next person to touch
-// this function cannot reintroduce the race by moving a line. Defensive
-// clarity, not the load-bearing part.
+// That is not what makes the append safe — BEGIN IMMEDIATE is: once the
+// write lock is held no other writer can commit. Reading through the
+// transaction makes the invariant LOCAL, so the read and the insert are
+// visibly the same transaction and cannot be separated by moving a line.
 func latestHashFrom(ctx context.Context, q *sqlitestore.Queries) ([]byte, error) {
 	row, err := q.GetLatestHash(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -421,6 +307,16 @@ func latestHashFrom(ctx context.Context, q *sqlitestore.Queries) ([]byte, error)
 	}
 	return row, nil
 }
+
+// scopedEventColumns is the column list of ListScoped's hand-built
+// query, in the order its Scan reads them. It must name every column
+// fromRow maps: an event returned without its tenant, salt and
+// commitments cannot be verified or exported by the caller.
+const scopedEventColumns = "id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name, " +
+	"action, resource_type, resource_id, cluster_id, request_id, " +
+	"before_json, after_json, prev_hash, hash, canonical_version, " +
+	"tenant_id, actor_tenant_id, row_salt, " +
+	"c_actor_email, c_actor_name, c_actor_ip, c_before, c_after"
 
 // ListScoped is the per-cluster-scoped variant of List (v1.1 task 04).
 // Returns events whose cluster_id is empty (non-cluster-scoped:
@@ -495,10 +391,7 @@ func (l *SQLiteLogger) ListScoped(ctx context.Context, clusterIDs []string, f Fi
 			return Page{}, fmt.Errorf("audit: parse cursor: %w", perr)
 		}
 		query = fmt.Sprintf(
-			"SELECT id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name, "+
-				"action, resource_type, resource_id, cluster_id, request_id, "+
-				"before_json, after_json, prev_hash, hash, canonical_version "+
-				"FROM events "+
+			"SELECT "+scopedEventColumns+" FROM events "+
 				"WHERE (cluster_id = '' OR cluster_id IN (%s)) "+
 				"AND (at < ? OR (at = ? AND id < ?)) "+
 				"ORDER BY at DESC, id DESC "+
@@ -508,10 +401,7 @@ func (l *SQLiteLogger) ListScoped(ctx context.Context, clusterIDs []string, f Fi
 		args = append(args, cursorAt, cursorAt, cursorID, limit)
 	} else {
 		query = fmt.Sprintf(
-			"SELECT id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name, "+
-				"action, resource_type, resource_id, cluster_id, request_id, "+
-				"before_json, after_json, prev_hash, hash, canonical_version "+
-				"FROM events "+
+			"SELECT "+scopedEventColumns+" FROM events "+
 				"WHERE (cluster_id = '' OR cluster_id IN (%s)) "+
 				"ORDER BY at DESC, id DESC "+
 				"LIMIT ?",
@@ -534,6 +424,8 @@ func (l *SQLiteLogger) ListScoped(ctx context.Context, clusterIDs []string, f Fi
 			&i.ActorType, &i.ActorName, &i.Action, &i.ResourceType,
 			&i.ResourceID, &i.ClusterID, &i.RequestID, &i.BeforeJson,
 			&i.AfterJson, &i.PrevHash, &i.Hash, &i.CanonicalVersion,
+			&i.TenantID, &i.ActorTenantID, &i.RowSalt,
+			&i.CActorEmail, &i.CActorName, &i.CActorIp, &i.CBefore, &i.CAfter,
 		); err != nil {
 			return Page{}, fmt.Errorf("audit: scan scoped row: %w", err)
 		}
@@ -633,19 +525,6 @@ func (l *SQLiteLogger) List(ctx context.Context, f Filter) (Page, error) {
 // Returns the first index where the recomputed value diverges from
 // the stored Hash, or Total + Tamper=false on a clean walk.
 //
-// Chain-restart handling: when a `system.audit.chain_restart` row
-// exists, Verify walks forward from the most-recent one and re-hashes
-// every row under that row's `canonical_version` (so the boot-path
-// insert + everything emitted afterward verify under the v1.1+ shape
-// when present, otherwise the v1.0 shape). Older segments at earlier
-// canonical versions are walkable via VerifyLegacy.
-//
-// When no chain-restart row exists (pre-v1.0 install, or a fresh
-// install before main.go inserts the genesis row), Verify falls back
-// to walking from row 0 — keyed by each row's own
-// `canonical_version` column so v0.9 fixture rows still verify
-// correctly under the v0.9 shape.
-//
 // The first event's PrevHash is taken as the chain baseline rather
 // than insisted upon — for an unpruned chain it equals HashSize zero
 // bytes (genesis), but after a retention prune the first surviving
@@ -655,153 +534,25 @@ func (l *SQLiteLogger) List(ctx context.Context, f Filter) (Page, error) {
 // event's Hash (linkage check); a mismatch reports the same
 // FirstBadIndex as a hash-recompute failure.
 func (l *SQLiteLogger) Verify(ctx context.Context) (VerifyResult, error) {
-	rows, canonicalVersion, err := l.verifyRows(ctx)
+	rows, err := l.store.Queries.ListEventsForVerify(ctx)
 	if err != nil {
 		return VerifyResult{}, fmt.Errorf("audit: verify list: %w", err)
 	}
-	return walkChain(rows, canonicalVersion), nil
+	return walkChain(rows), nil
 }
 
-// VerifyLegacy walks every row at the given canonical_version in
-// chain-ascending order, re-hashing each row under that version's
-// canonical shape. Used by `barista audit verify --legacy
-// --canonical-version=N` to walk a v1.0-only (canonical_version=2)
-// segment in isolation after v1.1 has restarted the chain.
+// walkChain is the verify loop: the linkage check, then a re-hash of
+// each row under the canonical_version stored on it.
 //
-// v1.4 shape (TD-AUDIT-10): the walker covers the ENTIRE v=N segment,
-// not just the rows downstream of the latest chain-restart row. This
-// lets fixture events loaded via `barista --load-fixture` with
-// timestamps older than the bootstrap chain-restart row verify
-// alongside the bootstrap row in one pass. (v1.1-v1.3 rooted the walk
-// at the latest chain-restart, which made loaded older-fixture rows
-// unreachable.)
+// FirstBadIndex distinguishes nothing between the failure modes; all
+// three report the row they were found at:
 //
-// When canonicalVersion <= 0, the call is equivalent to Verify — walk
-// the latest segment under its own canonical_version.
-//
-// When fromID is non-empty, narrows the walk to start at the specified
-// row. The row's canonical_version must match canonicalVersion or an
-// error is returned (operator typo / wrong-version anchor). The
-// resulting walk still uses the chain-restart-rooted query shape
-// underneath, so the anchor row + every later row whose
-// canonical_version equals canonicalVersion is included.
-//
-// When no rows exist at the requested version, returns an empty
-// (clean) VerifyResult. Operators interpret this as "no segment to
-// walk at this version on this DB" rather than "tamper."
-func (l *SQLiteLogger) VerifyLegacy(ctx context.Context, canonicalVersion int, fromID string) (VerifyResult, error) {
-	if canonicalVersion <= 0 {
-		return l.Verify(ctx)
-	}
-
-	// fromID narrows the walk to a specific anchor row + later. The
-	// anchor's canonical_version must match the requested version so
-	// operators don't accidentally walk a v=3 row's downstream under
-	// the v=2 encoder (or vice versa).
-	if fromID != "" {
-		anchor, err := l.store.Queries.GetEventByID(ctx, fromID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return VerifyResult{}, fmt.Errorf("audit: --from-id %q not found", fromID)
-		}
-		if err != nil {
-			return VerifyResult{}, fmt.Errorf("audit: verify legacy lookup: %w", err)
-		}
-		if int(anchor.CanonicalVersion) != canonicalVersion {
-			return VerifyResult{}, fmt.Errorf("audit: --from-id %q has canonical_version=%d, want %d",
-				fromID, anchor.CanonicalVersion, canonicalVersion)
-		}
-		rows, err := l.store.Queries.ListEventsForVerifyFromChainRestart(ctx, sqlitestore.ListEventsForVerifyFromChainRestartParams{
-			At:   anchor.At,
-			At_2: anchor.At,
-			ID:   anchor.ID,
-		})
-		if err != nil {
-			return VerifyResult{}, fmt.Errorf("audit: verify legacy from-id list: %w", err)
-		}
-		// Trim trailing rows whose canonical_version moved past the
-		// requested one — same shape as the v1.1-v1.3 implementation.
-		// Operators walking the legacy segment want bytes-pure
-		// isolation under the requested encoder.
-		trimmed := make([]sqlitestore.Event, 0, len(rows))
-		for _, r := range rows {
-			if int(r.CanonicalVersion) != canonicalVersion {
-				break
-			}
-			trimmed = append(trimmed, r)
-		}
-		return walkChain(trimmed, canonicalVersion), nil
-	}
-
-	// Default v1.4 path — walk the entire v=N segment regardless of
-	// where the bootstrap chain-restart row sits in time.
-	rows, err := l.store.Queries.ListEventsByCanonicalVersion(ctx, int64(canonicalVersion))
-	if err != nil {
-		return VerifyResult{}, fmt.Errorf("audit: verify legacy list: %w", err)
-	}
-	if len(rows) == 0 {
-		// No rows at this version. Operators interpret this as "no
-		// segment to walk here," not as tamper.
-		return VerifyResult{}, nil
-	}
-	return walkChain(rows, canonicalVersion), nil
-}
-
-// verifyRows picks the chain segment Verify walks. When a chain-restart
-// row exists, returns rows from the most-recent restart row forward
-// (inclusive) in chain-asc order plus the canonical_version those rows
-// were hashed under; otherwise walks every row in the table and
-// returns 0 as the canonical_version (the per-row column is used in
-// that fallback path).
-func (l *SQLiteLogger) verifyRows(ctx context.Context) ([]sqlitestore.Event, int, error) {
-	restart, err := l.store.Queries.GetLatestChainRestart(ctx, string(ActionAuditChainRestart))
-	if errors.Is(err, sql.ErrNoRows) {
-		all, lerr := l.store.Queries.ListEventsForVerify(ctx)
-		if lerr != nil {
-			return nil, 0, lerr
-		}
-		return all, 0, nil
-	}
-	if err != nil {
-		return nil, 0, err
-	}
-	rows, err := l.store.Queries.ListEventsForVerifyFromChainRestart(ctx, sqlitestore.ListEventsForVerifyFromChainRestartParams{
-		At:   restart.At,
-		At_2: restart.At,
-		ID:   restart.ID,
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return rows, int(restart.CanonicalVersion), nil
-}
-
-// walkChain runs the verify-loop shape: linkage check + per-row
-// canonical-payload re-hash. Each row is re-hashed under its OWN
-// canonical_version column — that's the v1.2 task 04 dispatch
-// (closes TD-AUDIT-05). A mixed-version segment with v1.0 (v=2)
-// rows followed by v1.1+ (v=3) rows walks cleanly because each row's
-// stored hash is recomputed under its own encoder.
-//
-// When canonicalVersion > 0, that explicit version overrides each
-// row's column — used by VerifyLegacy(N) to walk a segment under a
-// specific encoder + by the chain-restart-rooted Verify path (the
-// genesis row + every successor share the genesis row's canonical
-// version because the boot path emits them under that version
-// deliberately).
-//
-// When canonicalVersion is 0, per-row dispatch is honoured — used by
-// the pre-v1.0 fallback walk and by any future mixed-version DB shape
-// where the chain-restart row no longer pins a single version across
-// the segment.
-//
-// FirstBadIndex distinguishes the failure modes:
-//
-//   - Linkage break (row N's PrevHash != row N-1's Hash) → return at N.
-//   - Hash mismatch (recomputed hash != stored Hash) → return at N.
-//   - Encoder error (unknown canonical_version on the row) → return
-//     at N (treated as Tamper — the row's claimed version is unmappable
-//     so the row's integrity can't be proven).
-func walkChain(rows []sqlitestore.Event, canonicalVersion int) VerifyResult {
+//   - Linkage break (row N's PrevHash != row N-1's Hash).
+//   - Hash mismatch (recomputed hash != stored Hash).
+//   - A canonical_version with no encoder. The version column is an
+//     input to the check, so a row relabelled to another version is
+//     caught here rather than trusted.
+func walkChain(rows []sqlitestore.Event) VerifyResult {
 	total := int64(len(rows))
 	if total == 0 {
 		return VerifyResult{}
@@ -810,25 +561,16 @@ func walkChain(rows []sqlitestore.Event, canonicalVersion int) VerifyResult {
 	var prev []byte
 	for i, r := range rows {
 		e := fromRow(r)
-		version := e.CanonicalVersion
-		if canonicalVersion > 0 {
-			version = canonicalVersion
-			e.CanonicalVersion = canonicalVersion
-		}
 		if i == 0 {
 			prev = e.PrevHash
 		} else if !bytesEqual(e.PrevHash, prev) {
-			// Linkage check from event 1 onward.
 			return VerifyResult{Total: total, Tamper: true, FirstBadIndex: int64(i)}
 		}
-		payload, err := canonicalPayloadForVersion(e, prev, version)
+		payload, err := canonicalPayloadForVersion(e, prev, e.CanonicalVersion)
 		if err != nil {
-			// Unknown encoder on a stored row — fail loud (v1 row in
-			// the wild, future canonical_version, etc.).
 			return VerifyResult{Total: total, Tamper: true, FirstBadIndex: int64(i)}
 		}
-		want := hashChainLink(prev, payload)
-		if !bytesEqual(e.Hash, want) {
+		if !bytesEqual(e.Hash, hashChainLink(prev, payload)) {
 			return VerifyResult{Total: total, Tamper: true, FirstBadIndex: int64(i)}
 		}
 		prev = e.Hash
@@ -851,35 +593,6 @@ func (l *SQLiteLogger) PruneOlderThan(ctx context.Context, cutoff time.Time) (in
 	return n, nil
 }
 
-// CanonicalVersionCount is one row from CountEventsByCanonicalVersion.
-// Used by `barista audit verify` to print the per-version row-count
-// summary after a clean walk so operators can sanity-check what
-// segment shapes their DB carries.
-type CanonicalVersionCount struct {
-	CanonicalVersion int
-	Count            int64
-}
-
-// CountByCanonicalVersion returns one row per distinct canonical_version
-// across the audit DB, sorted ASC. Used by `barista audit verify` to
-// emit the distribution summary line after a clean walk (closes part of
-// v1.2 task 04 — "log the verified canonical_version distribution at
-// end-of-walk"). Empty DB returns an empty slice.
-func (l *SQLiteLogger) CountByCanonicalVersion(ctx context.Context) ([]CanonicalVersionCount, error) {
-	rows, err := l.store.Queries.CountEventsByCanonicalVersion(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("audit: count by canonical_version: %w", err)
-	}
-	out := make([]CanonicalVersionCount, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, CanonicalVersionCount{
-			CanonicalVersion: int(r.CanonicalVersion),
-			Count:            r.EventCount,
-		})
-	}
-	return out, nil
-}
-
 // CountByActionSince returns per-action counts of audit events strictly
 // newer than `since`, ordered by count desc + action asc. Used by the
 // v1.2 task 03 digest scheduler. Empty result is non-nil so callers can
@@ -894,31 +607,6 @@ func (l *SQLiteLogger) CountByActionSince(ctx context.Context, since time.Time) 
 		out[i] = ActionCount{Action: Action(r.Action), Count: r.Count}
 	}
 	return out, nil
-}
-
-// HasChainRestartV2 reports whether the audit DB already contains a
-// row at canonical_version=2 (i.e. the v1.0 chain-restart row has
-// been inserted on a prior boot). Used by cmd/barista/main.go's boot
-// path to decide whether to insert the genesis row on this boot.
-func (l *SQLiteLogger) HasChainRestartV2(ctx context.Context) (bool, error) {
-	n, err := l.store.Queries.CountChainRestartV2(ctx, int64(CanonicalVersion2))
-	if err != nil {
-		return false, fmt.Errorf("audit: count v2 rows: %w", err)
-	}
-	return n > 0, nil
-}
-
-// HasChainRestartV3 reports whether the audit DB already contains a
-// row at canonical_version=3 (i.e. the v1.1 chain-restart row has
-// been inserted on a prior boot). Used by cmd/barista/main.go's boot
-// path to decide whether to insert the v1.1 genesis row on this boot.
-// Idempotent — subsequent boots see HasChainRestartV3=true and skip.
-func (l *SQLiteLogger) HasChainRestartV3(ctx context.Context) (bool, error) {
-	n, err := l.store.Queries.CountChainRestartV2(ctx, int64(CanonicalVersion3))
-	if err != nil {
-		return false, fmt.Errorf("audit: count v3 rows: %w", err)
-	}
-	return n > 0, nil
 }
 
 // DeleteEventByID removes a single audit event row by id. Used by the
@@ -954,11 +642,7 @@ func (l *SQLiteLogger) Close() error {
 // non-empty, nil otherwise (preserves "not applicable" semantics).
 //
 // Actor.Type defaults to ActorTypeUser when the row's column is
-// empty — captures the v0.9 backfill where the migration filled
-// existing rows with 'user'. Actor.Name is taken straight from the
-// row (v1.1 migration 003 backfilled it from actor_email for
-// pre-v1.1 system + service_account rows). CanonicalVersion is taken
-// straight from the row.
+// empty. CanonicalVersion is taken straight from the row.
 func fromRow(r sqlitestore.Event) Event {
 	t := ActorType(r.ActorType)
 	if t == "" {
@@ -1035,20 +719,6 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-// nonNilBytes was here. It coerced a nil slice to an empty one so the v4
-// NOT NULL columns would accept a tenancy-disabled write, and its comment
-// named the stakes exactly right: "the \"\" path breaking on the very
-// migration that was supposed to leave it alone."
-//
-// It was not wrong, it was in the wrong place. Coercing here protected only
-// this file's INSERT, while sqlitestore.InsertEventParams is public API that
-// any consumer builds as a struct literal — and one written before v4 existed
-// cannot set fields that did not exist. Barista's audit tests broke exactly
-// that way, invisibly, until its CI was finally run against Phase 7.
-//
-// The coercion now lives at the boundary every caller shares, in
-// sqlitestore/sqltypes.Blob.
-
 // insertEventDirect writes a row exactly as given, skipping the chain
 // computation Log performs. It is the single implementation behind both the
 // package's own fixture helpers and the exported InsertEventDirectForTest.
@@ -1092,33 +762,6 @@ func (l *SQLiteLogger) insertEventDirect(ctx context.Context, e Event) error {
 		CBefore:          sqltypes.Blob(e.Commitments.Before),
 		CAfter:           sqltypes.Blob(e.Commitments.After),
 	})
-}
-
-// ListByCanonicalVersion returns every event stored at the given canonical
-// version, in chain-walk order, as neutral Events.
-//
-// This is the operator-dump surface: when the boot guard reports a chain
-// mismatch it points at a `dump-v2`-style command, and that command needs to
-// read one canonical segment without caring how it is stored. It replaces
-// reaching through StoreForDebug().Queries and converting rows with
-// FromRowForDebug — the two exports whose only purpose was to hand callers
-// the generated row type, and which kept tamper's schema public.
-//
-// Unlike List, this applies no filter, no paging and no cluster scoping: a
-// forensic dump wants the segment whole.
-func (l *SQLiteLogger) ListByCanonicalVersion(ctx context.Context, version int) ([]Event, error) {
-	if l == nil || l.store == nil {
-		return nil, errEmptyDBPath
-	}
-	rows, err := l.store.Queries.ListEventsByCanonicalVersion(ctx, int64(version))
-	if err != nil {
-		return nil, fmt.Errorf("audit: list canonical_version=%d: %w", version, err)
-	}
-	out := make([]Event, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, fromRow(r))
-	}
-	return out, nil
 }
 
 // IsUniqueViolation reports whether err is a SQLite UNIQUE or PRIMARY KEY

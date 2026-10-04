@@ -14,9 +14,10 @@
 //     hashing, refresh-token hashing, TOTP enrollment/verify, and the KEK
 //     keyset + secretbox envelope that seals at-rest secrets (TOTP secrets,
 //     OIDC/SAML provider secrets). Lifted in Phase 0b.
-//   - audit: tamper-evident hash-chain logging — per-row canonical-version
-//     dispatch, chain-segment anchors, boot-time chain verification — plus
-//     the audit/sqlitestore SQLite persistence layer. Lifted in Phase 0c.
+//   - audit: tamper-evident hash-chain logging — the tenant inside every
+//     row's hash, PII redaction through salted commitments, per-tenant
+//     export, boot-time chain verification — over an internal SQLite
+//     persistence layer. Lifted in Phase 0c.
 //   - authz: the Authorizer PDP — Check + reverse queries — over two
 //     interchangeable engines: the downward-closed rank RBAC and the
 //     set-based PermissionSet (which subsumes ranks and expresses

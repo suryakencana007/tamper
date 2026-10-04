@@ -36,11 +36,6 @@ const HashSize = sha256.Size
 // Action is a stable, dotted string identifying the kind of mutation
 // that produced the event. Convention: "<resource>.<verb>" — e.g.
 // "project.create", "cluster.member.grant", "auth.login".
-//
-// The "system.audit." namespace (ReservedActionPrefix) is RESERVED for the
-// chain machinery's own segment markers. A consumer that derives actions
-// from untrusted input must reject that namespace at the boundary — see
-// IsReservedAction for why the framework cannot enforce it at Log.
 type Action string
 
 // ResourceType narrows the resource_id column to a known kind so
@@ -64,17 +59,13 @@ const (
 )
 
 // ActorType narrows the principal kind that produced an audit event.
-// Defaulted to ActorTypeUser when the context has no actor (matches
-// every pre-v1.0 emission site), set to ActorTypeServiceAccount by
-// the RequireServiceAccount middleware (v1.0 task 01), and set to
-// ActorTypeSystem by service code that emits an audit event in
-// reaction to a background trigger (e.g. the bootstrap chain-restart
-// row, future scheduled tasks).
+// Defaulted to ActorTypeUser when the context has no actor, set to
+// ActorTypeServiceAccount by the RequireServiceAccount middleware, and
+// set to ActorTypeSystem by service code that emits an audit event in
+// reaction to a background trigger (a retention prune, a scheduled
+// task).
 //
-// Persisted as a TEXT column on audit_event (default 'user' so v0.9
-// rows that pre-date this field still verify under the v0.9 canonical
-// shape). v1.0's canonical_version=2 events include it in the
-// hash-chain canonical payload — see Event.Canonical.
+// Persisted as a TEXT column and part of the hashed payload.
 type ActorType string
 
 const (
@@ -105,14 +96,11 @@ const (
 // Name is populated for ActorTypeServiceAccount + ActorTypeSystem
 // emissions and identifies the SA / subsystem (e.g. "scim-provisioner",
 // "barista", "retention"). User emissions leave Name empty — their
-// Email is the right rendering already. The field landed in v1.1
-// (closes TD-AUDIT-03 — v1.0 stuffed the name into the Email field as
-// a backstop, which renders correctly via ActorPill's fallback chain
-// but is cosmetically wrong on the wire). Hash-chain payload for v1.1+
-// rows (CanonicalVersion3) includes Name; v1.0 rows
-// (CanonicalVersion2) don't, so the v1.0 chain segment stays
-// verifiable under its own canonical shape via `barista audit verify
-// --legacy --canonical-version=2`.
+// Email is the right rendering already.
+//
+// Email, Name and IP are PII: the hashed payload carries a salted
+// commitment to each, not the value, so they can be erased later (see
+// redaction.go). UserID, Type and TenantID are hashed as they are.
 type Actor struct {
 	Type   ActorType
 	UserID string
@@ -124,15 +112,10 @@ type Actor struct {
 	// single-tenant deployment. Opaque and app-defined, as everywhere
 	// else.
 	//
-	// CARRIED, NOT HASHED. canonicalPayloadV3 enumerates its fields
-	// explicitly rather than marshalling this struct, so adding this
-	// field does not move a single existing row's chain hash — verified
-	// by the byte-parity tests, and the reason it was safe to add here.
-	// Putting the tenant INTO the canonical row is slice 7i-1
-	// (canonical_version=4), which is blocked on an undecided question:
-	// one chain with the tenant in the row, or one chain per tenant.
-	// This field does not pre-empt that answer; it only makes the value
-	// available to an emitter before it is decided.
+	// It is the actor's HOME tenant, and it is hashed (as
+	// `actor.tenant_id`). It is not the row's scope — that is
+	// Event.TenantID, and the two differ when an actor from one tenant
+	// acts on another's resource.
 	TenantID string `json:"tenant_id,omitempty"`
 }
 
@@ -252,32 +235,16 @@ func ActorSystem(name string) Actor {
 	return Actor{Type: ActorTypeSystem, UserID: "system", Name: name}
 }
 
-// CanonicalVersion identifies which hash-chain canonical-payload
-// shape was used to compute this event's Hash.
+// CanonicalVersion4 is the canonical-payload shape every event is hashed
+// under: the tenant (`tenant_id` and `actor.tenant_id`) is part of the
+// hashed payload, and the PII fields are hashed as stored salted
+// commitments so a row can be redacted without breaking the chain. See
+// canonical_v4.go.
 //
-//   - CanonicalVersion1 — v0.6 → v0.9 rows. Actor.Type NOT in the
-//     payload.
-//   - CanonicalVersion2 — v1.0 rows. Actor.Type added; v1.0 first
-//     boot inserts a `system.audit.chain_restart` row at this
-//     version as the chain genesis.
-//   - CanonicalVersion3 — v1.1+ rows. Actor.Name added (closes
-//     TD-AUDIT-03); v1.1 first boot inserts a second
-//     `system.audit.chain_restart` row at this version as the new
-//     chain genesis. `barista audit verify` walks forward from the
-//     latest restart row (v3 if present, v2 otherwise) by default;
-//     `--legacy --canonical-version=N` walks the prior segment.
-//   - CanonicalVersion4 — Phase 7 rows. Adds the tenant to the hashed
-//     payload (`tenant_id` + `actor.tenant_id`) and moves the PII
-//     fields to stored salted commitments so a row can be redacted
-//     without breaking the chain. Emitted only by a tenancy-configured
-//     logger; a single-tenant deployment keeps writing v3 forever, so
-//     its bytes are unchanged.
-const (
-	CanonicalVersion1 = 1
-	CanonicalVersion2 = 2
-	CanonicalVersion3 = 3
-	CanonicalVersion4 = 4
-)
+// It is the only version this package writes or reads. The number is
+// kept, and stored on every row, so that a later shape can be told
+// apart from this one.
+const CanonicalVersion4 = 4
 
 // Event is the wire-shaped audit-log entry. Fields are deliberately
 // ordered so the canonical-form encoding (used as input to the hash
@@ -300,9 +267,7 @@ type Event struct {
 	// cluster_id is empty OR in their reachable-cluster set.
 	//
 	// NOT part of the canonical-payload hash — purely a query-time
-	// filter, not part of integrity. The v1.1 chain genesis stays at
-	// CanonicalVersion3 and existing v3 rows verify cleanly under
-	// their stored hashes.
+	// filter, not part of integrity.
 	ClusterID string
 	// Before / After are arbitrary JSON snapshots of the resource
 	// pre / post mutation. nil means "not applicable" (e.g. Before
@@ -315,18 +280,14 @@ type Event struct {
 	// not part of the wire-DTO surface.
 	PrevHash []byte
 	Hash     []byte
-	// CanonicalVersion identifies which canonical-payload shape the
-	// Hash was computed under. Defaulted to CanonicalVersion2 on new
-	// emissions (Logger.Log fills this in); v0.6-v0.9 rows in the
-	// DB carry CanonicalVersion1 and are walked under the v0.9
-	// canonical shape by `barista audit verify --legacy`.
+	// CanonicalVersion identifies the canonical-payload shape the Hash
+	// was computed under. Logger.Log sets it to CanonicalVersion4; an
+	// event may leave it zero or set it to CanonicalVersion4, and any
+	// other value is refused.
 	CanonicalVersion int
 
-	// --- Phase 7 (canonical_version=4) ---
-
 	// TenantID is the row's SCOPE: the tenant whose log this event
-	// belongs in. Empty on a single-tenant deployment and on every
-	// pre-v4 row.
+	// belongs in. Empty on a single-tenant deployment.
 	//
 	// DIFFERENT FROM Actor.TenantID, and conflating the two is a
 	// correctness bug rather than a stylistic one. A support engineer
@@ -336,7 +297,7 @@ type Event struct {
 	// exactly the cross-tenant administrative actions a customer most
 	// wants to see. Export filters on THIS field.
 	//
-	// Part of the hash at v4. Unlike ClusterID above — which is
+	// Part of the hash. Unlike ClusterID above — which is
 	// documented as a query-time filter and deliberately outside
 	// integrity — the tenant is the trust boundary, and an unhashed
 	// tenant column could be re-attributed from one customer to
@@ -344,8 +305,8 @@ type Event struct {
 	TenantID string
 
 	// RowSalt is the per-row salt the Commitments were computed under.
-	// 32 random bytes on a v4 row; nil on pre-v4 rows; ALL ZEROES on a
-	// row whose PII has been redacted (see redaction.go).
+	// 32 random bytes, set by Logger.Log; ALL ZEROES on a row whose PII
+	// has been redacted (see redaction.go).
 	//
 	// Not part of the hash. It is an input to the commitments, not to
 	// the payload, which is what lets it be destroyed on erasure while
@@ -354,7 +315,6 @@ type Event struct {
 
 	// Commitments are the salted hashes of the PII fields, and are what
 	// canonicalPayloadV4 actually hashes in place of the plaintext.
-	// Zero on pre-v4 rows.
 	Commitments Commitments
 }
 
@@ -519,106 +479,15 @@ func (NoopLogger) DeleteEventByID(_ context.Context, _ string) error { return ni
 // Close is a no-op.
 func (NoopLogger) Close() error { return nil }
 
-// canonicalPayloadV3 encodes the v1.1+ (canonical_version=3) shape:
-// every field length-prefixed, BigEndian u32 lengths, actor.name
-// included between actor.email and actor.ip. This is the encoding
-// used for every NEW row Logger.Log emits (closes v1.0's pipe-collision
-// class on free-text fields).
-//
-// Layout:
-//
-//	u32 len("id") | bytes("id") | u32 len(id) | bytes(id)
-//	... repeated for each field in order ...
-//	u64 at_unix_nanos (length-prefixed)
-//	u32 len(prev_hash) | bytes(prev_hash)
-//
-// JSON columns (Before/After) are length-prefixed too; nil → length 0.
-// BigEndian for portability across the rare little/big-endian audit-DB
-// transfer.
-//
-// Earlier canonical versions are walked by their own encoder:
-// canonicalPayloadLegacyV2 reproduces v1.0's pipe-separated shape so
-// v1.0 chain segments verify under `barista audit verify --legacy
-// --canonical-version=2`. v0.6-v0.9 (canonical_version=1) rows do not
-// have a v3 walker — the v1.0 bootstrap migration promoted them all to
-// canonical_version=2 at v1.0 first boot, so they shouldn't exist on
-// disk in a post-v1.0 install.
-func canonicalPayloadV3(e Event, prevHash []byte) []byte {
-	var buf []byte
-	buf = appendStringField(buf, "id", e.ID)
-	buf = appendInt64Field(buf, "at", e.At.UnixNano())
-	buf = appendStringField(buf, "actor.user_id", e.Actor.UserID)
-	buf = appendStringField(buf, "actor.email", e.Actor.Email)
-	buf = appendStringField(buf, "actor.name", e.Actor.Name)
-	buf = appendStringField(buf, "actor.ip", e.Actor.IP)
-	t := string(e.Actor.Type)
-	if t == "" {
-		t = string(ActorTypeUser)
-	}
-	buf = appendStringField(buf, "actor.type", t)
-	buf = appendStringField(buf, "action", string(e.Action))
-	buf = appendStringField(buf, "resource_type", string(e.ResourceType))
-	buf = appendStringField(buf, "resource_id", e.ResourceID)
-	buf = appendStringField(buf, "request_id", e.RequestID)
-	buf = appendBytesField(buf, "before", []byte(e.Before))
-	buf = appendBytesField(buf, "after", []byte(e.After))
-	buf = appendBytesField(buf, "prev_hash", prevHash)
-	return buf
-}
-
-// canonicalPayloadForVersion dispatches to the canonical-payload
-// encoder for the requested canonical_version. Used by the verify
-// path (walkChain) so each row's stored Hash is re-checked under the
-// encoding that produced it.
-//
-//   - version=2 → canonicalPayloadLegacyV2 (v1.0 pipe-separated shape).
-//   - version=3 → canonicalPayloadV3 (v1.1+ length-prefixed shape).
-//   - version=1 → error. v0.6-v0.9 rows should have been
-//     bootstrap-migrated to canonical_version=2 at v1.0 first boot;
-//     finding one in the wild means either the v1.0 bootstrap migration
-//     didn't run on this DB or someone hand-edited the column. Fail
-//     loud rather than silently walking under the wrong shape.
-//   - other values → error so a row with a future / unknown
-//     canonical_version fails fast.
+// canonicalPayloadForVersion returns the canonical payload for a row
+// stored at the given canonical_version. CanonicalVersion4 is the only
+// version there is; any other value is an error, which the verify
+// paths report as tamper at that row.
 func canonicalPayloadForVersion(e Event, prevHash []byte, version int) ([]byte, error) {
-	switch version {
-	case CanonicalVersion1:
-		return nil, fmt.Errorf("audit: canonical_version=1 was never expected to survive v1.0 bootstrap migration; refusing to walk")
-	case CanonicalVersion2:
-		return canonicalPayloadLegacyV2(e, prevHash), nil
-	case CanonicalVersion3:
-		return canonicalPayloadV3(e, prevHash), nil
-	case CanonicalVersion4:
-		return canonicalPayloadV4(e, prevHash), nil
-	default:
+	if version != CanonicalVersion4 {
 		return nil, fmt.Errorf("audit: unknown canonical_version=%d", version)
 	}
-}
-
-// canonicalPayload is the version-dispatched helper used by Log + the
-// verify path. Kept as a thin shim around canonicalPayloadForVersion
-// so callers that want to compute the payload for a specific event
-// (typically in tests) read one obvious function.
-//
-// Errors are intentionally swallowed at this layer — the only error
-// canonicalPayloadForVersion returns is for unknown canonical_version,
-// and callers of this shim are always passing CanonicalVersion3 or
-// CanonicalVersion2 explicitly via e.CanonicalVersion. Tests that want
-// to assert the error path use canonicalPayloadForVersion directly.
-func canonicalPayload(e Event) []byte {
-	v := e.CanonicalVersion
-	if v == 0 {
-		v = CanonicalVersion3
-	}
-	payload, err := canonicalPayloadForVersion(e, e.PrevHash, v)
-	if err != nil {
-		// Defensive: if a test ever calls canonicalPayload with a v1
-		// or unknown-version event, return empty bytes rather than
-		// panic. The verify path uses canonicalPayloadForVersion
-		// directly so the error gets surfaced as Tamper there.
-		return nil
-	}
-	return payload
+	return canonicalPayloadV4(e, prevHash), nil
 }
 
 func appendStringField(dst []byte, name, value string) []byte {
@@ -655,11 +524,9 @@ func appendLP(dst, value []byte) []byte {
 	return dst
 }
 
-// hashChainLink returns sha256(prevHash || payload) — the one
-// arithmetic step every canonical-version encoding shares once its
-// payload bytes are in hand. computeHash, the exported ComputeHash and
-// walkChain's own re-hash all call this so the recipe can only be
-// changed in one place.
+// hashChainLink returns sha256(prevHash || payload). Log, ComputeHash
+// and both verify walks call this, so the recipe can only be changed in
+// one place.
 func hashChainLink(prevHash, payload []byte) []byte {
 	h := sha256.New()
 	h.Write(prevHash)
@@ -668,10 +535,8 @@ func hashChainLink(prevHash, payload []byte) []byte {
 }
 
 // validateRequiredFields checks the three fields every persisted Event
-// needs regardless of canonical version or write path. Shared by
-// Logger.Log and the exported ComputeHash so both enforce exactly the
-// same requirement under exactly the same message — a future
-// required-field change is then one edit, not two that can drift.
+// needs. Shared by Logger.Log and the exported ComputeHash so both
+// enforce the same requirement under the same message.
 func validateRequiredFields(e Event) error {
 	if e.ID == "" {
 		return errors.New("audit: event id is required")
@@ -683,32 +548,6 @@ func validateRequiredFields(e Event) error {
 		return errors.New("audit: event action is required")
 	}
 	return nil
-}
-
-// computeHash returns sha256(prevHash || canonicalPayloadForVersion(e, prevHash, version)).
-// Callers populate e.PrevHash before calling and use the returned
-// value as e.Hash. version selects the canonical-payload encoder so
-// v1.0 (CanonicalVersion2) chain segments and v1.1+ (CanonicalVersion3)
-// segments both round-trip cleanly under their stored hashes.
-//
-// version=0 defaults to CanonicalVersion3 — that's what Logger.Log
-// uses for every new emission. Tests / fixture builders that want a
-// v2-shape hash pass version=CanonicalVersion2 explicitly.
-//
-// Returns nil on encoder error (canonical_version=1 or unknown).
-// Callers in the write path treat this as a programmer error; callers
-// in the verify path (walkChain) surface it as Tamper via the per-row
-// canonicalPayloadForVersion call site directly, so this path is only
-// hit when computeHash is invoked outside walkChain (Logger.Log).
-func computeHash(prevHash []byte, e Event, version int) []byte {
-	if version == 0 {
-		version = CanonicalVersion3
-	}
-	payload, err := canonicalPayloadForVersion(e, prevHash, version)
-	if err != nil {
-		return nil
-	}
-	return hashChainLink(prevHash, payload)
 }
 
 // ComputeHash computes the tamper-compatible hash for a new audit event,
@@ -724,17 +563,13 @@ func computeHash(prevHash []byte, e Event, version int) []byte {
 // reachable from outside this package (suryakencana007/resi#4,
 // suryakencana007/tamper#35).
 //
-// e.CanonicalVersion selects the payload encoding and must already be
-// set to CanonicalVersion3 or CanonicalVersion4 — any other value,
-// including the zero value, is an error. Unlike Logger.Log, ComputeHash
-// does NOT default a zero CanonicalVersion to CanonicalVersion3: that
-// defaulting depends on a specific SQLiteLogger's own Tenancy option,
-// which this function has no way to know, so callers set it explicitly.
-// CanonicalVersion1 and CanonicalVersion2 are legacy shapes this
-// function refuses to produce for a NEW event (the verify path still
-// reads existing rows written under them).
+// e.CanonicalVersion must already be CanonicalVersion4 — any other
+// value, including the zero value, is an error. Unlike Logger.Log,
+// ComputeHash does not default a zero version: the caller is building
+// the row it will persist, and the version it persists must be the one
+// that was hashed.
 //
-// A CanonicalVersion4 event must already carry a fresh RowSalt (see
+// The event must already carry a fresh RowSalt (see
 // NewRowSalt) and Commitments derived from it (see ComputeCommitments)
 // — ComputeHash checks e.Commitments == ComputeCommitments(e.RowSalt, e)
 // and rejects the call otherwise, rather than silently hashing a
@@ -767,29 +602,17 @@ func computeHash(prevHash []byte, e Event, version int) []byte {
 // At needs its own Logger to enforce monotonicity before this is
 // called.
 //
-// A CanonicalVersion4 CHAIN NEEDS AN ANCHOR BEFORE ITS FIRST ROW.
-// SQLiteLogger's equivalent is BootstrapChainV4, gated on
-// SQLiteLoggerOptions.Tenancy (issue #25: an explicit v4 row written
-// before that anchor exists verifies fine in isolation today and reads
-// as forged on the next chain walk, because Verify determines ONE
-// canonical_version for the whole segment from its newest chain-restart
-// anchor and applies it to every row, overriding each row's own stored
-// column — see walkChain in audit_sqlite.go). A from-scratch store
-// needs the same two-part invariant: an anchor establishing where the
-// v4 segment starts, and a verify pass that honours it the same way,
-// before this is called for a real v4 event.
-//
 // RUN VerifyCommitments ALONGSIDE WHATEVER VERIFIES THE CHAIN. The
 // chain hash covers the commitments, not the PII plaintext beside them
 // — that is what makes redaction possible at all (see the package
 // comment above ComputeCommitments) — so a verify pass that walks the
-// chain but never calls VerifyCommitments has strictly less
-// tamper-evidence on PII than a v3-only deployment had.
+// chain but never calls VerifyCommitments does not notice an edit to
+// the stored PII.
 //
 // ACTOR.TYPE DEFAULTING IS YOURS TO REPLICATE IF YOU WANT IT.
 // SQLiteLogger.Log defaults a blank e.Actor.Type to ActorTypeUser
-// before persisting; canonicalPayloadV3/V4 independently re-default it
-// when hashing either way, so this does not change the hash ComputeHash
+// before persisting; canonicalPayloadV4 independently re-defaults it
+// when hashing, so this does not change the hash ComputeHash
 // returns. It does mean a bring-your-own-store Logger that persists e
 // verbatim after calling ComputeHash stores an empty actor_type where
 // SQLiteLogger would have stored "user" — a storage-level, not a
@@ -811,33 +634,21 @@ func ComputeHash(e Event, prevHash []byte) ([]byte, error) {
 	if len(prevHash) != HashSize {
 		return nil, fmt.Errorf("audit: prevHash must be exactly %d bytes (HashSize), got %d", HashSize, len(prevHash))
 	}
-	if e.CanonicalVersion != CanonicalVersion3 && e.CanonicalVersion != CanonicalVersion4 {
-		return nil, fmt.Errorf("audit: ComputeHash requires CanonicalVersion3 or CanonicalVersion4 for a new event, got %d", e.CanonicalVersion)
+	if e.CanonicalVersion != CanonicalVersion4 {
+		return nil, fmt.Errorf("audit: ComputeHash requires CanonicalVersion4 for a new event, got %d", e.CanonicalVersion)
 	}
-	if e.CanonicalVersion == CanonicalVersion4 {
-		if len(e.RowSalt) != RowSaltSize || IsRedacted(e.RowSalt) {
-			return nil, fmt.Errorf("audit: ComputeHash requires a fresh %d-byte RowSalt for a new CanonicalVersion4 event — call NewRowSalt first", RowSaltSize)
-		}
-		want := ComputeCommitments(e.RowSalt, e)
-		if !bytesEqual(e.Commitments.ActorEmail, want.ActorEmail) ||
-			!bytesEqual(e.Commitments.ActorName, want.ActorName) ||
-			!bytesEqual(e.Commitments.ActorIP, want.ActorIP) ||
-			!bytesEqual(e.Commitments.Before, want.Before) ||
-			!bytesEqual(e.Commitments.After, want.After) {
-			return nil, errors.New("audit: ComputeHash: event Commitments do not match ComputeCommitments(e.RowSalt, e) — compute and set Commitments before calling ComputeHash")
-		}
+	if len(e.RowSalt) != RowSaltSize || IsRedacted(e.RowSalt) {
+		return nil, fmt.Errorf("audit: ComputeHash requires a fresh %d-byte RowSalt for a new event — call NewRowSalt first", RowSaltSize)
 	}
-	// canonicalPayloadForVersion cannot error here: the version check
-	// above already narrows e.CanonicalVersion to {CanonicalVersion3,
-	// CanonicalVersion4}, and both of those switch cases return a nil
-	// error unconditionally today. Checked anyway — this call is the
-	// only thing standing between a future third canonical version and
-	// a silently wrong hash, and the check costs nothing.
-	payload, err := canonicalPayloadForVersion(e, prevHash, e.CanonicalVersion)
-	if err != nil {
-		return nil, err
+	want := ComputeCommitments(e.RowSalt, e)
+	if !bytesEqual(e.Commitments.ActorEmail, want.ActorEmail) ||
+		!bytesEqual(e.Commitments.ActorName, want.ActorName) ||
+		!bytesEqual(e.Commitments.ActorIP, want.ActorIP) ||
+		!bytesEqual(e.Commitments.Before, want.Before) ||
+		!bytesEqual(e.Commitments.After, want.After) {
+		return nil, errors.New("audit: ComputeHash: event Commitments do not match ComputeCommitments(e.RowSalt, e) — compute and set Commitments before calling ComputeHash")
 	}
-	return hashChainLink(prevHash, payload), nil
+	return hashChainLink(prevHash, canonicalPayloadV4(e, prevHash)), nil
 }
 
 // HashHex is a convenience for diagnostic logging — the bytes are

@@ -1,37 +1,35 @@
 package audit
 
-// canonical_version=4 — the tenant-bearing, redactable canonical payload.
+// canonical_version=4 — the tenant-bearing, redactable canonical payload,
+// and the only one this package has.
 //
-// Two changes from v3, and they are independent:
+// Two properties define it, and they are independent:
 //
-//  1. The TENANT ENTERS THE HASH. v4 adds `tenant_id` (the row's scope)
-//     and `actor.tenant_id` (the actor's home tenant). Deliberately NOT
+//  1. The TENANT IS IN THE HASH: `tenant_id` (the row's scope) and
+//     `actor.tenant_id` (the actor's home tenant). Deliberately NOT
 //     following the cluster_id precedent, which is documented as "purely
 //     a query-time filter, not part of integrity" — cluster_id is a
 //     visibility filter inside one trust domain, whereas a tenant IS the
 //     trust boundary. An unhashed tenant column can be re-attributed
 //     from A to B without breaking anything, and re-attribution is the
 //     specific attack a pooled audit log has to be evidence against.
-//     That is the whole justification for v4 existing.
 //
 //  2. PII FIELDS HASH AS STORED COMMITMENTS rather than as plaintext.
 //     See redaction.go. This is what lets a row survive an erasure
-//     request without breaking the chain, and a v4 that hashed
-//     plaintext PII would be a version that cannot answer one.
+//     request without breaking the chain.
 
 // canonicalPayloadV4 encodes an event under the v4 shape.
 //
-// FIELD ORDER — v3's sequence, unchanged, with the two tenant fields
-// inserted after request_id:
+// FIELD ORDER, fixed:
 //
 //	id, at, actor.user_id, actor.email*, actor.name*, actor.ip*,
 //	actor.type, action, resource_type, resource_id, request_id,
 //	tenant_id, actor.tenant_id, before*, after*, prev_hash
 //
 // Starred fields carry the stored 32-byte commitment, not the value.
-// Everything else is byte-identical in shape to v3, using the same
-// length-prefixed appenders, so the encoding difference between v3 and
-// v4 is exactly the two new fields plus the five substitutions.
+// Every field is length-prefixed (BigEndian u32 name length, name,
+// u32 value length, value), so no value can be mistaken for a field
+// boundary. `at` is the Unix-nanosecond time as 8 BigEndian bytes.
 //
 // The commitments are read from e.Commitments and NEVER derived from
 // the plaintext here. That is the property redaction rests on: null the
@@ -57,8 +55,8 @@ func canonicalPayloadV4(e Event, prevHash []byte) []byte {
 	buf = appendStringField(buf, "resource_type", string(e.ResourceType))
 	buf = appendStringField(buf, "resource_id", e.ResourceID)
 	buf = appendStringField(buf, "request_id", e.RequestID)
-	// The two new fields. Order fixed here forever: changing it is a
-	// v5, not an edit.
+	// The field order is fixed forever: changing it is a v5, not an
+	// edit.
 	buf = appendStringField(buf, "tenant_id", e.TenantID)
 	buf = appendStringField(buf, "actor.tenant_id", e.Actor.TenantID)
 	buf = appendBytesField(buf, "before", e.Commitments.Before)

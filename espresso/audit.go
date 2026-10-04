@@ -70,7 +70,8 @@ func (a *Auditor) Mutation(action audit.Action, rt audit.ResourceType, idFrom st
 // -> RequireTenant -> For, or PinTenant -> For on a public route): the
 // event is scoped to the tenant that gate pinned, and that scope is
 // what audit's per-tenant export filters on. Mounted outside the gate
-// it still emits, with no scope.
+// it still emits, with no scope — except behind RequireServiceAccount,
+// where the principal's tenant is the scope. See eventScope.
 //
 // Audit emission is best-effort: a Log error is reported via
 // log.Printf but never causes the HTTP response to fail — the
@@ -114,24 +115,7 @@ func (a *Auditor) For(mc MutationContext) func(http.Handler) http.Handler {
 				}
 			}
 
-			// The row's SCOPE is the ROUTED tenant — the one RequireTenant
-			// or PinTenant pinned — and never the token's `tid`. The two
-			// are different facts (audit.Event.TenantID vs
-			// audit.Actor.TenantID): an actor homed in tenant A acting on
-			// a route in tenant B belongs in B's export, and a scope taken
-			// from the actor would file it under A instead.
-			//
-			// ctx is the context this middleware was ENTERED with, so only
-			// a gate mounted outside it is visible here. An Auditor
-			// mounted outside RequireTenant (or with no tenant gate at
-			// all) finds nothing pinned and records no scope, exactly as
-			// before tenancy; there is deliberately no fallback to the
-			// actor's tenant. tenant.Single stringifies to "", so the
-			// single-tenant row is unchanged too.
-			tenantID := ""
-			if routed, ok := TenantFromContext(ctx); ok {
-				tenantID = routed.String()
-			}
+			tenantID := eventScope(ctx, actor)
 
 			event := audit.Event{
 				ID:           uuid.NewString(),
@@ -224,4 +208,33 @@ func (a *Auditor) captureActor(ctx context.Context, r *http.Request) audit.Actor
 		}
 	}
 	return audit.Actor{Type: audit.ActorTypeUser, UserID: userID, Email: email, IP: ip, TenantID: ctxActor.TenantID}
+}
+
+// eventScope returns the tenant an audit row belongs to — its
+// audit.Event.TenantID, the field audit's per-tenant export filters on.
+//
+// The scope is the ROUTED tenant: the one RequireTenant or PinTenant
+// pinned in ctx. It is a different fact from the actor's home tenant
+// (audit.Actor.TenantID). A user homed in tenant A acting on a route in
+// tenant B belongs in B's log, and a scope read off the user's token
+// would let the token decide whose log its own actions land in. So for
+// a USER actor there is no fallback: nothing pinned means no scope.
+//
+// A SERVICE ACCOUNT is the one actor whose tenant is also its scope. Its
+// tenant comes from the validated credential, a service account acts in
+// that tenant and no other, and its routes carry no tenant gate to pin
+// one. Leaving such a row unscoped would drop it from its own tenant's
+// export. A pinned tenant still wins when there is one.
+//
+// ctx is the context the caller was entered with, so only a gate mounted
+// outside it is visible here. tenant.Single stringifies to "", so a
+// single-tenant row carries no scope either way.
+func eventScope(ctx context.Context, actor audit.Actor) string {
+	if routed, ok := TenantFromContext(ctx); ok {
+		return routed.String()
+	}
+	if actor.Type == audit.ActorTypeServiceAccount {
+		return actor.TenantID
+	}
+	return ""
 }

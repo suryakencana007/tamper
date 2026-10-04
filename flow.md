@@ -83,16 +83,22 @@ cross-tenant leak test. Every `Store` implementation must pass it.
 
 | Function / type | Purpose |
 |---|---|
-| `Authorizer.Check(subject, action, resource)` | Answers one authorization question. |
+| `Authorizer.Check(tenant, subject, action, resource)` | Answers one authorization question. `tenant` is the scope: whose resources. `subject` carries its home tenant. |
 | `CheckBulk` | Answers many questions in one call. |
-| `ListResources(subject, action, type)` | "Which resources may this subject act on?" `unbounded=true` means all of them. |
-| `ListSubjects(action, resource)` | "Who may do this?" Used for access reviews. |
+| `ListResources(tenant, subject, action, type)` | "Which resources may this subject act on?" `unbounded=true` means all of them. |
+| `ListSubjects(tenant, action, resource)` | "Who may do this?" Used for access reviews. A guest is listed with the tenant they are from. |
 | `NewRBAC(BindingStore, Hierarchy, Policy)` | The role-ladder engine. A policy is an OR of `Requirement{Type, Min}`. When `Type` differs from the resource type, it is a global alternative. |
 | `NewPermissionSet(PermissionStore)` | The permission-key engine. `Superuser` is an explicit flag, not a `*` key. |
 | `NewRBACPermissionStore` | A converter that makes `PermissionSet` decide exactly like `RBAC`. |
 
 All indirection (groups, custom roles, inheritance) is the store's job. The
 engine only compares.
+
+Every method of `Authorizer`, `BindingStore` and `PermissionStore` takes a
+`tenant.ID`. A binding lives in one tenant and never answers a question in
+another. `authz/tenanttest` has the leak suites
+(`RunBindingStoreLeakSuite`, `RunPermissionStoreLeakSuite`); every store must
+pass them.
 
 ### `oidc`, `saml`, `oauth2social` — federation
 
@@ -337,7 +343,8 @@ Authorization: Bearer <access>
   │                        ─> context: tenant.ID
   ├─ RequireEntitlement   EntitlementStore.ForTenant(tenant) ─> feature bought? : 403 FEATURE_NOT_ENABLED
   ├─ RequireFreshAuth     auth_time recent enough and acr accepted? : 401 STEP_UP_REQUIRED
-  ├─ RequireDecision      authz.Check(Subject{user}, action, Resource{type, id from path})
+  ├─ RequireDecision      authz.Check(routed tenant, Subject{token's home tenant, user},
+  │                                    action, Resource{type, id from path})
   │                        ├─ visibility check fails ─> 404 (a deny and a miss look the same)
   │                        └─ tier check fails       ─> 403
   ├─ application handler
@@ -365,19 +372,31 @@ existed.)
 ### 4.8 Authorization decision
 
 ```
-authz.Check(sub, act, res)
+authz.Check(scope, sub, act, res)
+  scope unset, or sub.Tenant unset ─> ErrTenantRequired (callers deny)
 
 RBAC
   Policy[act] = [Requirement{Type, Min}, …]          (OR)
   for each requirement:
-    Type == res.Type ─> BindingStore.BindingsFor(sub, res)               binding on the instance
-    Type != res.Type ─> BindingStore.BindingsFor(sub, Resource{Type,""}) global alternative
+    Type == res.Type ─> BindingStore.BindingsFor(scope, sub, res)               binding on the instance
+    Type != res.Type ─> BindingStore.BindingsFor(scope, sub, Resource{Type,""}) global alternative
+    drop bindings of another scope or another subject
     rank(highest role) >= rank(Min) ─> ALLOW
   nothing satisfied, or unknown action ─> DENY
 
 PermissionSet
-  PermissionStore.PermissionsFor(sub, res) ─> {Keys, Superuser}
+  PermissionStore.PermissionsFor(scope, sub, res) ─> {Keys, Superuser}
   Superuser ─> ALLOW ; act ∈ Keys ─> ALLOW ; otherwise DENY
+```
+
+Two tenants are in every question. `scope` is whose resources these are.
+`sub.Tenant` is where the subject is stored. They are the same for a tenant's
+own user and different for a guest:
+
+```
+acme's user in acme          scope=acme  sub={acme, user, u-1}
+platform admin entered acme  scope=acme  sub={platform, user, a-9}   needs a binding in acme
+single-tenant deployment     scope=""    sub={"", user, u-1}         (tenant.Single)
 ```
 
 ### 4.9 SCIM (machine to machine)

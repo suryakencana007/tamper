@@ -89,6 +89,12 @@ passing: entering gives an access token only (no refresh session), and no
 token is ever valid for more than one tenant. `RequireTenant` refuses an
 entered token; a route takes guests only through `RequireTenantAllowEntered`.
 
+`PHASE8B-AUTHZ-TENANT-SKETCH.md` governs tenants in `authz`: every port takes
+a `tenant.ID` (the scope), and `Subject` carries its home tenant. Decided and
+not to be loosened: no binding spans tenants, so a guest needs a binding in
+the tenant entered. Every `BindingStore` and `PermissionStore` must pass
+`authz/tenanttest`.
+
 ### The M5 decision, settled
 
 **One chain**, tenant in the canonical row at `canonical_version=4`, with

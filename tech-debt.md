@@ -38,7 +38,8 @@ TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, only
-TD-27 is still open: Barista must move to the v4-only audit API.
+TD-27 is still open: Barista must move to the v4-only audit API (and, since
+#56, to the tenant-scoped `authz` API).
 
 Every fix had a code review, and the reviews changed the fixes:
 
@@ -60,7 +61,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 |---|---|---|---|---|
 | TD-01 | A user can belong to only one tenant | fixed by #55 | — | — |
 | TD-02 | A token is locked to one tenant; no "enter tenant" flow | fixed by #55 | — | — |
-| TD-03 | `authz` does not know about tenants | gap | P0 | Tamper |
+| TD-03 | `authz` does not know about tenants | fixed by #56 | — | — |
 | TD-04 | No tenant hierarchy | gap | P1 | Tamper + application |
 | TD-05 | No tenant lifecycle | gap | P1 | Tamper |
 | TD-06 | Tenant suspension is not enforced on authenticated requests | gap | P1 | Tamper |
@@ -84,7 +85,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-24 | A v3 row in a v4 deployment is not flagged | resolved by #46 | — | — |
 | TD-25 | `VerifyLegacy` reports tamper on a mixed-version chain | resolved by #46 | — | — |
 | TD-26 | Generated SQL queries that nothing calls | fixed by #54 | — | — |
-| TD-27 | Barista must move to the v4-only audit API | gap | P1 | Barista |
+| TD-27 | Barista must move to the v4-only audit API and the tenant-scoped `authz` API | gap | P1 | Barista |
 
 P0 = the feature cannot be built safely without this. P1 = the application can
 work around it, but mistakes are easy. P2 = convenience and completeness.
@@ -212,10 +213,10 @@ Known limits, also in the sketch:
 - The home session is not checked for liveness: a home access token that has
   not expired can still enter after a logout.
 - Entering is not throttled, and a refused entry is not recorded.
-- On a route that accepts guests, what the guest may do is still the
-  application's `authz` decision. The subject is the bare user id (TD-03).
+- On a route that accepts guests, what the guest may do was still the
+  application's problem when #55 merged. #56 (TD-03) closes it.
 
-### TD-03 — `authz` does not know about tenants
+### TD-03 — `authz` does not know about tenants *(fixed by #56)*
 
 **Evidence.** `authz.Subject` and `authz.Resource` are only `{Type, ID}`
 (`authz/authz.go:26`, `:36`). `BindingStore` and `PermissionStore` take no
@@ -245,6 +246,36 @@ on the application's discipline.
 2. Keep the ports as they are, but publish `authz/tenanttest` with a leak suite
    for the "tenant as a resource type" convention, and document that convention
    as a contract.
+
+**Fix: #56.** Option 1 was chosen by the repo owner, with one more decision:
+a guest needs a binding in the tenant they entered. Design:
+`PHASE8B-AUTHZ-TENANT-SKETCH.md`.
+
+- Every `Authorizer`, `BindingStore` and `PermissionStore` method takes a
+  `tenant.ID` after `ctx`: the **scope**, the tenant whose resources are
+  being acted on. A store that ignores tenants does not compile.
+- `Subject` has a `Tenant` field, the subject's **home tenant**. The same id
+  in two tenants is two subjects.
+- `Binding` has a `Tenant` field, the scope it lives in. The RBAC engine
+  drops a binding of another scope, or of another tenant's subject, even when
+  the store returns it.
+- An unset scope, or a subject with no home tenant, is `ErrTenantRequired`.
+- No binding spans tenants. A platform admin who entered `acme` is the
+  subject `{platform, user, id}` in scope `acme`, and gets only what `acme`
+  granted to that subject. Roles held at home are never checked.
+- `espresso.RequireDecision` takes the scope from the tenant gate and the
+  subject's tenant from the token.
+- `authz/tenanttest` has a leak suite for each store port, and tests that
+  prove the suites fail on stores that leak.
+
+Left open:
+
+- There is no cross-tenant role. An admin who works in ten tenants needs a
+  binding in each. This follows from the decision above.
+- The `PermissionSet` engine cannot filter by tenant itself, because a
+  `PermissionSetResult` carries no tenant. Only the leak suite guards its
+  store.
+- Barista must move to this API (TD-27).
 
 ## P1
 
@@ -770,7 +801,7 @@ Left as it is:
 - `NewSQLiteLogger` takes no context, so the check cannot be cancelled. With
   the index it has nothing to wait for on a healthy DB.
 
-### TD-27 — Barista must move to the v4-only audit API
+### TD-27 — Barista must move to the v4-only audit API and the tenant-scoped `authz` API
 
 **Evidence.** #46 removes API that Barista uses in its audit CLI and its boot
 path: `VerifyLegacy`, `MigrateLegacyV2Hashes`, `RehashChainInPlace`,
@@ -786,6 +817,14 @@ that nothing is in production. It was not done or tested where #46 was written.
 **Proposal.** In Barista: drop the legacy boot bootstraps and the `--legacy`
 and migrate commands, keep the boot call to `VerifyChainPostMigration`, and
 start a fresh audit DB.
+
+**Added by #56 (TD-03).** The `authz` ports now take a `tenant.ID`, and
+`Subject` and `Binding` have a `Tenant` field. Barista's binding store and
+permission store do not compile against #56 until they take the new argument.
+Barista is single-tenant, so the change is mechanical: pass `tenant.Single`
+as the scope, set `Tenant: tenant.Single` on every subject and binding, and
+ignore the argument in the queries. It was not done or tested where #56 was
+written.
 
 ## What is ready to use
 
@@ -808,9 +847,9 @@ Since #55 an application can build a console on Tamper's own API: a special
 `identity.MembershipStore`, and `Core.EnterTenant` for the token. See
 `PHASE8-PLATFORM-ADMIN-SKETCH.md` and `examples/multitenant`.
 
-What the admin may do inside the tenant is not covered yet. That is TD-03,
-and until it is done the application writes that rule in its own `authz`
-policy.
+What the admin may do inside the tenant is decided by `authz` since #56: the
+admin needs a binding in that tenant, granted to the subject
+`{home tenant, type, id}`. See `PHASE8B-AUTHZ-TENANT-SKETCH.md`.
 
 Suggested slice order if this work moves into Tamper:
 
@@ -824,8 +863,9 @@ Suggested slice order if this work moves into Tamper:
 2. **TD-19 and TD-22** — small. TD-19 closes the cross-tenant refresh path
    that the five fixes leave open, and TD-22 makes the example show the gate
    that pooled routes need.
-3. **TD-01 + TD-02** — the membership port and `EnterTenant`. Open as #55.
-4. **TD-03** — the tenant contract for `authz`, with its leak suite.
+3. **TD-01 + TD-02** — the membership port and `EnterTenant`. Merged (#55).
+4. **TD-03** — the tenant contract for `authz`, with its leak suite. Open as
+   #56.
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is

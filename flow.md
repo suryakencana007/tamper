@@ -38,6 +38,7 @@ not a separate service. Three properties shape every flow:
 |---|---|
 | `NewJWTService`, `WithSigner`, `WithVerifiers` | The JWT service. HS256 is built in. Other signers plug in through the `Signer` interface, with `kid` rotation. |
 | `IssueAccess(userID, tenant, authTime, acr)` | Creates an access token with the claims `sub`, `tid`, `auth_time`, `acr`, `purpose`. |
+| `IssueAccessEntered(userID, tenant, homeTenant, authTime, acr, ttl)` | Creates an *entered* token: `tid` is the tenant entered, `htid` is the user's home tenant. It checks no right; `Core.EnterTenant` is the entry point. |
 | `VerifyAccess(token, tenant)` | Verifies the token and pins the tenant: `tid` must match exactly. |
 | `ParseAccess(token)` | Verifies the token without the tenant check. `RequireAuth` uses it; the tenant check comes later in `RequireTenant`. |
 | `IssueTOTPPending` / `VerifyTOTPPending` | A 5-minute token used between "password is correct" and "TOTP is correct". |
@@ -71,8 +72,10 @@ not a separate service. Three properties shape every flow:
 | `StartTOTPEnrollment`, `CompleteTOTPEnrollment`, `EnrollTOTP`, `VerifyTOTP`, `VerifyRecoveryCode`, `DisableTOTP`, `ClearTOTP` | TOTP lifecycle. |
 | `ResolveByIdentity`, `ProvisionUserWithIdentity`, `Link`, `Unlink`, `ListIdentities` | Multi-IdP account linking and JIT provisioning. |
 | `Invite`, `AcceptInvitation` | Onboarding without SSO, through a single-use token. |
+| `EnterTenant(user, target, authTime, acr)`, `EnterableTenants(user)` | A user of one tenant enters another one they are a member of. Access token only, no refresh session. |
 
-Ports: `Store` (required), `InvitationStore` (optional). `MemStore` is the
+Ports: `Store` (required), `InvitationStore` and `MembershipStore`
+(optional). `MemStore` is the
 reference implementation. `identity/tenanttest.RunLeakSuite` is the
 cross-tenant leak test. Every `Store` implementation must pass it.
 
@@ -240,6 +243,26 @@ POST /refresh (cookie)
 ```
 
 Rotation never moves `auth_time` forward and never changes the tenant.
+
+### 4.4a Entering another tenant (platform admin)
+
+```
+POST /t/platform/auth/enter/acme        (application route, home token)
+  ├─ RequireAuth ─> RequireTenant(platform)
+  └─ Core.EnterTenant(user, acme, claims.auth_time, claims.acr)
+      ├─ Store.UserByID ─> missing ─────────────┐
+      ├─ single tenant on either side ──────────┤─> ErrNotFound (one error)
+      ├─ MembershipStore.IsMember ─> false ─────┘
+      │                           ─> error ─> error (never a yes)
+      ├─ inactive ─> ErrUserInactive
+      └─ IssueAccessEntered ─> access {sub, tid=acme, htid=platform}
+                               no refresh token, no session row
+```
+
+The entered token is accepted by `RequireTenant(acme)` and by no other
+tenant's routes. When it expires the client calls the route again, and the
+membership is checked again. In the audit log, a row written while entered has
+`Event.TenantID = acme` and `Actor.TenantID = platform`.
 
 ### 4.5 Federated login (OIDC / SAML / social)
 

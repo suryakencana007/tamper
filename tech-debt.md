@@ -58,8 +58,8 @@ gaps: something does not exist, so there is nothing to reproduce.
 
 | ID | Title | Kind | Priority | Change in |
 |---|---|---|---|---|
-| TD-01 | A user can belong to only one tenant | gap | P0 | Tamper + application |
-| TD-02 | A token is locked to one tenant; no "enter tenant" flow | gap | P0 | Tamper |
+| TD-01 | A user can belong to only one tenant | fixed by #55 | — | — |
+| TD-02 | A token is locked to one tenant; no "enter tenant" flow | fixed by #55 | — | — |
 | TD-03 | `authz` does not know about tenants | gap | P0 | Tamper |
 | TD-04 | No tenant hierarchy | gap | P1 | Tamper + application |
 | TD-05 | No tenant lifecycle | gap | P1 | Tamper |
@@ -91,7 +91,7 @@ work around it, but mistakes are easy. P2 = convenience and completeness.
 
 ## P0
 
-### TD-01 — A user can belong to only one tenant
+### TD-01 — A user can belong to only one tenant *(fixed by #55)*
 
 **Evidence.** `identity.User.TenantID` is a single string
 (`identity/identity.go:40`). `MIGRATION-v0.4.md:156` says it directly: a user
@@ -113,7 +113,18 @@ rights in your own table.
 `InvitationStore`. Standing rule 6 applies: ship a boot guard and a test that
 proves the guard fires.
 
-### TD-02 — A token is locked to one tenant; no "enter tenant" flow
+**Fix: #55.** Designed in `PHASE8-PLATFORM-ADMIN-SKETCH.md`, together with
+TD-02. `identity.MembershipStore` is the port, enabled with
+`WithMemberships`. A user still has one home tenant and one row; a membership
+is a right to act inside another tenant. "One row, one tenant" is kept, not
+reopened. `WithMemberships(nil)` panics, and a `Core` without the store
+returns `ErrNoMembershipStore`; both are tested.
+
+Not done: `tenanttest.RunLeakSuite` has no case for a `MembershipStore`. The
+port has two methods and the `Core` treats every answer but `true` as a deny,
+so the suite was left alone.
+
+### TD-02 — A token is locked to one tenant; no "enter tenant" flow *(fixed by #55)*
 
 **Evidence.** The `tid` claim holds one tenant (`crypto/jwt.go:296`).
 `VerifyAccess` requires an exact match (`crypto/jwt.go:438`). `RequireTenant`
@@ -165,6 +176,29 @@ It should:
   refresh session (or a session that records where the actor came from);
 - add an origin claim, for example `htid` (home tenant), so that `RequireAuth`
   can set `Actor.TenantID` correctly (see TD-07, TD-08).
+
+**Fix: #55.** `Core.EnterTenant(user, target, authTime, acr)` is the
+supported cross-tenant mint.
+
+- It asks `MembershipStore.IsMember` before it mints. A non-member, a missing
+  user, and the single tenant on either side get the same `ErrNotFound`.
+- The token has `tid` = the tenant entered and a new claim `htid` = the
+  user's home tenant. `RequireTenant` is unchanged and compares `tid`, so the
+  token works in the tenant entered and nowhere else, not even at home.
+- There is **no refresh session**. When the token expires the caller enters
+  again and the membership is checked again. `WithEnterTenantTTL` makes the
+  token shorter. This answers the "second problem" above by design.
+- `auth_time` and `acr` are copied from the caller's session, so entering
+  never renews a step-up.
+- The audit actor carries the home tenant. A row written while entered has
+  scope = the tenant entered and actor tenant = the home tenant.
+- `IssueTokensForUserInTenant` is unchanged: only the user's own tenant.
+
+`examples/multitenant` shows the flow over HTTP with a `platform` tenant.
+
+Known limits, also in the sketch: a removed membership, or a deactivated
+admin, keeps working until the entered token expires. What the admin may do
+inside the tenant is still the application's `authz` decision (TD-03).
 
 ### TD-03 — `authz` does not know about tenants
 
@@ -754,16 +788,14 @@ These are not debt, but they matter when you design the workarounds:
 
 ## Recommended order
 
-Without changing Tamper, an application can already run with three things: a
-special `platform` tenant, its own membership table, and a per-tenant token
-exchange after an `authz.Check`. This is enough for a console prototype, with
-two cautions:
+Since #55 an application can build a console on Tamper's own API: a special
+`platform` tenant for the admins, a membership table behind
+`identity.MembershipStore`, and `Core.EnterTenant` for the token. See
+`PHASE8-PLATFORM-ADMIN-SKETCH.md` and `examples/multitenant`.
 
-- Mint the exchanged token with `Provider.JWT.IssueAccess`, not with
-  `IssueTokensForUserInTenant`. The second one also stores a refresh session
-  that outlives a removed right (see TD-02).
-- TD-08 means cross-tenant actions are not recorded with the right scope
-  unless the application writes those events by hand.
+What the admin may do inside the tenant is not covered yet. That is TD-03,
+and until it is done the application writes that rule in its own `authz`
+policy.
 
 Suggested slice order if this work moves into Tamper:
 
@@ -777,15 +809,13 @@ Suggested slice order if this work moves into Tamper:
 2. **TD-19 and TD-22** — small. TD-19 closes the cross-tenant refresh path
    that the five fixes leave open, and TD-22 makes the example show the gate
    that pooled routes need.
-3. **TD-01 + TD-02** — the membership port and `EnterTenant`. They are one
-   design decision and must be designed together.
+3. **TD-01 + TD-02** — the membership port and `EnterTenant`. Open as #55.
 4. **TD-03** — the tenant contract for `authz`, with its leak suite.
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
    answered.
-8. **TD-17, TD-18, TD-20, TD-23** — merged (#49 to #52). **TD-26** — open as
-   #54.
+8. **TD-17, TD-18, TD-20, TD-23, TD-26** — merged (#49 to #52, #54).
 9. **TD-12, TD-13, TD-14** — the rest.
 
 ## Process limits
@@ -796,7 +826,9 @@ design freeze. Any item that touches `identity`, `crypto/jwt.go`, `oidc`,
 phase sketch) before any code. Two earlier decisions are affected. They must be
 reopened explicitly, not bypassed:
 
-- "one row, one tenant" (`MIGRATION-v0.4.md`), by TD-01;
+- "one row, one tenant" (`MIGRATION-v0.4.md`), by TD-01. Phase 8 (#55) did
+  not reopen it: the row stays in one tenant and a membership is added beside
+  it;
 - "nested tenants are deferred" (sketch §8 item 3), by TD-04.
 
 Standing rule 7 still applies: each item is a separate change.

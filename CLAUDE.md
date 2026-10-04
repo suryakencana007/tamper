@@ -80,6 +80,14 @@ this one compiles, passes, ships, and surfaces months later as "the new
 customer's admin has no permissions." Slice `7b-2` carries two mandatory
 mutation proofs because of it. Do not weaken them.
 
+### Phase 8 — platform admin (started 2026-10-05)
+
+`PHASE8-PLATFORM-ADMIN-SKETCH.md` governs "a user of one tenant acts inside
+another": `identity.MembershipStore`, `Core.EnterTenant`, the `htid` claim.
+Read it before touching them. Two things are decided and not to be loosened in
+passing: entering gives an access token only (no refresh session), and no
+token is ever valid for more than one tenant.
+
 ### The M5 decision, settled
 
 **One chain**, tenant in the canonical row at `canonical_version=4`, with

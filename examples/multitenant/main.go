@@ -20,6 +20,9 @@
 //   - globex's first user receiving the bootstrap signal even though acme
 //     is already full of users — blocker B2, the one that fails silently.
 //   - An access token minted for acme being refused on a globex route.
+//   - A PLATFORM ADMIN: a user stored in a third tenant, platform, who
+//     holds a membership in acme and enters it (enter.go). The token they
+//     get works on acme's routes and nowhere else.
 //
 // It runs with no external services: an in-memory store and nothing else.
 //
@@ -48,12 +51,16 @@ import (
 )
 
 // The two tenants. Opaque, app-defined strings — tamper never parses one.
+//
+// platform is a tenant like the others. What makes it the operator's is
+// only that its users are the ones given memberships.
 const (
-	tenantAcme   = "acme"
-	tenantGlobex = "globex"
+	tenantAcme     = "acme"
+	tenantGlobex   = "globex"
+	tenantPlatform = "platform"
 )
 
-var tenants = []string{tenantAcme, tenantGlobex}
+var tenants = []string{tenantAcme, tenantGlobex, tenantPlatform}
 
 func main() {
 	if err := run(); err != nil {
@@ -79,7 +86,7 @@ func run() error {
 
 	log.Println("multitenant: listening on :8080")
 	for _, t := range tenants {
-		log.Printf("  tenant %-7s POST /t/%s/auth/register  /login  /refresh  /logout   GET /t/%s/auth/me", t, t, t)
+		log.Printf("  tenant %-8s POST /t/%s/auth/register  /login  /refresh  /logout  /enter/{tenant}   GET /t/%s/auth/me  /t/%s/whoami", t, t, t, t)
 	}
 	return router.BrewContext(ctx,
 		espresso.WithAddr(":8080"),
@@ -103,8 +110,16 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 	provider, err := tamper.New(tamper.Config{
 		JWT: crypto.JWTConfig{Secret: jwtSecret, TTL: 15 * time.Minute, Issuer: "multitenant-example"},
 		Identity: &tamper.IdentityConfig{
-			Store:   store,
-			Options: []identity.Option{identity.WithRefreshTTL(30 * 24 * time.Hour)},
+			Store: store,
+			Options: []identity.Option{
+				identity.WithRefreshTTL(30 * 24 * time.Hour),
+				// Phase 8: the store also answers "may this user enter this
+				// tenant". Entered tokens are short: there is no refresh
+				// session behind one, so this is how long a membership that
+				// was taken away keeps working.
+				identity.WithMemberships(store),
+				identity.WithEnterTenantTTL(5 * time.Minute),
+			},
 		},
 	})
 	if err != nil {
@@ -143,6 +158,22 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 		r.Get(prefix+"/me", surfaces.RequireAuth(requireTenant(espresso.HandlerCtx(auth.Me))))
 		r.Post(prefix+"/refresh", readCookie(espresso.HandlerCtx(auth.Refresh)))
 		r.Post(prefix+"/logout", readCookie(espresso.HandlerCtx(auth.Logout)))
+
+		// Phase 8. whoami answers for ANY valid token of this tenant —
+		// its own users and platform admins who entered it. /me above is
+		// different: it is "my account in this tenant", and an entered
+		// admin has none.
+		r.Get("/t/"+tenantID+"/whoami", surfaces.RequireAuth(requireTenant(http.HandlerFunc(whoami))))
+		// One enter route per other tenant, mounted on the HOME tenant and
+		// gated like every other route of it: the caller proves who they
+		// are with their home session, then asks to go somewhere else.
+		for _, target := range tenants {
+			if target == tenantID {
+				continue
+			}
+			r.Post(prefix+"/enter/"+target,
+				surfaces.RequireAuth(requireTenant(enterTenant(provider.Identity, target))))
+		}
 	}
 
 	return r, provider, nil

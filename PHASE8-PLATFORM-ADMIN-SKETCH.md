@@ -109,7 +109,8 @@ func (c *Core) EnterableTenants(ctx context.Context, userID string) ([]tenant.ID
 
 1. No membership store → `ErrNoMembershipStore`. No JWT service →
    `ErrNoTokenService`. Both are wiring errors, said plainly.
-2. Unset target → `ErrTenantRequired`.
+2. Unset target → `ErrTenantRequired`. Non-positive `authTime` or empty
+   `acr` → `ErrInvalidInput`.
 3. Load the user. Missing → `ErrNotFound`.
 4. The user's home tenant is the single tenant, or the target is the single
    tenant → `ErrNotFound`. There is nothing to enter.
@@ -122,13 +123,23 @@ func (c *Core) EnterableTenants(ctx context.Context, userID string) ([]tenant.ID
    refresh token. No session row is written.
 
 `authTime` and `acr` come from the caller's current session, so step-up
-state carries over and is never raised by entering.
+state carries over and is never raised by entering. The `IssueTokensFor*`
+methods fall back to "now" and the default ACR when these are missing.
+`EnterTenant` does not: a fallback would give a fresh step-up to anyone who
+enters a tenant.
+
+`EnterTenant` sees a user id, not a token. It cannot know whether the caller
+presented a home token or an entered one. The membership is the user's either
+way, so this is not a rights problem, but an application should enter from the
+home session only. The route in `examples/multitenant` refuses a token that
+has `htid`.
 
 ### `espresso`
 
 `RequireAuth` stashes the audit actor with `Actor.TenantID` set to
 `claims.ActorTenantID()`: the home tenant for an entered token, `tid`
-otherwise. Nothing else in the transport changes. There is no built-in
+otherwise. The step-up denial row uses the same value. Nothing else in the
+transport changes. There is no built-in
 "enter" route: the handler is three lines in the application, and the route
 shape is the application's.
 
@@ -164,6 +175,21 @@ shape is the application's.
   test; an entered mint that writes a refresh session must fail a test.
 - `examples/multitenant` gains a `platform` tenant and shows the whole flow
   through HTTP: a platform admin with a membership enters `acme`; the token
-  works on an `acme` route and is refused on a `globex` route; an admin
-  without a membership is refused; an audit row written while entered has
-  scope `acme` and actor tenant `platform`.
+  works on an `acme` route and is refused on a `globex` route and on a
+  `platform` route; an admin without a membership is refused.
+- The audit proof is in `espresso/entered_test.go`, not in the example,
+  because the example has no audit log: a row written while entered has scope
+  `acme` and actor tenant `platform`, and is in `acme`'s export only.
+
+## 8. Known limits
+
+- **A removed membership keeps working until the token expires.** There is no
+  revocation list. Keep `WithEnterTenantTTL` short.
+- **Deactivating the admin** has the same window, for the same reason.
+- **`RevokeAllSessionsForTenant(acme)` does not touch entered tokens.** They
+  have no session row.
+- **`/me`-style routes** that load "my account in this tenant" do not answer
+  for an entered admin, who has no account there. That is correct, and an
+  application's console must not depend on them.
+- **SCIM and service accounts** are not part of this. They authenticate with
+  their own credentials.

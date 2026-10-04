@@ -398,18 +398,18 @@ func (l *SQLiteLogger) list(ctx context.Context, f Filter, where []string, args 
 		add("(at < ? OR (at = ? AND id < ?))", cursorAt, cursorAt, cursorID)
 	}
 
+	// gosec reads the concatenation below as possible injection. It is
+	// not: query is built only from eventColumns, the fixed condition
+	// strings passed to add, and "?" placeholders. Every caller-supplied
+	// value is in args (TestList_FilterValuesAreBound).
 	query := "SELECT " + eventColumns + " FROM events"
 	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+		query += " WHERE " + strings.Join(where, " AND ") //nolint:gosec // G202: fixed fragments and placeholders only; values are bound
 	}
 	query += " ORDER BY at DESC, id DESC LIMIT ?"
 	args = append(args, limit)
 
-	// gosec reads the concatenation above as possible injection. It is
-	// not: query is built only from eventColumns, the fixed condition
-	// strings passed to add, and "?" placeholders. Every caller-supplied
-	// value is in args (TestList_FilterValuesAreBound).
-	rows, err := l.store.DB.QueryContext(ctx, query, args...) //nolint:gosec // G202: fixed fragments and placeholders only; values are bound
+	rows, err := l.store.DB.QueryContext(ctx, query, args...) //nolint:gosec // G202: see above
 	if err != nil {
 		return Page{}, fmt.Errorf("audit: list: %w", err)
 	}

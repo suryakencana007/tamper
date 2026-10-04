@@ -302,6 +302,17 @@ func (a *AuthRoutes) VerifyTOTP(ctx context.Context, req *espressofw.JSON[TOTPVe
 	}
 	res, err := a.svc.IssueTokensForUser(ctx, userID)
 	if err != nil {
+		// The mint says "no such user" for a user that is gone AND for a
+		// user stored in another tenant; it is one error on purpose, so
+		// the two cannot be told apart. Answer it the way a dead pending
+		// token is answered above: there is no session to complete. The
+		// generic mapping below would render it as a 500, which reports
+		// a refusal as a server fault and lets anyone holding a pending
+		// token raise 5xx on another tenant's endpoint.
+		if errors.Is(err, identity.ErrNotFound) {
+			return espressofw.JSON[AuthRes]{},
+				espressofw.ErrUnauthorized("session expired").WithCode("UNAUTHENTICATED")
+		}
 		return espressofw.JSON[AuthRes]{}, mapAuthWireError(err, a.cfg.ValidationMessage)
 	}
 	a.cfg.OnAuthenticated(ctx, res.User.ID)

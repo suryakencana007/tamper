@@ -308,111 +308,106 @@ func latestHashFrom(ctx context.Context, q *sqlitestore.Queries) ([]byte, error)
 	return row, nil
 }
 
-// scopedEventColumns is the column list of ListScoped's hand-built
-// query, in the order its Scan reads them. It must name every column
-// fromRow maps: an event returned without its tenant, salt and
-// commitments cannot be verified or exported by the caller.
-const scopedEventColumns = "id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name, " +
+// eventColumns is the column list of the hand-built list query, in the
+// order its Scan reads them. It must name every column fromRow maps: an
+// event returned without its tenant, salt and commitments cannot be
+// verified or exported by the caller.
+const eventColumns = "id, at, actor_user_id, actor_email, actor_ip, actor_type, actor_name, " +
 	"action, resource_type, resource_id, cluster_id, request_id, " +
 	"before_json, after_json, prev_hash, hash, canonical_version, " +
 	"tenant_id, actor_tenant_id, row_salt, " +
 	"c_actor_email, c_actor_name, c_actor_ip, c_before, c_after"
 
-// ListScoped is the per-cluster-scoped variant of List (v1.1 task 04).
-// Returns events whose cluster_id is empty (non-cluster-scoped:
-// auth.*, retention prune, etc.) OR is in the caller's reachable
-// cluster set. Used by /api/audit for non-system-cluster-admin
-// callers — system-cluster-admin callers skip this method and hit
-// List instead, getting the unscoped view.
+// ListScoped is the per-cluster-scoped variant of List. It returns events
+// whose cluster_id is empty (not cluster-scoped: auth.*, retention prune,
+// and so on) OR is in the caller's reachable cluster set, and applies
+// the Filter on top exactly as List does.
 //
-// limit / cursor handling mirrors List's newest-first / cursor-paginate
-// shape. Empty cursor returns the newest page; non-empty cursor walks
-// older events.
-//
-// clusterIDs may be empty — in that case the query collapses to the
-// non-cluster-scoped subset (only rows with empty cluster_id). That's
-// the correct semantics for a caller with no ACL grants at all: they
-// see their own auth events but nothing scoped to clusters they don't
-// touch.
-//
-// sqlc/sqlite doesn't support `sqlc.slice` for parameterised IN
-// clauses, so the query is built here against the underlying *sql.DB.
-// The list of placeholders is generated from len(clusterIDs); the IDs
-// themselves are bound as separate parameters, so this is safe against
-// SQL injection.
+// clusterIDs may be empty. The query then returns only the rows with an
+// empty cluster_id, which is the right answer for a caller with no
+// cluster grants: their own auth events, and nothing scoped to a
+// cluster they cannot reach.
 func (l *SQLiteLogger) ListScoped(ctx context.Context, clusterIDs []string, f Filter) (Page, error) {
+	scope := "cluster_id = ''"
+	args := make([]any, 0, len(clusterIDs))
+	if len(clusterIDs) > 0 {
+		// One placeholder per id; the ids themselves are bound, so
+		// building the placeholder list by concatenation is safe.
+		placeholders := strings.Repeat("?,", len(clusterIDs))
+		scope = "(cluster_id = '' OR cluster_id IN (" + placeholders[:len(placeholders)-1] + "))"
+		for _, id := range clusterIDs {
+			args = append(args, id)
+		}
+	}
+	return l.list(ctx, f, []string{scope}, args)
+}
+
+// List returns a page of events matching the filter, newest first.
+func (l *SQLiteLogger) List(ctx context.Context, f Filter) (Page, error) {
+	return l.list(ctx, f, nil, nil)
+}
+
+// list builds and runs the one query behind List and ListScoped.
+//
+// Every Filter field that is set becomes one condition, and the
+// conditions are ANDed. where and args carry the conditions the caller
+// already has (ListScoped's cluster scope); the filter's are appended.
+//
+// The query is assembled here rather than generated because the set of
+// conditions varies per call. Only fixed column names and placeholders
+// are concatenated; every value is bound as a parameter.
+func (l *SQLiteLogger) list(ctx context.Context, f Filter, where []string, args []any) (Page, error) {
 	limit := int64(f.Limit)
 	if limit <= 0 {
 		limit = 50
 	}
 
-	// Degenerate path: caller has no reachable clusters. The IN(...)
-	// construction can't bind a zero-element slice in SQLite, so route
-	// to the non-cluster-scoped-only query directly.
-	if len(clusterIDs) == 0 {
-		var rows []sqlitestore.Event
-		var err error
-		if f.Cursor != "" {
-			cursorAt, cursorID, perr := parseCursor(f.Cursor)
-			if perr != nil {
-				return Page{}, fmt.Errorf("audit: parse cursor: %w", perr)
-			}
-			rows, err = l.store.Queries.ListEventsNonClusterScopedBefore(ctx, sqlitestore.ListEventsNonClusterScopedBeforeParams{
-				At:    cursorAt,
-				At_2:  cursorAt,
-				ID:    cursorID,
-				Limit: limit,
-			})
-		} else {
-			rows, err = l.store.Queries.ListEventsNonClusterScoped(ctx, limit)
-		}
-		if err != nil {
-			return Page{}, fmt.Errorf("audit: list scoped (no clusters): %w", err)
-		}
-		return pageFromRows(rows, limit), nil
+	add := func(cond string, vals ...any) {
+		where = append(where, cond)
+		args = append(args, vals...)
 	}
-
-	// Build the IN(?, ?, ...) clause from len(clusterIDs). The strings
-	// are bound as parameters, so concatenating the placeholder list is
-	// safe against injection. Capacity = 2*N+1 placeholders worst case
-	// (cursor variant); we always allocate the longer form.
-	args := make([]any, 0, len(clusterIDs)+4)
-	for _, id := range clusterIDs {
-		args = append(args, id)
+	if !f.Since.IsZero() {
+		add("at >= ?", f.Since.UTC())
 	}
-
-	placeholders := strings.Repeat("?,", len(clusterIDs))
-	placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
-
-	var query string
+	if !f.Until.IsZero() {
+		add("at < ?", f.Until.UTC())
+	}
+	if f.ActorUserID != "" {
+		add("actor_user_id = ?", f.ActorUserID)
+	}
+	if f.ActorEmail != "" {
+		add("actor_email = ?", f.ActorEmail)
+	}
+	if f.Action != "" {
+		add("action = ?", string(f.Action))
+	}
+	if f.ResourceType != "" {
+		add("resource_type = ?", string(f.ResourceType))
+	}
+	if f.ResourceID != "" {
+		add("resource_id = ?", f.ResourceID)
+	}
+	if f.RequestID != "" {
+		add("request_id = ?", f.RequestID)
+	}
 	if f.Cursor != "" {
 		cursorAt, cursorID, perr := parseCursor(f.Cursor)
 		if perr != nil {
 			return Page{}, fmt.Errorf("audit: parse cursor: %w", perr)
 		}
-		query = fmt.Sprintf(
-			"SELECT "+scopedEventColumns+" FROM events "+
-				"WHERE (cluster_id = '' OR cluster_id IN (%s)) "+
-				"AND (at < ? OR (at = ? AND id < ?)) "+
-				"ORDER BY at DESC, id DESC "+
-				"LIMIT ?",
-			placeholders,
-		)
-		args = append(args, cursorAt, cursorAt, cursorID, limit)
-	} else {
-		query = fmt.Sprintf(
-			"SELECT "+scopedEventColumns+" FROM events "+
-				"WHERE (cluster_id = '' OR cluster_id IN (%s)) "+
-				"ORDER BY at DESC, id DESC "+
-				"LIMIT ?",
-			placeholders,
-		)
-		args = append(args, limit)
+		add("(at < ? OR (at = ? AND id < ?))", cursorAt, cursorAt, cursorID)
 	}
+
+	query := "SELECT " + eventColumns + " FROM events"
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY at DESC, id DESC LIMIT ?"
+	args = append(args, limit)
 
 	rows, err := l.store.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return Page{}, fmt.Errorf("audit: list scoped: %w", err)
+		return Page{}, fmt.Errorf("audit: list: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -427,20 +422,19 @@ func (l *SQLiteLogger) ListScoped(ctx context.Context, clusterIDs []string, f Fi
 			&i.TenantID, &i.ActorTenantID, &i.RowSalt,
 			&i.CActorEmail, &i.CActorName, &i.CActorIp, &i.CBefore, &i.CAfter,
 		); err != nil {
-			return Page{}, fmt.Errorf("audit: scan scoped row: %w", err)
+			return Page{}, fmt.Errorf("audit: scan row: %w", err)
 		}
 		out = append(out, i)
 	}
 	if err := rows.Err(); err != nil {
-		return Page{}, fmt.Errorf("audit: iterate scoped rows: %w", err)
+		return Page{}, fmt.Errorf("audit: iterate rows: %w", err)
 	}
 	return pageFromRows(out, limit), nil
 }
 
-// pageFromRows projects sqlc rows onto Page, attaching NextCursor when
-// the page is full (i.e. the caller likely has more rows older than
-// the last visible one). Shared between ListScoped's two query
-// branches.
+// pageFromRows projects rows onto Page, attaching NextCursor when the
+// page is full (the caller likely has more rows older than the last
+// visible one).
 func pageFromRows(rows []sqlitestore.Event, limit int64) Page {
 	out := make([]Event, len(rows))
 	for i, r := range rows {
@@ -452,73 +446,6 @@ func pageFromRows(rows []sqlitestore.Event, limit int64) Page {
 		page.NextCursor = formatCursor(last.At, last.ID)
 	}
 	return page
-}
-
-// List dispatches to the appropriate sqlc query based on which filter
-// fields are populated. The dispatch order favours the most-narrow
-// index: request_id (unique-ish per request), resource_type+id,
-// actor, then plain newest-first.
-//
-// The filter dispatch is intentionally simple — adding combinatorial
-// AND-filtering would require a query builder. v0.6 stays with single-
-// dimension filters; the SPA's UI exposes one filter at a time.
-func (l *SQLiteLogger) List(ctx context.Context, f Filter) (Page, error) {
-	limit := int64(f.Limit)
-	if limit <= 0 {
-		limit = 50
-	}
-
-	var rows []sqlitestore.Event
-	var err error
-
-	switch {
-	case f.RequestID != "":
-		rows, err = l.store.Queries.ListEventsByRequest(ctx, sqlitestore.ListEventsByRequestParams{
-			RequestID: f.RequestID,
-			Limit:     limit,
-		})
-	case f.ResourceType != "" && f.ResourceID != "":
-		rows, err = l.store.Queries.ListEventsByResource(ctx, sqlitestore.ListEventsByResourceParams{
-			ResourceType: string(f.ResourceType),
-			ResourceID:   f.ResourceID,
-			Limit:        limit,
-		})
-	case f.ActorUserID != "":
-		rows, err = l.store.Queries.ListEventsByActor(ctx, sqlitestore.ListEventsByActorParams{
-			ActorUserID: f.ActorUserID,
-			Limit:       limit,
-		})
-	case f.Cursor != "":
-		cursorAt, cursorID, perr := parseCursor(f.Cursor)
-		if perr != nil {
-			return Page{}, fmt.Errorf("audit: parse cursor: %w", perr)
-		}
-		rows, err = l.store.Queries.ListEventsBefore(ctx, sqlitestore.ListEventsBeforeParams{
-			At:    cursorAt,
-			At_2:  cursorAt,
-			ID:    cursorID,
-			Limit: limit,
-		})
-	default:
-		rows, err = l.store.Queries.ListEventsAll(ctx, limit)
-	}
-	if err != nil {
-		return Page{}, fmt.Errorf("audit: list: %w", err)
-	}
-
-	out := make([]Event, len(rows))
-	for i, r := range rows {
-		out[i] = fromRow(r)
-	}
-
-	page := Page{Events: out}
-	// Only emit a NextCursor when the page is full — otherwise the
-	// caller has already seen the tail.
-	if int64(len(rows)) == limit && len(rows) > 0 {
-		last := rows[len(rows)-1]
-		page.NextCursor = formatCursor(last.At, last.ID)
-	}
-	return page, nil
 }
 
 // Verify walks every event in chain order and recomputes each hash.
@@ -681,7 +608,6 @@ func fromRow(r sqlitestore.Event) Event {
 }
 
 // parseCursor decodes the opaque "<rfc3339nano>|<id>" cursor format.
-// Used by ListEventsBefore for cursor-paginated reads.
 func parseCursor(s string) (time.Time, string, error) {
 	for i := len(s) - 1; i >= 0; i-- {
 		if s[i] == '|' {

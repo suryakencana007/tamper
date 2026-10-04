@@ -52,7 +52,14 @@ stop before writing code.
 ### Standing rules while Phase 7 is open
 
 1. `tenantID == ""` is byte-identical to pre-Phase-7 behavior. Same bytes,
-   headers, status codes, error envelopes, audit-row payloads.
+   headers, status codes, error envelopes.
+
+   **Exception, decided 2026-10-04: audit rows.** The audit log is
+   `canonical_version=4` only. A single-tenant deployment writes v4 rows with
+   an empty tenant, so its audit-row payloads and hashes are NOT the ones it
+   wrote before Phase 7, and an audit DB written by an earlier version cannot
+   be opened. Nothing was in production when this was decided. The rule still
+   holds for everything else on the `""` path. See sketch §8 item 1.
 2. Deny-by-default extends to tenancy. Absent, empty or mismatched tenant
    resolves to deny; no error return may be read as allow.
 3. Cross-tenant misses are **404, never 403** — a deny and a miss must be
@@ -79,6 +86,12 @@ mutation proofs because of it. Do not weaken them.
 commitment-based redaction shipped inside v4. Full reasoning in sketch §8
 item 1, including the two original premises that were checked against the code
 and found wrong.
+
+Since 2026-10-04 v4 is the **only** version. The v1–v3 encoders, the
+chain-restart anchors, `VerifyLegacy`, the in-place migration helpers and the
+`Tenancy` logger option are gone: every row is v4, for every deployment. Do not
+bring a second version or an anchor back to solve a problem; a chain that could
+hold two versions was the cause of TD-16, TD-24 and TD-25 in `tech-debt.md`.
 
 Its revisit condition — a DPA demanding physical per-tenant removal on a
 divergent cadence, with counsel refusing redaction as discharge — was answered

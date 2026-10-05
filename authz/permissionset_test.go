@@ -46,7 +46,7 @@ func TestPermissionSet_ExactKeyMembership(t *testing.T) {
 	st := NewMemPermissionStore()
 	alice := Subject{Tenant: tenant.Single, Type: "user", ID: "alice"}
 	c1 := Resource{"cluster", "c1"}
-	st.Grant(tenant.Single, alice, c1, "cluster.view")
+	ok(t, st.Grant(tenant.Single, alice, c1, "cluster.view"))
 	e := ps(t, st)
 
 	mustAllow(t, e, alice, "cluster.view", c1, true)
@@ -73,7 +73,7 @@ func TestPermissionSet_NonDownwardClosedRole(t *testing.T) {
 func TestPermissionSet_Superuser(t *testing.T) {
 	st := NewMemPermissionStore()
 	root := Subject{Tenant: tenant.Single, Type: "user", ID: "root"}
-	st.GrantSuperuser(tenant.Single, root)
+	ok(t, st.GrantSuperuser(tenant.Single, root))
 	e := ps(t, st)
 
 	// Allowed every KNOWN action on every resource, with no per-resource grant.
@@ -149,7 +149,7 @@ func TestPermissionSet_CheckBulk(t *testing.T) {
 	st := NewMemPermissionStore()
 	alice := Subject{Tenant: tenant.Single, Type: "user", ID: "alice"}
 	c1 := Resource{"cluster", "c1"}
-	st.Grant(tenant.Single, alice, c1, "cluster.view")
+	ok(t, st.Grant(tenant.Single, alice, c1, "cluster.view"))
 	e := ps(t, st)
 
 	reqs := []CheckRequest{
@@ -175,8 +175,8 @@ func TestPermissionSet_CheckBulkErrorFailsWhole(t *testing.T) {
 func TestPermissionSet_ListResources(t *testing.T) {
 	st := NewMemPermissionStore()
 	alice := Subject{Tenant: tenant.Single, Type: "user", ID: "alice"}
-	st.Grant(tenant.Single, alice, Resource{"cluster", "c2"}, "cluster.view")
-	st.Grant(tenant.Single, alice, Resource{"cluster", "c1"}, "cluster.view", "cluster.deploy")
+	ok(t, st.Grant(tenant.Single, alice, Resource{"cluster", "c2"}, "cluster.view"))
+	ok(t, st.Grant(tenant.Single, alice, Resource{"cluster", "c1"}, "cluster.view", "cluster.deploy"))
 	e := ps(t, st)
 
 	// view held on both, returned sorted by ID.
@@ -197,7 +197,7 @@ func TestPermissionSet_ListResources(t *testing.T) {
 func TestPermissionSet_ListResources_SuperuserUnbounded(t *testing.T) {
 	st := NewMemPermissionStore()
 	root := Subject{Tenant: tenant.Single, Type: "user", ID: "root"}
-	st.GrantSuperuser(tenant.Single, root)
+	ok(t, st.GrantSuperuser(tenant.Single, root))
 	e := ps(t, st)
 	_, unbounded, err := e.ListResources(context.Background(), tenant.Single, root, "cluster.manage", "cluster")
 	if err != nil || !unbounded {
@@ -208,9 +208,9 @@ func TestPermissionSet_ListResources_SuperuserUnbounded(t *testing.T) {
 func TestPermissionSet_ListSubjects(t *testing.T) {
 	st := NewMemPermissionStore()
 	c1 := Resource{"cluster", "c1"}
-	st.Grant(tenant.Single, Subject{Tenant: tenant.Single, Type: "user", ID: "bob"}, c1, "cluster.view")
-	st.Grant(tenant.Single, Subject{Tenant: tenant.Single, Type: "user", ID: "amy"}, c1, "cluster.view")
-	st.GrantSuperuser(tenant.Single, Subject{Tenant: tenant.Single, Type: "user", ID: "root"})
+	ok(t, st.Grant(tenant.Single, Subject{Tenant: tenant.Single, Type: "user", ID: "bob"}, c1, "cluster.view"))
+	ok(t, st.Grant(tenant.Single, Subject{Tenant: tenant.Single, Type: "user", ID: "amy"}, c1, "cluster.view"))
+	ok(t, st.GrantSuperuser(tenant.Single, Subject{Tenant: tenant.Single, Type: "user", ID: "root"}))
 	e := ps(t, st)
 
 	subs, unbounded, err := e.ListSubjects(context.Background(), tenant.Single, "cluster.view", c1)

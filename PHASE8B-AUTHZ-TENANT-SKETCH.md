@@ -88,16 +88,20 @@ Rules, for both engines:
 2. The RBAC engine drops any binding whose `Tenant` is not the scope asked
    for, and any whose `Subject` is not exactly the subject asked for. A store
    that returns too much is held to the contract where the engine can see it.
-3. The reference stores hold the same line. `MemStore` and
-   `MemPermissionStore` return `ErrTenantRequired` for an unset scope, and
-   their `Grant` methods, and `MemStore.Revoke`, panic on an unset scope or a
-   subject with no home tenant. Such a grant could never be read back, and a keyed literal written
-   before these fields existed still compiles.
+3. The reference stores hold the same line, with the same `gate` the engines
+   use. Every read and every write returns `ErrTenantRequired` for an unset
+   scope or a subject with no home tenant, and a refused write stores
+   nothing. Such a grant could never be read back, and a keyed literal
+   written before these fields existed still compiles. `Grant`, `Revoke` and
+   `GrantSuperuser` return the error; they do not panic, because the binding
+   may come from a request. `NewMemStore` panics on a broken seed literal.
 4. `CheckBulk` refuses an unset scope even for an empty batch.
-   `ListSubjects` returns `ErrTenantRequired` when the store hands it a
-   subject with no home tenant. It does not list that subject, and it does
+   `ListSubjects` returns `ErrTenantRequired` when a subject that **would be
+   listed** has no home tenant. It does not list that subject, and it does
    not drop it quietly either: `Check` refuses such a subject with an error,
-   and an empty review would read as "nobody has access".
+   and an empty review would read as "nobody has access". A broken row that
+   does not qualify for the action asked about is skipped; it is not that
+   question's problem.
 5. `tenant.Single` is a scope like any other. A single-tenant deployment
    passes it everywhere and gets the decisions it got before.
 
@@ -107,7 +111,7 @@ The gate carries its own tenant:
 
 ```go
 type DecisionGate struct {
-    Tenant       func(*http.Request) string  // required; the scope
+    Tenant       func(*http.Request) (tenant.ID, bool)  // required; the scope
     AllowEntered bool                        // let an entered platform admin through
     ...
     UserExists   func(ctx, home tenant.ID, userID string) (bool, error)
@@ -117,8 +121,12 @@ type DecisionGate struct {
 - `RequireDecision` panics when `Tenant` is nil. A gate that names no tenant
   is a tenancy misconfiguration, and it fails when the gate is built
   (standing rule 4).
-- Scope: the tenant `Tenant` resolves. A single-tenant application returns
-  `""`.
+- Scope: the tenant `Tenant` resolves. The resolver returns a `tenant.ID` and
+  whether one was resolved, the shape `RequireEntitlement` takes.
+  `(zero, false)` refuses the request. A single-tenant application returns
+  `(tenant.Single, true)`. An empty answer is never turned into the single
+  tenant: a route pattern with no tenant segment must not be served as a
+  single-tenant route. Behind `RequireTenant`, pass `TenantFromRoutedContext`.
 - The token must fit that tenant by the one rule `RequireTenant` applies
   (`tokenFitsTenant`): its `tid` is exactly the resolved tenant, and an
   entered token only where `AllowEntered` is set. Anything else is the 401
@@ -126,8 +134,10 @@ type DecisionGate struct {
   is refused the same way.
 - Subject tenant: the scope itself, or the token's `htid` when the token is
   an entered one. So an entered admin is (platform, …) in scope acme.
-- On success the gate pins the tenant for `TenantFromContext`, so the handler
-  and the `Auditor` behind it see the scope the decision was made in.
+- On success the gate pins the tenant for `TenantFromContext`, for what runs
+  **behind** it. Middleware mounted in front of it (`Auditor.For`,
+  `RequireEntitlement`, `RequireFreshAuth`) does not see that tenant; a
+  pooled route that uses them still puts `RequireTenant` first.
 - `UserExists`, the ghost probe, is given the subject's home tenant. With the
   bare id it looked in the routed tenant, where a guest has no row, and
   reported every denied guest as a deleted user.

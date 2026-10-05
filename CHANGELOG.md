@@ -81,18 +81,20 @@ redacted. Everything that existed for older rows is removed.
   `authz.ErrTenantRequired`.** Callers treat it as deny, like every error.
 - **`MemPermissionStore.Grant` and `GrantSuperuser` take the scope** as their
   first argument. A superuser is a superuser of one scope.
-- **`MemStore.Grant`, `MemStore.Revoke`, `NewMemStore`, and the
-  `MemPermissionStore` grant methods panic** on an unset scope or a subject
-  with no home tenant. A keyed
-  literal such as `Binding{Subject: ..., Resource: ..., Role: ...}` still
-  compiles after the upgrade; without the panic it would be stored and never
-  matched. The read methods return `ErrTenantRequired` for an unset scope.
-- **`espresso.DecisionGate` has a required `Tenant` resolver**, and
-  `RequireDecision` panics without it. The gate asks in the tenant it
-  resolves and builds the subject with the token's home tenant. The token
-  must be for exactly that tenant; an entered token passes only with the new
-  `AllowEntered` field. Anything else is a 401, including a user id put in
-  the context without a token (`ContextWithUserID`). The gate no longer
+- **`MemStore.Grant`, `MemStore.Revoke`, and `MemPermissionStore.Grant` and
+  `GrantSuperuser` return an error.** They return `ErrTenantRequired`, and
+  store nothing, for an unset scope or a subject with no home tenant. A
+  keyed literal such as `Binding{Subject: ..., Resource: ..., Role: ...}`
+  still compiles after the upgrade; stored quietly it would never match.
+  `NewMemStore` panics on such a seed binding. The read methods of both
+  stores return `ErrTenantRequired` for the same two cases.
+- **`espresso.DecisionGate` has a required `Tenant` resolver**,
+  `func(*http.Request) (tenant.ID, bool)`, and `RequireDecision` panics
+  without it. The gate asks in the tenant it resolves and builds the subject
+  with the token's home tenant. The token must be for exactly that tenant;
+  an entered token passes only with the new `AllowEntered` field. Anything
+  else is a 401: a tenant that did not resolve, and a user id put in the
+  context without a token (`ContextWithUserID`), included. The gate never
   treats "no tenant" as single-tenant.
 - **`espresso.DecisionGate.UserExists` takes the subject's home tenant**:
   `func(ctx, home tenant.ID, userID string)`. Look the user up there.
@@ -100,13 +102,15 @@ redacted. Everything that existed for older rows is removed.
 **To upgrade a single-tenant deployment:** pass `tenant.Single` as the scope,
 set `Tenant: tenant.Single` on every `Subject` and `Binding`, accept the new
 argument in your stores and in `UserExists`, and give every `DecisionGate` a
-`Tenant` resolver that returns `""`. Decisions are the same as before.
+`Tenant` resolver that returns `(tenant.Single, true)`. Decisions are the
+same as before.
 
 **To upgrade a pooled deployment:** filter by the scope in every store query,
 match subjects with their home tenant, and run
 `authz/tenanttest.RunBindingStoreLeakSuite` or
 `RunPermissionStoreLeakSuite` against your store. Give every `DecisionGate`
-the resolver its route uses. A route that is not tenant-routed, such as a
+the resolver its route uses; behind `RequireTenant` that is
+`TenantFromRoutedContext`. A route that is not tenant-routed, such as a
 platform console, is a route of one tenant: its resolver returns that tenant.
 
 `ListSubjects` returns `ErrTenantRequired` if a store returns a subject with

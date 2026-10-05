@@ -587,6 +587,24 @@ func superuser(t harnessT, h PermissionHarness) {
 			t.Errorf("SubjectsWithPermission(B) lists the guest, who is a superuser only at home")
 		}
 	}
+	// The single scope is not every tenant, for superusers either. A
+	// store that lists them with `WHERE (? = '' OR tenant = ?)` puts
+	// every tenant's superusers in a single-scope review.
+	inSingle, err := h.Store.SubjectsWithPermission(ctx, tenant.Single, keyA, res)
+	if err != nil {
+		t.Fatalf("SubjectsWithPermission(single): %v", err)
+	}
+	if len(inSingle) != 0 {
+		t.Errorf("SubjectsWithPermission(single) = %v; the only superusers are A's and the guest's home's", inSingle)
+	}
+	gotS, err := h.Store.PermissionsFor(ctx, tenant.Single, userA, res)
+	if err != nil {
+		t.Fatalf("PermissionsFor(single, userA): %v", err)
+	}
+	if gotS.Superuser {
+		t.Errorf("A's superuser is a superuser in the single scope")
+	}
+
 	subs, err = h.Store.SubjectsWithPermission(ctx, tenantA, keyB, res)
 	if err != nil {
 		t.Fatalf("SubjectsWithPermission(A): %v", err)

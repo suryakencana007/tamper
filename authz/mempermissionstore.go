@@ -49,8 +49,10 @@ func NewMemPermissionStore() *MemPermissionStore {
 // Grant adds permission keys for sub on exactly res (idempotent). A "*" key is
 // rejected silently — superuser is expressed via GrantSuperuser, never as a
 // stored key, so a wildcard can never leak in through a grant.
-func (m *MemPermissionStore) Grant(tenantID tenant.ID, sub Subject, res Resource, keys ...string) {
-	mustTenants("MemPermissionStore.Grant", tenantID, sub)
+func (m *MemPermissionStore) Grant(tenantID tenant.ID, sub Subject, res Resource, keys ...string) error {
+	if err := gate(tenantID, sub); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := permGrantKey{tenantID, sub, res}
@@ -65,19 +67,23 @@ func (m *MemPermissionStore) Grant(tenantID tenant.ID, sub Subject, res Resource
 		}
 		set[key] = struct{}{}
 	}
+	return nil
 }
 
 // GrantSuperuser marks sub as superuser on every resource.
-func (m *MemPermissionStore) GrantSuperuser(tenantID tenant.ID, sub Subject) {
-	mustTenants("MemPermissionStore.GrantSuperuser", tenantID, sub)
+func (m *MemPermissionStore) GrantSuperuser(tenantID tenant.ID, sub Subject) error {
+	if err := gate(tenantID, sub); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.superusers[permSuperKey{tenantID, sub}] = struct{}{}
+	return nil
 }
 
 // PermissionsFor implements PermissionStore.
 func (m *MemPermissionStore) PermissionsFor(_ context.Context, tenantID tenant.ID, sub Subject, res Resource) (PermissionSetResult, error) {
-	if err := scopeGate(tenantID); err != nil {
+	if err := gate(tenantID, sub); err != nil {
 		return PermissionSetResult{}, err
 	}
 	m.mu.RLock()
@@ -96,7 +102,7 @@ func (m *MemPermissionStore) PermissionsFor(_ context.Context, tenantID tenant.I
 // ResourcesWithPermission implements PermissionStore. A superuser's access is
 // non-enumerable (every resource of the type), so it reports unbounded.
 func (m *MemPermissionStore) ResourcesWithPermission(_ context.Context, tenantID tenant.ID, sub Subject, key string, resourceType string) ([]Resource, bool, error) {
-	if err := scopeGate(tenantID); err != nil {
+	if err := gate(tenantID, sub); err != nil {
 		return nil, false, err
 	}
 	m.mu.RLock()

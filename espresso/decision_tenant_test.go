@@ -31,12 +31,22 @@ func (a *recordingAuthorizer) Check(_ context.Context, scope tenant.ID, sub auth
 
 func denied(w http.ResponseWriter) { w.WriteHeader(http.StatusForbidden) }
 
+// scopeTo returns a resolver that reports a fixed tenant. "" is the
+// single tenant, said by the application.
+func scopeTo(routed string) func(*http.Request) (tenant.ID, bool) {
+	id := tenant.Single
+	if routed != "" {
+		id = tenant.New(routed)
+	}
+	return func(*http.Request) (tenant.ID, bool) { return id, true }
+}
+
 // thingGate is the gate under test for the routed tenant.
 func thingGate(a authz.Authorizer, routed string, allowEntered bool) DecisionGate {
 	return DecisionGate{
 		Authorizer:   a,
 		Label:        "thing role",
-		Tenant:       routeTo(routed),
+		Tenant:       scopeTo(routed),
 		AllowEntered: allowEntered,
 		SubjectType:  "user",
 		ResourceType: "thing",
@@ -161,6 +171,59 @@ func TestRequireDecision_RefusesATokenThatDoesNotFitItsTenant(t *testing.T) {
 	}
 }
 
+// A resolver that did not resolve refuses the request. An empty answer
+// is never turned into the single tenant: a route pattern with no
+// tenant segment must not be served as a single-tenant route.
+func TestRequireDecision_RefusesWhenTheTenantDoesNotResolve(t *testing.T) {
+	j := tenantJWT(t)
+	for name, resolve := range map[string]func(*http.Request) (tenant.ID, bool){
+		"not resolved":              func(*http.Request) (tenant.ID, bool) { return tenant.ID{}, false },
+		"resolved to the zero ID":   func(*http.Request) (tenant.ID, bool) { return tenant.ID{}, true },
+		"single, but not resolved":  func(*http.Request) (tenant.ID, bool) { return tenant.Single, false },
+		"tenant.New of a lost path": func(*http.Request) (tenant.ID, bool) { return tenant.New(""), true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := &recordingAuthorizer{allow: true}
+			g := thingGate(a, "", false)
+			g.Tenant = resolve
+			h := RequireAuth(j)(RequireDecision(g)(http.HandlerFunc(noContent)))
+			// A token with no tid: the one that would fit a guessed
+			// single tenant.
+			if code := serveDecision(h, tokenFor(t, j, tenant.Single)); code != http.StatusUnauthorized {
+				t.Errorf("status %d, want 401", code)
+			}
+			if len(a.scopes) != 0 {
+				t.Errorf("the Authorizer was asked in scope %q", a.scopes[0])
+			}
+		})
+	}
+}
+
+// Behind RequireTenant the gate takes the tenant that gate pinned.
+func TestRequireDecision_BehindRequireTenant(t *testing.T) {
+	j := tenantJWT(t)
+	a := &recordingAuthorizer{allow: true}
+	g := thingGate(a, "", false)
+	g.Tenant = TenantFromRoutedContext
+	h := RequireAuth(j)(RequireTenant(routeTo(tenantA))(RequireDecision(g)(http.HandlerFunc(noContent))))
+	if code := serveDecision(h, tokenFor(t, j, tenant.New(tenantA))); code != http.StatusNoContent {
+		t.Fatalf("status %d, want 204", code)
+	}
+	if len(a.scopes) != 1 || a.scopes[0] != tenant.New(tenantA) {
+		t.Errorf("scopes = %v, want [%s]", a.scopes, tenantA)
+	}
+
+	// Without the tenant gate in front, that resolver resolves nothing.
+	a.scopes = nil
+	bare := RequireAuth(j)(RequireDecision(g)(http.HandlerFunc(noContent)))
+	if code := serveDecision(bare, tokenFor(t, j, tenant.New(tenantA))); code != http.StatusUnauthorized {
+		t.Errorf("TenantFromRoutedContext with no tenant gate: status %d, want 401", code)
+	}
+	if len(a.scopes) != 0 {
+		t.Error("the Authorizer was asked although no tenant was pinned")
+	}
+}
+
 // A gate that names no tenant is refused when it is built, not on a
 // request (standing rule 4).
 func TestRequireDecision_PanicsWithoutATenant(t *testing.T) {
@@ -207,7 +270,9 @@ func TestRequireDecision_GuestNeedsABindingInTheTenantEntered(t *testing.T) {
 		t.Fatalf("acme's own admin: status %d, want 204", code)
 	}
 
-	store.Grant(authz.Binding{Tenant: acme, Subject: admin, Resource: thing, Role: "admin"})
+	if err := store.Grant(authz.Binding{Tenant: acme, Subject: admin, Resource: thing, Role: "admin"}); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
 	if code := serveDecision(h, entered); code != http.StatusNoContent {
 		t.Errorf("a guest granted admin in acme: status %d, want 204", code)
 	}

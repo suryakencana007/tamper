@@ -89,9 +89,9 @@ func newParityFixture(t *testing.T) parityFixture {
 	// the downward-closure of its rank, and a system admin — who bypasses every
 	// action — is a global Superuser.
 	pstore := NewMemPermissionStore()
-	pstore.GrantSuperuser(tenant.Single, pAlice)
-	pstore.Grant(tenant.Single, pBob, pC1, "cluster.view", "cluster.deploy")
-	pstore.Grant(tenant.Single, pCarol, pC1, "cluster.view")
+	ok(t, pstore.GrantSuperuser(tenant.Single, pAlice))
+	ok(t, pstore.Grant(tenant.Single, pBob, pC1, "cluster.view", "cluster.deploy"))
+	ok(t, pstore.Grant(tenant.Single, pCarol, pC1, "cluster.view"))
 	pstore.GrantSuperuser(tenant.Single, pDave) // system admin ⇒ superuser; his cluster-viewer row is subsumed
 	permset, err := NewPermissionSet(pstore)
 	if err != nil {

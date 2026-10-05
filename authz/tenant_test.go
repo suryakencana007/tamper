@@ -39,8 +39,8 @@ func tenantEngines(t *testing.T) (map[string]Authorizer, *MemStore, *MemPermissi
 		t.Fatalf("NewRBAC: %v", err)
 	}
 	ps := NewMemPermissionStore()
-	ps.Grant(tAcme, acmeU1, c1, "cluster.view", "cluster.deploy", "cluster.acl.grant")
-	ps.GrantSuperuser(tPlatform, guest)
+	ok(t, ps.Grant(tAcme, acmeU1, c1, "cluster.view", "cluster.deploy", "cluster.acl.grant"))
+	ok(t, ps.GrantSuperuser(tPlatform, guest))
 	pset, err := NewPermissionSet(ps)
 	if err != nil {
 		t.Fatalf("NewPermissionSet: %v", err)
@@ -58,6 +58,14 @@ func tenantEngines(t *testing.T) (map[string]Authorizer, *MemStore, *MemPermissi
 		t.Fatalf("NewPermissionSet: %v", err)
 	}
 	return map[string]Authorizer{"RBAC": rbac, "PermissionSet": pset, "PermissionSet over RBAC": overRBAC}, bs, ps
+}
+
+// ok fails the test when a seed write is refused.
+func ok(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
 }
 
 func allowed(t *testing.T, a Authorizer, scope tenant.ID, sub Subject, act Action, res Resource) bool {
@@ -116,8 +124,8 @@ func TestTenant_GuestNeedsABindingInTheScope(t *testing.T) {
 	}
 
 	// Grant the guest view, and only view, inside acme.
-	bs.Grant(Binding{Tenant: tAcme, Subject: guest, Resource: c1, Role: "cluster-viewer"})
-	ps.Grant(tAcme, guest, c1, "cluster.view")
+	ok(t, bs.Grant(Binding{Tenant: tAcme, Subject: guest, Resource: c1, Role: "cluster-viewer"}))
+	ok(t, ps.Grant(tAcme, guest, c1, "cluster.view"))
 	for name, a := range engines {
 		t.Run(name+" after a grant in acme", func(t *testing.T) {
 			if !allowed(t, a, tAcme, guest, "cluster.view", c1) {
@@ -138,8 +146,8 @@ func TestTenant_GuestNeedsABindingInTheScope(t *testing.T) {
 // tenant they are from.
 func TestTenant_ListsAreScoped(t *testing.T) {
 	engines, bs, ps := tenantEngines(t)
-	bs.Grant(Binding{Tenant: tAcme, Subject: guest, Resource: c1, Role: "cluster-viewer"})
-	ps.Grant(tAcme, guest, c1, "cluster.view")
+	ok(t, bs.Grant(Binding{Tenant: tAcme, Subject: guest, Resource: c1, Role: "cluster-viewer"}))
+	ok(t, ps.Grant(tAcme, guest, c1, "cluster.view"))
 	ctx := context.Background()
 
 	for name, a := range engines {
@@ -318,7 +326,7 @@ func TestRBAC_DropsWhatALeakyStoreReturns(t *testing.T) {
 func TestMemPermissionStore_SuperuserIsPerScope(t *testing.T) {
 	ctx := context.Background()
 	ps := NewMemPermissionStore()
-	ps.GrantSuperuser(tAcme, acmeU1)
+	ok(t, ps.GrantSuperuser(tAcme, acmeU1))
 
 	for what, q := range map[string]struct {
 		scope tenant.ID
@@ -405,6 +413,20 @@ func TestTenant_ListSubjectsRefusesASubjectWithNoHomeTenant(t *testing.T) {
 	if subs, _, err := rbac.ListSubjects(context.Background(), tAcme, "cluster.view", c2); err != nil || len(subs) != 0 {
 		t.Errorf("RBAC: ListSubjects(acme, c2) = %v, %v; want nobody and no error", subs, err)
 	}
+
+	// A broken row that would NOT be listed does not fail the review:
+	// a viewer with no home tenant is not an answer to "who may grant".
+	viewerOnly, err := NewRBAC(leakyBindings{all: []Binding{
+		{Tenant: tAcme, Subject: noHome, Resource: c1, Role: "cluster-viewer"},
+		{Tenant: tAcme, Subject: acmeU1, Resource: c1, Role: "cluster-admin"},
+	}}, testHierarchy(), testPolicy())
+	if err != nil {
+		t.Fatalf("NewRBAC: %v", err)
+	}
+	subs, _, err := viewerOnly.ListSubjects(context.Background(), tAcme, "cluster.acl.grant", c1)
+	if err != nil || len(subs) != 1 || subs[0] != acmeU1 {
+		t.Errorf("ListSubjects(cluster.acl.grant) = %v, %v; want acme's u-1 and no error", subs, err)
+	}
 }
 
 // The reference stores say ErrTenantRequired for the unset scope. A
@@ -414,7 +436,7 @@ func TestMemStores_RefuseTheUnsetScope(t *testing.T) {
 	var unset tenant.ID
 	bs := NewMemStore(Binding{Tenant: tAcme, Subject: acmeU1, Resource: c1, Role: "cluster-admin"})
 	ps := NewMemPermissionStore()
-	ps.Grant(tAcme, acmeU1, c1, "cluster.view")
+	ok(t, ps.Grant(tAcme, acmeU1, c1, "cluster.view"))
 	rps, err := NewRBACPermissionStore(bs, testHierarchy(), testPolicy())
 	if err != nil {
 		t.Fatalf("NewRBACPermissionStore: %v", err)
@@ -442,33 +464,66 @@ func TestMemStores_RefuseTheUnsetScope(t *testing.T) {
 	}
 }
 
-// A grant that names no scope, or a subject with no home tenant, is
-// refused when it is made. It could never be read back, and a literal
-// written before these fields existed still compiles.
-func TestMemStores_GrantPanicsWithoutTenants(t *testing.T) {
+// A grant or a revoke that names no scope, or a subject with no home
+// tenant, is refused with ErrTenantRequired and changes nothing. It
+// could never be read back, and a literal written before these fields
+// existed still compiles. It is an error and not a panic: the binding
+// may come from a request.
+func TestMemStores_WritesRefuseMissingTenants(t *testing.T) {
+	ctx := context.Background()
 	noHome := Subject{Type: "user", ID: "u-1"}
-	for what, grant := range map[string]func(){
-		"MemStore.Grant, no scope": func() { NewMemStore().Grant(Binding{Subject: acmeU1, Resource: c1, Role: "cluster-admin"}) },
-		"MemStore.Grant, subject without tenant": func() {
-			NewMemStore().Grant(Binding{Tenant: tAcme, Subject: noHome, Resource: c1, Role: "cluster-admin"})
-		},
-		"NewMemStore, no scope":                        func() { NewMemStore(Binding{Subject: acmeU1, Resource: c1, Role: "cluster-admin"}) },
-		"MemPermissionStore.Grant, no scope":           func() { NewMemPermissionStore().Grant(tenant.ID{}, acmeU1, c1, "cluster.view") },
-		"MemPermissionStore.Grant, subject, no tenant": func() { NewMemPermissionStore().Grant(tAcme, noHome, c1, "cluster.view") },
-		"MemPermissionStore.GrantSuperuser, no scope":  func() { NewMemPermissionStore().GrantSuperuser(tenant.ID{}, acmeU1) },
-		// A revoke that can equal nothing would leave the access in place.
-		"MemStore.Revoke, no scope": func() { NewMemStore().Revoke(Binding{Subject: acmeU1, Resource: c1, Role: "cluster-admin"}) },
-		"MemStore.Revoke, subject without tenant": func() {
-			NewMemStore().Revoke(Binding{Tenant: tAcme, Subject: noHome, Resource: c1, Role: "cluster-admin"})
+	good := Binding{Tenant: tAcme, Subject: acmeU1, Resource: c1, Role: "cluster-admin"}
+
+	bs := NewMemStore(good)
+	ps := NewMemPermissionStore()
+	for what, err := range map[string]error{
+		"MemStore.Grant, no scope":                     bs.Grant(Binding{Subject: acmeU1, Resource: c1, Role: "cluster-admin"}),
+		"MemStore.Grant, subject without tenant":       bs.Grant(Binding{Tenant: tAcme, Subject: noHome, Resource: c1, Role: "cluster-admin"}),
+		"MemStore.Revoke, no scope":                    bs.Revoke(Binding{Subject: acmeU1, Resource: c1, Role: "cluster-admin"}),
+		"MemStore.Revoke, subject without tenant":      bs.Revoke(Binding{Tenant: tAcme, Subject: noHome, Resource: c1, Role: "cluster-admin"}),
+		"MemPermissionStore.Grant, no scope":           ps.Grant(tenant.ID{}, acmeU1, c1, "cluster.view"),
+		"MemPermissionStore.Grant, subject, no tenant": ps.Grant(tAcme, noHome, c1, "cluster.view"),
+		"MemPermissionStore.GrantSuperuser, no scope":  ps.GrantSuperuser(tenant.ID{}, acmeU1),
+		"MemPermissionStore.GrantSuperuser, no tenant": ps.GrantSuperuser(tAcme, noHome),
+	} {
+		if !errors.Is(err, ErrTenantRequired) {
+			t.Errorf("%s: err = %v, want ErrTenantRequired", what, err)
+		}
+	}
+	// The refused revokes removed nothing.
+	if got, err := bs.BindingsOnResource(ctx, tAcme, c1); err != nil || len(got) != 1 || got[0] != good {
+		t.Errorf("bindings after refused writes = %v, %v; want only the one seeded", got, err)
+	}
+
+	// A seed literal is a construction error.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("NewMemStore accepted a seed binding with no scope")
+			}
+		}()
+		NewMemStore(Binding{Subject: acmeU1, Resource: c1, Role: "cluster-admin"})
+	}()
+}
+
+// The reference stores refuse a subject with no home tenant on reads
+// too, not only an unset scope: called without an engine in front, a
+// forgotten Tenant must not come back as a quiet empty answer.
+func TestMemStores_ReadsRefuseASubjectWithNoHomeTenant(t *testing.T) {
+	ctx := context.Background()
+	noHome := Subject{Type: "user", ID: "u-1"}
+	bs, ps := NewMemStore(), NewMemPermissionStore()
+	for what, call := range map[string]func() error{
+		"MemStore.BindingsFor":              func() error { _, err := bs.BindingsFor(ctx, tAcme, noHome, c1); return err },
+		"MemStore.BindingsForSubject":       func() error { _, err := bs.BindingsForSubject(ctx, tAcme, noHome, "cluster"); return err },
+		"MemPermissionStore.PermissionsFor": func() error { _, err := ps.PermissionsFor(ctx, tAcme, noHome, c1); return err },
+		"MemPermissionStore.ResourcesWithPermission": func() error {
+			_, _, err := ps.ResourcesWithPermission(ctx, tAcme, noHome, "cluster.view", "cluster")
+			return err
 		},
 	} {
-		func() {
-			defer func() {
-				if recover() == nil {
-					t.Errorf("%s did not panic", what)
-				}
-			}()
-			grant()
-		}()
+		if err := call(); !errors.Is(err, ErrTenantRequired) {
+			t.Errorf("%s: err = %v, want ErrTenantRequired", what, err)
+		}
 	}
 }

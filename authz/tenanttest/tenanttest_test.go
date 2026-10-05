@@ -167,7 +167,7 @@ func (l *leakyBindings) BindingsOnResource(_ context.Context, scope tenant.ID, r
 func TestBindingSuite_PassesAgainstTheReferenceStore(t *testing.T) {
 	RunBindingStoreLeakSuite(t, func() BindingHarness {
 		s := authz.NewMemStore()
-		return BindingHarness{Store: s, Grant: func(b authz.Binding) error { s.Grant(b); return nil }}
+		return BindingHarness{Store: s, Grant: s.Grant}
 	})
 }
 
@@ -302,12 +302,9 @@ func TestPermissionSuite_PassesAgainstTheReferenceStore(t *testing.T) {
 	RunPermissionStoreLeakSuite(t, func() PermissionHarness {
 		s := authz.NewMemPermissionStore()
 		return PermissionHarness{
-			Store: s,
-			Grant: func(scope tenant.ID, sub authz.Subject, res authz.Resource, keys ...string) error {
-				s.Grant(scope, sub, res, keys...)
-				return nil
-			},
-			GrantSuperuser: func(scope tenant.ID, sub authz.Subject) error { s.GrantSuperuser(scope, sub); return nil },
+			Store:          s,
+			Grant:          s.Grant,
+			GrantSuperuser: s.GrantSuperuser,
 		}
 	})
 }
@@ -348,10 +345,7 @@ func TestPermissionSuite_RunsWithoutSuperuserSupport(t *testing.T) {
 	rec := &recorderT{}
 	runPermissionSuite(rec, func() PermissionHarness {
 		s := authz.NewMemPermissionStore()
-		return PermissionHarness{Store: s, Grant: func(scope tenant.ID, sub authz.Subject, res authz.Resource, keys ...string) error {
-			s.Grant(scope, sub, res, keys...)
-			return nil
-		}}
+		return PermissionHarness{Store: s, Grant: s.Grant}
 	})
 	if rec.failed {
 		t.Fatalf("the suite failed a compliant store without superuser support:\n  %s", rec.report())

@@ -827,8 +827,9 @@ permission store do not compile against #56 until they take the new argument.
 Barista is single-tenant, so the change is mechanical: pass `tenant.Single`
 as the scope, set `Tenant: tenant.Single` on every subject and binding,
 ignore the argument in the queries, add the tenant argument to its
-`UserExists` probes, and give every `DecisionGate` a `Tenant` resolver that
-returns `""`. It was not done or tested where #56 was
+`UserExists` probes, give every `DecisionGate` a `Tenant` resolver that
+returns `(tenant.Single, true)`, and handle the error its binding store's
+writes now return. It was not done or tested where #56 was
 written.
 
 ### TD-28 — Compatibility shims from before 2026-10-05
@@ -849,6 +850,7 @@ change is made.
 | `espresso.IdentityService` (port) | `IssueTokensForUser(ctx, userID)` and the TOTP-pending methods take no tenant. This is the root of TD-10, which was patched in the adapter, not in the port. |
 | `espresso` SCIM | `SCIMConfig.TenantBoundStores` and the unscoped store path. |
 | `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
+| `espresso` | The resolvers of `RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` return a `string`, and `""` becomes `tenant.Single`. A route pattern with no tenant segment is then served as a single-tenant route. `DecisionGate.Tenant` already returns `(tenant.ID, bool)`; these should too. |
 | tests and comments | "byte-identical" tests, and history comments about Barista. |
 
 **Impact.** Each shim is a second way to do something, and the second way is

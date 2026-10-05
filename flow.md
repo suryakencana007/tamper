@@ -353,21 +353,21 @@ Authorization: Bearer <access>
 
 The application chooses this order. Tamper does not force it.
 
-Two middlewares put a tenant in the context, and they give different
+Four middlewares put a tenant in the context, and they give different
 guarantees:
 
-- `RequireTenant` sets it **after** checking the token `tid` against the
-  route.
+- `RequireTenant` and `RequireTenantAllowEntered` set it **after** checking
+  the token `tid` against the route.
+- `RequireDecision` sets it after the same check against its own `Tenant`
+  resolver, but only for what runs **behind** it. Middleware mounted in front
+  of it (`Auditor.For`, `RequireEntitlement`) does not see that tenant.
 - `PinTenant` sets it with **no** token check. It is for routes before login.
 
 So `TenantFromContext` returning `ok=true` does not prove that the token was
-checked. On an authenticated route, only `RequireTenant` gives that guarantee.
-If `PinTenant` is mounted globally, authenticated routes still need
-`RequireTenant`. With neither middleware, a handler gets `(zero, false)`.
-
-(The comment at `espresso/tenantgate.go:31` still says this gate is the only
-one that sets the tenant. That comment was written before `PinTenant`
-existed.)
+checked. If `PinTenant` is mounted globally, authenticated routes still need
+`RequireTenant`. A pooled route that audits or checks entitlements before its
+decision gate also needs `RequireTenant` first. With none of these, a handler
+gets `(zero, false)`.
 
 ### 4.8 Authorization decision
 
@@ -451,10 +451,13 @@ actor comes from. The export filters on the first one.
 
 ### Standing rules
 
-These five come from `CLAUDE.md` and `PHASE7-MULTITENANCY-SKETCH.md` §6. The
-numbers match those documents.
+These five come from `CLAUDE.md`. The numbers match that document.
 
-1. `tenant.Single` behaves byte-for-byte the same as before tenancy existed.
+1. No compatibility code (since 2026-10-05). An old function or behaviour is
+   not kept beside the new one. Single-tenant is still supported, and the
+   application says it with `tenant.Single`; leaving the tenant out never
+   means single-tenant. This replaced the Phase 7 rule that `tenant.Single`
+   must behave byte-for-byte as before tenancy existed.
 2. A tenant that is missing, empty, or different means deny.
 3. A cross-tenant miss is a 404, never a 403.
 4. A tenancy misconfiguration fails at `New`, not as a per-request denial.

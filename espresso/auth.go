@@ -229,9 +229,14 @@ func (e *staticErr) Error() string { return e.msg }
 
 // ContextWithUserID returns a context carrying userID exactly as
 // RequireAuth stashes it (id only — no claims, no audit actor). Test
-// support for exercising handlers and middleware that read GetUserID
-// without minting real JWTs; production code must never call this —
-// authentication is RequireAuth's job.
+// support for exercising handlers that read GetUserID without minting
+// real JWTs; production code must never call this — authentication is
+// RequireAuth's job.
+//
+// It is NOT enough for the tenant gates or for RequireDecision. They
+// need to know which tenant the subject's token is for, and an id says
+// nothing about that, so they answer 401. Add ContextWithAccessClaims
+// to exercise them.
 func ContextWithUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, userIDKey{}, userID)
 }

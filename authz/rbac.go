@@ -181,17 +181,20 @@ func (e *RBAC) ListSubjects(ctx context.Context, tenantID tenant.ID, act Action,
 			if b.Tenant != tenantID || b.Resource != target {
 				continue // defensive: hold the store to its contract
 			}
-			// A subject with no home tenant is one Check refuses with
-			// ErrTenantRequired. The review says the same, loudly: an
-			// empty list would read as "nobody has access".
+			if e.h.rank(target.Type, b.Role) < minRank || seen[b.Subject] {
+				continue
+			}
+			// This subject WOULD be listed, and Check refuses it with
+			// ErrTenantRequired. The review says the same: listing it
+			// would be wrong, and dropping it would read as "nobody has
+			// access". A row that does not qualify is not this
+			// question's problem and is skipped above.
 			if !b.Subject.Tenant.Valid() {
 				return nil, false, fmt.Errorf("%w: the store returned subject %s:%s with no home tenant",
 					ErrTenantRequired, b.Subject.Type, b.Subject.ID)
 			}
-			if e.h.rank(target.Type, b.Role) >= minRank && !seen[b.Subject] {
-				seen[b.Subject] = true
-				out = append(out, b.Subject)
-			}
+			seen[b.Subject] = true
+			out = append(out, b.Subject)
 		}
 	}
 	sortSubjects(out)

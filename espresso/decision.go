@@ -31,9 +31,13 @@ type DecisionGate struct {
 	// without it. It is the SCOPE of the question, and the token must be
 	// for exactly this tenant. The answer never comes from the token.
 	//
-	// A single-tenant application returns "" for every request. That is
-	// the single tenant said out loud, not a tenant left out.
-	Tenant func(*http.Request) string
+	// It returns a tenant.ID and whether one was resolved, the shape
+	// RequireEntitlement takes. (zero, false) — a path with no tenant
+	// segment, a misspelt parameter — refuses the request. A
+	// single-tenant application returns (tenant.Single, true): the single
+	// tenant is said, it is never what an empty answer turns into.
+	// Behind RequireTenant, pass TenantFromRoutedContext.
+	Tenant func(*http.Request) (tenant.ID, bool)
 	// AllowEntered lets a platform admin who ENTERED this tenant
 	// (identity.Core.EnterTenant) through to the Authorizer. False, the
 	// default, refuses an entered token like a wrong-tenant one. A guest
@@ -95,10 +99,16 @@ type DecisionGate struct {
 // when the gate is built, not on a request (the posture RequireTenant
 // takes on a nil resolver).
 //
-// Stack ordering: must run AFTER RequireAuth. It needs nothing else
-// around it. The gate carries its own tenant, so it does not depend on
-// a tenant gate having been mounted first, and it cannot be mounted
-// "without one" by mistake.
+// Stack ordering: must run AFTER RequireAuth. The gate carries its own
+// tenant, so its decision does not depend on a tenant gate having been
+// mounted first.
+//
+// That is a statement about THIS gate only. It pins the tenant for what
+// runs BEHIND it (TenantFromContext in the handler). Anything mounted in
+// FRONT of it — Auditor.For, RequireEntitlement with
+// TenantFromRoutedContext, RequireFreshAuth — does not see that tenant.
+// A pooled route that mounts such middleware still puts RequireTenant
+// first, and then gives this gate TenantFromRoutedContext.
 //
 // The question is asked with two tenants, and they are different facts:
 //
@@ -114,12 +124,9 @@ type DecisionGate struct {
 // The token must fit the tenant by the one rule RequireTenant applies
 // (tokenFitsTenant): its tid is exactly the resolved tenant, and an
 // entered token only where AllowEntered is set. Anything else is the
-// 401 RequireTenant writes — including a user id that reached the
-// context without a token. There is no path that guesses a tenant.
-//
-// On success the tenant is also pinned for TenantFromContext, so what
-// runs behind the gate (a handler, the Auditor) sees the same scope the
-// decision was made in.
+// 401 RequireTenant writes — including a tenant that did not resolve,
+// and a user id that reached the context without a token. There is no
+// path that guesses a tenant.
 func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 	if g.Tenant == nil {
 		panic("tamper/espresso: RequireDecision requires DecisionGate.Tenant — " +
@@ -141,19 +148,16 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 				return
 			}
 			claims, _ := AccessClaimsFromContext(r.Context())
-			routed := g.Tenant(r)
-			if !tokenFitsTenant(claims, routed, g.AllowEntered) {
+			scope, resolved := g.Tenant(r)
+			if !resolved || !scope.Valid() || !tokenFitsTenant(claims, scope.String(), g.AllowEntered) {
 				writeUnauthenticated(w, "invalid token")
 				return
 			}
-			// FromStored, as RequireTenant does: routed has just been
-			// compared with a signed tid, so "" here is the single
-			// tenant as a fact. The home tenant of a guest is a claim
-			// of its own and goes through tenant.New.
-			scope := tenant.FromStored(routed)
+			// The subject is one of the scope's own, unless the token
+			// says it entered from somewhere else.
 			home := scope
-			if claims.Entered() {
-				home = tenant.New(claims.HomeTenantID)
+			if from, entered := EnteredFromContext(r.Context()); entered {
+				home = from
 			}
 			r = r.WithContext(context.WithValue(r.Context(), tenantCtxKey{}, scope))
 			resourceID := ""

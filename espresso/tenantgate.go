@@ -28,9 +28,10 @@
 // The honest cost of separate: it is skippable, therefore forgettable,
 // and a pooled deployment that forgets it on an authed route accepts
 // cross-tenant tokens there. Three things blunt that, and none of them
-// eliminates it: this gate is the ONLY thing that puts a tenant in the
-// context, so any handler that reads TenantFromContext gets ("", false)
-// rather than a wrong answer; a missing-claims request denies rather
+// eliminates it: only a gate puts a tenant in the context (RequireTenant,
+// RequireTenantAllowEntered, PinTenant, and RequireDecision for what
+// runs behind it), so any handler that reads TenantFromContext with
+// none of them mounted gets ("", false) rather than a wrong answer; a missing-claims request denies rather
 // than passing; and crypto.VerifyAccess exists for callers who
 // would rather do the check at verification time, where it cannot be
 // composed wrong. A deployment enabling tenancy should wrap every authed
@@ -50,10 +51,12 @@ import (
 // with or forge it.
 type tenantCtxKey struct{}
 
-// TenantFromContext returns the tenant RequireTenant pinned for this
-// request, and whether one was pinned at all.
+// TenantFromContext returns the tenant a gate pinned for this request,
+// and whether one was pinned at all. RequireTenant,
+// RequireTenantAllowEntered and RequireDecision pin it after checking
+// the token against it; PinTenant pins it with no token check.
 //
-// (the zero ID, false) means RequireTenant did not run. It is NOT "the
+// (the zero ID, false) means none of them ran. It is NOT "the
 // single-tenant deployment" — a handler that treats it as one turns a
 // forgotten middleware into an unscoped query. Handlers in a pooled
 // deployment should treat !ok as a programmer error and fail closed.

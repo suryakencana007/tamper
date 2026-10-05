@@ -619,24 +619,21 @@ func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *t
 	}
 
 	// Password step done in globex.
-	pending, err := c.jwt.IssueTOTPPendingInTenant(user.ID, globex)
+	pending, err := c.jwt.IssueTOTPPending(user.ID, globex)
 	if err != nil {
 		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
 	}
 
 	// Fence 1: the token is replayed at ACME's verify.
-	if uid, err := c.jwt.VerifyTOTPPendingInTenant(pending, acme); !errors.Is(err, crypto.ErrInvalidToken) {
+	if uid, err := c.jwt.VerifyTOTPPending(pending, acme); !errors.Is(err, crypto.ErrInvalidToken) {
 		t.Errorf("acme accepted a globex pending token: uid=%q err=%v", uid, err)
 	}
 
 	// Fence 2: the adapter that mints with the routed tenant without
-	// comparing it to the user's stored tenant. The unbound pair is used
-	// on purpose — it is what such an adapter would still be calling.
-	unbound, err := c.jwt.IssueTOTPPending(user.ID)
-	if err != nil {
-		t.Fatalf("IssueTOTPPending: %v", err)
-	}
-	uid, err := c.jwt.VerifyTOTPPending(unbound)
+	// comparing it to the user's stored tenant. Whatever pending token
+	// such an adapter verified, it ends up holding a bare user id; the
+	// honest one for globex is used here.
+	uid, err := c.jwt.VerifyTOTPPending(pending, globex)
 	if err != nil {
 		t.Fatalf("VerifyTOTPPending: %v", err)
 	}
@@ -654,9 +651,9 @@ func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *t
 	// The honest path: globex's verify accepts the token, and the mint
 	// for globex carries the user's tenant — not the empty tid the shim
 	// would have produced, which every tenant-pinned verifier refuses.
-	uid, err = c.jwt.VerifyTOTPPendingInTenant(pending, globex)
+	uid, err = c.jwt.VerifyTOTPPending(pending, globex)
 	if err != nil {
-		t.Fatalf("VerifyTOTPPendingInTenant(globex): %v", err)
+		t.Fatalf("VerifyTOTPPending(globex): %v", err)
 	}
 	tokens, err = c.IssueTokensForUserInTenant(ctx, uid, globex, 0, "")
 	if err != nil {

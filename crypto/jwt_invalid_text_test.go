@@ -37,7 +37,7 @@ func TestInvalidToken_EveryFailureHasTheSameText(t *testing.T) {
 	}
 	pending := func(tid tenant.ID) string {
 		t.Helper()
-		tok, err := svc.IssueTOTPPendingInTenant("user-1", tid)
+		tok, err := svc.IssueTOTPPending("user-1", tid)
 		if err != nil {
 			t.Fatalf("IssueTOTPPendingInTenant: %v", err)
 		}
@@ -52,7 +52,7 @@ func TestInvalidToken_EveryFailureHasTheSameText(t *testing.T) {
 		return err
 	}
 	verifyPending := func(tok string, tid tenant.ID) error {
-		_, err := svc.VerifyTOTPPendingInTenant(tok, tid)
+		_, err := svc.VerifyTOTPPending(tok, tid)
 		return err
 	}
 

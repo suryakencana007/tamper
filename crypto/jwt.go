@@ -51,20 +51,21 @@ func invalidToken(cause error) error { return &invalidTokenError{cause: cause} }
 // exist so the cause is not lost; they are unexported because nothing
 // outside should branch on them.
 var (
-	errUnknownKeyID   = errors.New("no verification key for the token's kid")
-	errMalformedToken = errors.New("token is malformed")
-	errWrongAlgorithm = errors.New("token alg does not match the verification key")
-	errBadSignature   = errors.New("signature does not verify")
-	errWrongPurpose   = errors.New("token purpose is not the one this entry point accepts")
-	errMissingSubject = errors.New("token has no subject")
-	errWrongTenant    = errors.New("token tid does not match the tenant it was verified for")
-	errBadHomeTenant  = errors.New("htid without a different tid")
+	errUnknownKeyID       = errors.New("no verification key for the token's kid")
+	errMalformedToken     = errors.New("token is malformed")
+	errWrongAlgorithm     = errors.New("token alg does not match the verification key")
+	errBadSignature       = errors.New("signature does not verify")
+	errWrongPurpose       = errors.New("token purpose is not the one this entry point accepts")
+	errMissingSubject     = errors.New("token has no subject")
+	errMissingAuthContext = errors.New("token has no auth_time or no acr")
+	errWrongTenant        = errors.New("token tid does not match the tenant it was verified for")
+	errBadHomeTenant      = errors.New("htid without a different tid")
 )
 
 // ErrTenantRequired — [JWTService.VerifyAccess] was handed an UNSET
 // tenant id (the zero [tenant.ID], not [tenant.Single]). The
-// tenant-bound totp-pending pair ([JWTService.IssueTOTPPendingInTenant],
-// [JWTService.VerifyTOTPPendingInTenant]) returns it on the same terms.
+// totp-pending pair ([JWTService.IssueTOTPPending],
+// [JWTService.VerifyTOTPPending]) returns it on the same terms.
 //
 // This is the crypto-side twin of identity's error of the same name,
 // and it exists for the same reason: tenant.ID distinguishes "I forgot
@@ -290,54 +291,35 @@ func (j *JWTService) parseClaims(tokenStr string, claims jwt.Claims) error {
 	return nil
 }
 
-// AccessClaims is the v1.14 shape of the access-token JWT. Extends
+// AccessClaims is the access-token JWT. It extends
 // jwt.RegisteredClaims with auth_time + acr per OIDC Core 1.0 §2 +
 // §3.1.2.1. Refresh-token rotation carries auth_time + acr forward
 // unchanged — only IdP-side authentication (OIDC callback, SAML
 // callback, local-password Login, TOTP-verify) advances them.
 //
-// Pre-v1.14 JWTs in the wild parse tolerantly: missing auth_time
-// reads as 0, missing acr reads as "". Middleware (RequireFreshAuth)
-// treats both as "trips the step-up gate" — the migration is
-// naturally graceful via refresh-rotation.
+// Every claim IssueAccess writes is required on the way back in. A
+// token without a purpose, an auth_time or an acr was not minted by
+// this service as an access token, and ParseAccess refuses it. There is
+// no tolerance for an older shape.
 type AccessClaims struct {
 	AuthTime int64  `json:"auth_time"`
 	ACR      string `json:"acr"`
 	// Purpose discriminates an access JWT from the other token shapes
 	// this service mints under the SAME secret — currently the
-	// totp-pending session token (IssueTOTPPending). VerifyAccess
-	// rejects a token carrying a foreign purpose, which is what stops a
-	// pre-2FA session token from authenticating as a full session.
+	// totp-pending session token (IssueTOTPPending). ParseAccess accepts
+	// exactly "access", which is what stops a pre-2FA session token, or
+	// any other shape signed with this key, from authenticating as a
+	// full session.
+	Purpose string `json:"purpose"`
+	// TenantID names the tenant this token was minted for. Opaque and
+	// app-defined; tamper compares it for equality and never parses it.
 	//
-	// Legacy-tolerant on the same terms as auth_time + acr above:
-	// pre-v1.15 access JWTs carry no purpose claim and read as "",
-	// which VerifyAccess accepts. Only a NON-EMPTY, non-access purpose
-	// rejects. That tolerance is safe because the claim can only be
-	// removed by re-signing, which needs the secret — so it buys a
-	// graceful rollout (no mass logout on deploy) without reopening the
-	// bypass.
-	Purpose string `json:"purpose,omitempty"`
-	// TenantID names the tenant this token was minted for, in a pooled
-	// multi-tenant deployment. Opaque and app-defined; tamper compares it
-	// for equality and never parses it.
-	//
-	// Legacy-tolerant on exactly the same terms as purpose above, and the
-	// tolerance has the same shape: every access JWT minted before this
-	// claim existed carries no `tid` and reads as "", and VerifyAccess
-	// accepts it. That buys a graceful rollout — no mass logout on the
-	// deploy that introduces tenancy — for the single-tenant deployments
-	// that are the only ones in a position to have such tokens.
-	//
-	// It is NOT a licence to accept an empty tid forever. The tolerance
-	// ends where tenancy begins: once a deployment enables tenancy, an
-	// empty tid must REJECT, because there "" is not a tenant but the
-	// absence of one, and treating absence as a match is the wildcard
-	// deny-by-default forbids. That rejection lands with
-	// VerifyAccess in 7c-2; VerifyAccess is unchanged here.
-	//
-	// omitempty is load-bearing, not cosmetic: it is what makes a
-	// no-tenant token byte-identical to a pre-tenancy one, so this claim
-	// costs single-tenant deployments nothing on the wire.
+	// The single tenant is the empty string, in storage and on the wire
+	// alike, so a token for tenant.Single carries no `tid` at all
+	// (omitempty). That is the single tenant's own spelling, not a
+	// missing claim: VerifyAccess compares the claim with the tenant it
+	// is asked about for exact equality, so a tid-less token fits
+	// tenant.Single and nothing else.
 	TenantID string `json:"tid,omitempty"`
 	// HomeTenantID is present only on an ENTERED token: one minted by
 	// IssueAccessEntered for a subject who is stored in one tenant and is
@@ -350,8 +332,7 @@ type AccessClaims struct {
 	// for attribution: an audit row can say who acted and where they
 	// came from. Read it through ActorTenantID.
 	//
-	// omitempty keeps every ordinary token byte-identical to one minted
-	// before this claim existed.
+	// omitempty: an ordinary token has no htid on the wire.
 	HomeTenantID string `json:"htid,omitempty"`
 	jwt.RegisteredClaims
 }
@@ -404,33 +385,20 @@ const (
 	ACRSAMLPassword = "urn:oasis:names:tc:SAML:2.0:ac:classes:Password" //nolint:gosec // G101: well-known URN identifier, not a credential
 )
 
-// Issue returns a signed HS256 token with sub=userID, iat=now,
-// exp=now+ttl, iss=cfg.Issuer, auth_time=now, acr=ACRLocalPassword.
-// Backward-compat shim for v0.1-era callers — new v1.14 callers MUST
-// use IssueAccess directly so they thread the IdP-supplied auth_time +
-// acr through.
+// IssueAccess mints an access JWT for userID in tenantID.
 //
-// Empty userID is rejected with ErrInvalidToken.
-func (j *JWTService) Issue(userID string) (string, error) {
-	return j.IssueAccess(userID, tenant.Single, j.now().Unix(), ACRLocalPassword)
-}
-
-// IssueAccess mints an access JWT carrying a `tid` claim naming
-// the tenant, for pooled multi-tenant deployments.
+// tenant.Single is a tenant like any other here; its token carries no
+// `tid` claim (see AccessClaims.TenantID). An unset tenantID is not
+// checked by this method: it is the lowest-level mint, and
+// identity.Core, which is what applications call, refuses an unset
+// tenant before it gets here.
 //
-// An empty tenantID is legal and means the single-tenant deployment:
-// `tid` is omitted entirely and the token is byte-identical to one
-// IssueAccess produced before this claim existed. That is why IssueAccess
-// is a one-line delegation rather than a parallel implementation — two
-// mint paths would be two chances for them to drift.
+// tenantID is otherwise NOT validated. tamper does not parse, namespace
+// or canonicalize a tenant id; deciding that a tenant is real is the
+// application's job.
 //
-// tenantID is deliberately NOT validated. tamper does not parse, namespace
-// or canonicalize a tenant id (sketch §4.1); deciding that a tenant is
-// real is the application's job, and the boot guard already refused a
-// store that cannot scope by one.
-//
-// Same rejections as IssueAccess otherwise: empty userID, non-positive
-// authTime, empty acr.
+// Rejected with ErrInvalidToken: an empty userID, a non-positive
+// authTime, an empty acr.
 func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int64, acr string) (string, error) {
 	return j.issueAccess(userID, tenantID.String(), "", authTime, acr, j.ttl)
 }
@@ -508,41 +476,22 @@ func (j *JWTService) issueAccess(userID, tid, htid string, authTime int64, acr s
 	return signed, nil
 }
 
-// Verify parses and validates tokenStr, returning the subject (user ID)
-// on success. Any failure is wrapped in ErrInvalidToken so callers can
-// compare with errors.Is.
-//
-// Retained for the non-step-up code path; RequireAuth middleware uses
-// VerifyAccess instead so the typed claims can be stashed for
-// RequireFreshAuth downstream.
-func (j *JWTService) Verify(tokenStr string) (string, error) {
-	claims, err := j.VerifyAccess(tokenStr, tenant.Single)
-	if err != nil {
-		return "", err
-	}
-	return claims.Subject, nil
-}
-
-// VerifyAccess is VerifyAccess plus the tenant pin: the token's
-// `tid` claim must equal tenantID EXACTLY, and every other outcome is a
+// VerifyAccess verifies an access token FOR a tenant: the token's `tid`
+// claim must equal tenantID EXACTLY, and every other outcome is a
 // rejection.
 //
 // One equality does all the work, and it is worth reading the table
 // rather than the rule:
 //
-//	route ""     token ""        allow  — single-tenant, byte-identical to before
-//	route ""     token "acme"    REJECT — a tenant token on an untenanted route
-//	route "acme" token ""        REJECT — tenancy is on; see below
-//	route "acme" token "acme"    allow
-//	route "acme" token "globex"  REJECT — the cross-tenant case
+//	asked ""     token ""        allow  — the single tenant
+//	asked ""     token "acme"    REJECT — a tenant token in the single tenant
+//	asked "acme" token ""        REJECT — an absent tid is not a match
+//	asked "acme" token "acme"    allow
+//	asked "acme" token "globex"  REJECT — the cross-tenant case
 //
-// The third row is where 7c-1's legacy tolerance ENDS, and it ends here
-// deliberately. AccessClaims.TenantID is tolerant of a missing `tid`
-// because a single-tenant deployment's existing tokens have none — but
-// once a route names a tenant, an absent tid is not a match, it is the
-// absence of an answer, and reading absence as a match is precisely the
-// wildcard deny-by-default forbids (sketch §6.2). A caller that wants
-// the tolerant read still has VerifyAccess.
+// The third row: an absent tid is the single tenant's spelling, so it
+// fits tenant.Single and nothing else. Reading it as a match for a named
+// tenant would be the wildcard deny-by-default forbids.
 //
 // A mismatch collapses onto ErrInvalidToken with a message
 // indistinguishable from an ordinary invalid token. That is not
@@ -552,7 +501,7 @@ func (j *JWTService) Verify(tokenStr string) (string, error) {
 // signal — the discipline this package already applies to every other
 // JWT failure mode (§6.3).
 func (j *JWTService) VerifyAccess(tokenStr string, tenantID tenant.ID) (*AccessClaims, error) {
-	// v0.5.0: deny an UNSET tenant BEFORE parsing. Checked first
+	// Deny an UNSET tenant BEFORE parsing. Checked first
 	// deliberately -- a wiring bug should surface identically whether
 	// the token happened to be well-formed, expired, or garbage, or the
 	// error an operator sees would depend on which request tripped it.
@@ -595,35 +544,22 @@ type totpPendingClaims struct {
 	// user of tenant B could carry the token to tenant A's totp-verify
 	// endpoint, and nothing in the token would object — the second leg
 	// of a login would complete in a tenant the first leg never ran in.
-	// VerifyTOTPPendingInTenant compares this claim against the routed
-	// tenant for exact equality, the same single rule VerifyAccess
-	// applies to an access token's `tid`.
+	// VerifyTOTPPending compares this claim against the routed tenant
+	// for exact equality, the same single rule VerifyAccess applies to
+	// an access token's `tid`.
 	//
-	// omitempty is load-bearing here for the reason it is on
-	// AccessClaims.TenantID: a single-tenant pending token must be
-	// byte-identical to one minted before this claim existed.
+	// omitempty for the reason it is on AccessClaims.TenantID: the
+	// single tenant is spelled as no claim.
 	TenantID string `json:"tid,omitempty"`
 	jwt.RegisteredClaims
 }
 
 // IssueTOTPPending mints a short-lived (5 min) JWT carrying the user
-// id + Purpose="totp_pending". Returned to the SPA after a successful
-// password check on a 2FA-enrolled account; the SPA submits it back
-// on /api/auth/totp/verify alongside the 6-digit code.
-//
-// This is the [tenant.Single] form of [JWTService.IssueTOTPPendingInTenant]
-// — a one-line delegation for the same reason Issue delegates to
-// IssueAccess: two mint paths would be two chances for them to drift.
-// The token carries no `tid` and is byte-identical to one minted before
-// the claim existed. A pooled deployment calls the InTenant form.
-func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
-	return j.IssueTOTPPendingInTenant(userID, tenant.Single)
-}
-
-// IssueTOTPPendingInTenant is IssueTOTPPending plus the tenant binding:
-// the token carries a `tid` claim naming the tenant the password step
-// ran in, and [JWTService.VerifyTOTPPendingInTenant] refuses it anywhere
-// else.
+// id, Purpose="totp_pending", and the tenant the password step ran in.
+// It is returned to the client after a successful password check on a
+// 2FA-enrolled account; the client submits it back on the totp-verify
+// endpoint with the 6-digit code, and [JWTService.VerifyTOTPPending]
+// refuses it in any other tenant.
 //
 // The binding has to live in the token because nothing else on the
 // second leg can supply it. The totp-verify request is unauthenticated
@@ -631,17 +567,10 @@ func (j *JWTService) IssueTOTPPending(userID string) (string, error) {
 // keyed by user id alone, so a pending token with no tenant would be
 // accepted by every tenant's verify endpoint alike.
 //
-// An UNSET tenant denies with [ErrTenantRequired] rather than minting a
-// tid-less token. IssueAccess does not make that check and this does,
-// deliberately: a caller who reached for the InTenant form is asserting
-// it has a tenant, so an unset one means the tenant-resolving step did
-// not run, and a token quietly minted for [tenant.Single] would be one
-// the caller never asked for. A deployment that means single-tenant says
-// so by passing Single, or by calling IssueTOTPPending.
-//
-// tenantID is otherwise NOT validated, exactly as in IssueAccess:
-// deciding that a tenant is real is the application's job.
-func (j *JWTService) IssueTOTPPendingInTenant(userID string, tenantID tenant.ID) (string, error) {
+// An UNSET tenant denies with [ErrTenantRequired]. A single-tenant
+// deployment passes tenant.Single. tenantID is otherwise not validated,
+// as in IssueAccess.
+func (j *JWTService) IssueTOTPPending(userID string, tenantID tenant.ID) (string, error) {
 	if !tenantID.Valid() {
 		return "", ErrTenantRequired
 	}
@@ -666,45 +595,23 @@ func (j *JWTService) IssueTOTPPendingInTenant(userID string, tenantID tenant.ID)
 	return signed, nil
 }
 
-// VerifyTOTPPending parses + validates a totp-pending session token
-// and returns the subject (user id). Rejects any token whose Purpose
-// claim isn't "totp_pending" — guards against access JWTs being
-// submitted to the totp-verify endpoint.
+// VerifyTOTPPending parses and validates a totp-pending session token
+// and returns the subject (user id). The token's Purpose must be
+// "totp_pending", which keeps an access JWT out of the totp-verify
+// endpoint, and its `tid` must equal tenantID EXACTLY. It is the
+// pending-token twin of VerifyAccess and follows the same table:
 //
-// This is the [tenant.Single] form of
-// [JWTService.VerifyTOTPPendingInTenant], the way Verify wraps
-// VerifyAccess. It therefore REJECTS a pending token that carries a
-// `tid`: such a token was minted for a tenant, and an entry point that
-// names none is not that tenant. Before the claim existed this method
-// could not see a tenant at all, so a tenant-bound token would have
-// been accepted here on the strength of its signature alone — the
-// wildcard read deny-by-default forbids. A token minted by
-// IssueTOTPPending carries no tid and verifies exactly as before.
-func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
-	return j.VerifyTOTPPendingInTenant(tokenStr, tenant.Single)
-}
-
-// VerifyTOTPPendingInTenant is VerifyTOTPPending plus the tenant pin:
-// the token's `tid` claim must equal tenantID EXACTLY, and every other
-// outcome is a rejection. It is the pending-token twin of VerifyAccess
-// and follows the same table:
+//	asked ""     token ""        allow  — the single tenant
+//	asked ""     token "acme"    REJECT — a tenant token in the single tenant
+//	asked "acme" token ""        REJECT — an absent tid is not a match
+//	asked "acme" token "acme"    allow
+//	asked "acme" token "globex"  REJECT — the cross-tenant case
 //
-//	route ""     token ""        allow  — single-tenant, byte-identical to before
-//	route ""     token "acme"    REJECT — a tenant token on an untenanted route
-//	route "acme" token ""        REJECT — an absent tid is not a match
-//	route "acme" token "acme"    allow
-//	route "acme" token "globex"  REJECT — the cross-tenant case
-//
-// The last row is the reason this method exists. The pending token is
-// the only credential the totp-verify endpoint sees, and the code check
+// The last row is the reason for the tenant. The pending token is the
+// only credential the totp-verify endpoint sees, and the code check
 // behind it is keyed by user id alone — so without the pin, a globex
 // user's pending token finishes its login at acme's endpoint, and
 // whatever mints the session next is the only thing left to notice.
-//
-// The third row has no legacy tolerance to weigh, unlike an access
-// token's: a pending token lives five minutes, so the only tid-less
-// ones a tenant route can meet were minted moments ago by a caller that
-// did not bind them.
 //
 // An UNSET tenant denies with [ErrTenantRequired] BEFORE parsing, and a
 // mismatch collapses onto ErrInvalidToken with the same generic message
@@ -712,7 +619,7 @@ func (j *JWTService) VerifyTOTPPending(tokenStr string) (string, error) {
 // there. A distinguishable "wrong tenant" would tell the holder its
 // token is genuine and merely misaimed, which is a tenant-existence
 // oracle.
-func (j *JWTService) VerifyTOTPPendingInTenant(tokenStr string, tenantID tenant.ID) (string, error) {
+func (j *JWTService) VerifyTOTPPending(tokenStr string, tenantID tenant.ID) (string, error) {
 	// Checked first so a wiring bug reports identically whatever token
 	// happened to arrive — see VerifyAccess.
 	if !tenantID.Valid() {
@@ -752,11 +659,19 @@ func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	if err := j.parseClaims(tokenStr, claims); err != nil {
 		return nil, err
 	}
-	if claims.Purpose != "" && claims.Purpose != purposeAccess {
+	// Exactly "access". An absent purpose is refused like a foreign one:
+	// every access token this service mints carries the claim.
+	if claims.Purpose != purposeAccess {
 		return nil, invalidToken(errWrongPurpose)
 	}
 	if claims.Subject == "" {
 		return nil, invalidToken(errMissingSubject)
+	}
+	// IssueAccess refuses to mint without these two, so a token that
+	// lacks them is not one of ours. Step-up reads both, and must not
+	// have to decide what a missing one means.
+	if claims.AuthTime <= 0 || claims.ACR == "" {
+		return nil, invalidToken(errMissingAuthContext)
 	}
 	// An htid is only ever minted beside a different, non-empty tid
 	// (IssueAccessEntered). A token that says otherwise was not minted

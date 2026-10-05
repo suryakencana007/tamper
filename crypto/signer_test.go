@@ -144,14 +144,14 @@ func TestSignerSeam_TOTPPendingAlsoRoutesThroughTheSeam(t *testing.T) {
 	s := NewJWTService(JWTConfig{TTL: time.Hour, Issuer: pinnedIssuer}, WithSigner(sig))
 	pinnedClock(s)
 
-	tok, err := s.IssueTOTPPending(pinnedSubject)
+	tok, err := s.IssueTOTPPending(pinnedSubject, tenant.Single)
 	if err != nil {
 		t.Fatalf("IssueTOTPPending: %v", err)
 	}
 	if h := decodeHeader(t, tok); !strings.Contains(h, `"alg":"EdDSA"`) {
 		t.Errorf("totp-pending token did not use the signer: %s", h)
 	}
-	sub, err := s.VerifyTOTPPending(tok)
+	sub, err := s.VerifyTOTPPending(tok, tenant.Single)
 	if err != nil {
 		t.Fatalf("VerifyTOTPPending: %v", err)
 	}

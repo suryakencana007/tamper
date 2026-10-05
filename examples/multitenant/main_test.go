@@ -367,15 +367,15 @@ func TestTOTPSecondLegIsTenantBound(t *testing.T) {
 	if uid, err := acme.VerifyTOTPPending(pending); !errors.Is(err, crypto.ErrInvalidToken) {
 		t.Fatalf("%s accepted a pending token minted under %s: uid=%q err=%v", tenantAcme, tenantGlobex, uid, err)
 	}
-	// A pending token that names NO tenant is refused too: absence is
-	// not a match, and it is what an unbound mint would have produced.
-	unbound, err := provider.JWT.IssueTOTPPending(bob.ID)
+	// A pending token for the single tenant is refused too: it carries
+	// no tid, and an absent tid is not a match for a named tenant.
+	unbound, err := provider.JWT.IssueTOTPPending(bob.ID, tenant.Single)
 	if err != nil {
-		t.Fatalf("IssueTOTPPending (unbound): %v", err)
+		t.Fatalf("IssueTOTPPending (single): %v", err)
 	}
 	for _, a := range []tenantIdentity{acme, globex} {
 		if uid, err := a.VerifyTOTPPending(unbound); !errors.Is(err, crypto.ErrInvalidToken) {
-			t.Errorf("%s accepted a pending token bound to no tenant: uid=%q err=%v", a.tenantID, uid, err)
+			t.Errorf("%s accepted a single-tenant pending token: uid=%q err=%v", a.tenantID, uid, err)
 		}
 	}
 

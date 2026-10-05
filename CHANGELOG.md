@@ -66,6 +66,28 @@ redacted. Everything that existed for older rows is removed.
 - `CanonicalPayloadV2ForDebug`
 - `VerifyBootResult.Segments`
 
+### ⚠️ Breaking — `crypto` has one set of token functions (#57, TD-28)
+
+No compatibility code is kept (decided 2026-10-05). `crypto.JWTService` had
+each token function twice, once with a tenant and once without. The forms
+without a tenant are removed.
+
+- **`Issue(userID)` and `Verify(token)` are removed.** Use
+  `IssueAccess(userID, tenant, authTime, acr)` and
+  `VerifyAccess(token, tenant)`.
+- **`IssueTOTPPending` and `VerifyTOTPPending` take a tenant**:
+  `IssueTOTPPending(userID, tenant)` and `VerifyTOTPPending(token, tenant)`.
+  `IssueTOTPPendingInTenant` and `VerifyTOTPPendingInTenant` are the same
+  functions under their old names and are removed.
+- **An access token must carry `purpose`, `auth_time` and `acr`.**
+  `ParseAccess` and `VerifyAccess` refuse a token without any of them. They
+  used to accept a token with no `purpose`, and one with no `auth_time` or
+  `acr`, as tokens from an older version. Every token `IssueAccess` mints has
+  all three, so tokens minted by this version are not affected.
+
+A single-tenant application passes `tenant.Single`. Its tokens are the same
+bytes as before: the single tenant is still spelled as no `tid` claim.
+
 ### ⚠️ Breaking — the `authz` ports take a tenant (#56, TD-03)
 
 `authz` now has a tenant contract. Design: `PHASE8B-AUTHZ-TENANT-SKETCH.md`.

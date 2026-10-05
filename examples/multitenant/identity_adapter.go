@@ -173,7 +173,7 @@ func (t tenantIdentity) DisableTOTP(ctx context.Context, userID, code string) er
 // user id it is handed belongs here; the `tid` claim records that fact
 // in the one credential the second leg will present.
 func (t tenantIdentity) IssueTOTPPending(userID string) (string, error) {
-	return t.jwt.IssueTOTPPendingInTenant(userID, tenant.New(t.tenantID))
+	return t.jwt.IssueTOTPPending(userID, tenant.New(t.tenantID))
 }
 
 // VerifyTOTPPending is where a pending token minted under another
@@ -182,7 +182,7 @@ func (t tenantIdentity) IssueTOTPPending(userID string) (string, error) {
 // both directions: it rejects every tenant-bound token, and the tid-less
 // ones it does accept say nothing about where the password step ran.
 func (t tenantIdentity) VerifyTOTPPending(sessionToken string) (string, error) {
-	return t.jwt.VerifyTOTPPendingInTenant(sessionToken, tenant.New(t.tenantID))
+	return t.jwt.VerifyTOTPPending(sessionToken, tenant.New(t.tenantID))
 }
 
 var errNoSessionTOTP = errors.New("multitenant: session-token TOTP enrollment is app policy — not implemented in this example")

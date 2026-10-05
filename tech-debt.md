@@ -845,11 +845,12 @@ change is made.
 
 | Where | What |
 |---|---|
-| `crypto` | `Issue`, `Verify`, `IssueTOTPPending`, `VerifyTOTPPending` take no tenant and sit beside the `…InTenant` forms. A token with no `purpose` claim is still accepted as an access token. |
+| `crypto` | **Done in #57.** `Issue`, `Verify`, and the tenant-less `IssueTOTPPending` / `VerifyTOTPPending` are removed. A token with no `purpose`, no `auth_time` or no `acr` is refused. |
 | `identity` | `IssueTokensForUser` and `IssueTokensForUserWithACR` mint for `tenant.Single` without reading the user row. |
 | `espresso.IdentityService` (port) | `IssueTokensForUser(ctx, userID)` and the TOTP-pending methods take no tenant. This is the root of TD-10, which was patched in the adapter, not in the port. |
 | `espresso` SCIM | `SCIMConfig.TenantBoundStores` and the unscoped store path. |
 | `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
+| `espresso` step-up | `RequireFreshAuth` still has a branch for a token with `auth_time` 0 ("the pre-v1.14 legacy-JWT case"). Since #57 such a token does not parse, so the branch cannot be reached through `RequireAuth`. |
 | `espresso` | The resolvers of `RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` return a `string`, and `""` becomes `tenant.Single`. A route pattern with no tenant segment is then served as a single-tenant route. `DecisionGate.Tenant` already returns `(tenant.ID, bool)`; these should too. |
 | tests and comments | "byte-identical" tests, and history comments about Barista. |
 
@@ -860,6 +861,7 @@ ways guessed a tenant, and three reviews could not make the guess safe.
 **Proposal.** One change per package (standing rule 7), from the bottom up:
 
 1. `crypto`: one set of functions, all taking a tenant; `purpose` required.
+   **Done, #57.**
 2. `identity`: one mint function that always reads the user and checks the
    tenant.
 3. `espresso.IdentityService` and `AuthRoutes`: every method takes the
@@ -906,8 +908,8 @@ Suggested slice order if this work moves into Tamper:
    that the five fixes leave open, and TD-22 makes the example show the gate
    that pooled routes need.
 3. **TD-01 + TD-02** — the membership port and `EnterTenant`. Merged (#55).
-4. **TD-03** — the tenant contract for `authz`, with its leak suite. Open as
-   #56.
+4. **TD-03** — the tenant contract for `authz`, with its leak suite. Merged
+   (#56).
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is

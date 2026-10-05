@@ -40,8 +40,8 @@ not a separate service. Three properties shape every flow:
 | `IssueAccess(userID, tenant, authTime, acr)` | Creates an access token with the claims `sub`, `tid`, `auth_time`, `acr`, `purpose`. |
 | `IssueAccessEntered(userID, tenant, homeTenant, authTime, acr, ttl)` | Creates an *entered* token: `tid` is the tenant entered, `htid` is the user's home tenant. It checks no right; `Core.EnterTenant` is the entry point. |
 | `VerifyAccess(token, tenant)` | Verifies the token and pins the tenant: `tid` must match exactly. |
-| `ParseAccess(token)` | Verifies the token without the tenant check. `RequireAuth` uses it; the tenant check comes later in `RequireTenant`. |
-| `IssueTOTPPending` / `VerifyTOTPPending` | A 5-minute token used between "password is correct" and "TOTP is correct". |
+| `ParseAccess(token)` | Verifies the token without the tenant check. It requires `purpose=access`, an `auth_time` and an `acr`. `RequireAuth` uses it; the tenant check comes later in `RequireTenant`. |
+| `IssueTOTPPending(user, tenant)` / `VerifyTOTPPending(token, tenant)` | A 5-minute token used between "password is correct" and "TOTP is correct". It is bound to the tenant the password step ran in. |
 | `HashPassword`, `VerifyPassword`, `VerifyStub` | bcrypt. `VerifyStub` keeps the response time the same when the user does not exist. |
 | `NewRefreshToken`, `HashRefreshToken` | A random 32-byte refresh token. Only the hash is stored. |
 | `GenerateTOTPSecret`, `VerifyTOTPCode`, `GenerateTOTPRecoveryCodes`, `MatchRecoveryCode` | Second factor. |
@@ -219,7 +219,7 @@ tenant: the first user of the second tenant still gets `firstUser=true`.
 ### 4.3 Second factor (TOTP)
 
 ```
-Login ─> ErrTOTPRequired ─> IssueTOTPPending(user)          5-minute token, purpose=totp_pending
+Login ─> ErrTOTPRequired ─> IssueTOTPPending(user, tenant)  5-minute token, purpose=totp_pending
 POST /totp/verify {session, code}
   └─ VerifyTOTPPending ─> Core.VerifyTOTP | VerifyRecoveryCode
        └─ KeySet.Open(envelope) ─> crypto.VerifyTOTPCode
@@ -230,12 +230,14 @@ The pending token is rejected as a normal bearer token, and an access token is
 rejected at `/totp/verify`. The `purpose` claim separates the two in both
 directions.
 
-The pending token from `IssueTOTPPending` carries **no tenant**, and
-`Core.VerifyTOTP` is not tenant-scoped. A pooled adapter must therefore use
-the tenant-bound pair `IssueTOTPPendingInTenant` / `VerifyTOTPPendingInTenant`
-and mint with `IssueTokensForUserInTenant`, which refuses a tenant that
-differs from the user's stored tenant. These arrive with the fix for TD-10
-(#40); see `tech-debt.md`.
+The pending token is bound to a tenant: `crypto` has one pair,
+`IssueTOTPPending(user, tenant)` and `VerifyTOTPPending(token, tenant)`, and
+no form without a tenant (#57). `Core.VerifyTOTP` itself is not
+tenant-scoped, and the `espresso.IdentityService` port still passes no
+tenant to its TOTP methods, so the adapter supplies it. Mint with
+`IssueTokensForUserInTenant`, which refuses a tenant that differs from the
+user's stored tenant. Moving the tenant into the port is the next step of
+TD-28.
 
 ### 4.4 Refresh and logout
 

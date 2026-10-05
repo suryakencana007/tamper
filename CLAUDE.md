@@ -65,6 +65,13 @@ stop before writing code.
 3. Cross-tenant misses are **404, never 403** — a deny and a miss must be
    indistinguishable (the discipline `espresso/decision.go` already documents).
 4. Tenancy misconfiguration fails at `New`, never as a per-request denial.
+
+   **Exception, 2026-10-05: `espresso.RequireDecision`.** A middleware cannot
+   see what is mounted around it, so it cannot know at construction that its
+   route has no tenant gate. It answers 500 `CONFIG_ERROR` on the request
+   instead, as it already does for a nil `Authorizer`. This is not a licence
+   for other code: anything that can check at `New` still must. See
+   `PHASE8B-AUTHZ-TENANT-SKETCH.md` §4.
 5. tamper still names no table. Ports and neutral records only.
 6. Optional-interface upgrades ship a boot guard **and** a test that the guard
    fires. This is the mechanism that silently disabled the exit-3 chain guard

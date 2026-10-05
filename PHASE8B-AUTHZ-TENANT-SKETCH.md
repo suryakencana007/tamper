@@ -90,12 +90,14 @@ Rules, for both engines:
    that returns too much is held to the contract where the engine can see it.
 3. The reference stores hold the same line. `MemStore` and
    `MemPermissionStore` return `ErrTenantRequired` for an unset scope, and
-   their `Grant` methods panic on an unset scope or a subject with no home
-   tenant. Such a grant could never be read back, and a keyed literal written
+   their `Grant` methods, and `MemStore.Revoke`, panic on an unset scope or a
+   subject with no home tenant. Such a grant could never be read back, and a keyed literal written
    before these fields existed still compiles.
-4. `CheckBulk` refuses an unset scope even for an empty batch, and
-   `ListSubjects` does not list a subject with no home tenant: an access
-   review must not show someone `Check` would refuse.
+4. `CheckBulk` refuses an unset scope even for an empty batch.
+   `ListSubjects` returns `ErrTenantRequired` when the store hands it a
+   subject with no home tenant. It does not list that subject, and it does
+   not drop it quietly either: `Check` refuses such a subject with an error,
+   and an empty review would read as "nobody has access".
 5. `tenant.Single` is a scope like any other. A single-tenant deployment
    passes it everywhere and gets the decisions it got before.
 
@@ -128,7 +130,27 @@ id without claims everywhere, which broke single-tenant code that uses
 Standing rule 4 says tenancy misconfiguration fails at `New`. This gate cannot
 do that: a middleware does not know what is mounted around it. The
 `CONFIG_ERROR` appears on the first request with a tenant token. It is the
-same limit the gate already has for a nil `Authorizer`.
+same limit the gate already has for a nil `Authorizer`. `CLAUDE.md` records
+this as a bounded exception to rule 4.
+
+The token rule is written once. `tokenFitsTenant` is what `RequireTenant`
+applies, and the decision gate applies the same function behind `PinTenant`.
+A tenant gate leaves one value in the context, the tenant together with
+whether guests were invited, so the two cannot disagree.
+
+Two consequences for a pooled deployment:
+
+- **A route that is not tenant-routed still needs a tenant gate.** A platform
+  console or a singleton admin gate is a route of one tenant, the operator's.
+  Mount it behind `RequireTenant` with a resolver that returns that tenant.
+  Without it, a token that has a tenant gets the `CONFIG_ERROR`.
+- **An authenticator that puts only a user id in the context cannot be used
+  with this gate.** With no tenant gate it is taken for the single-tenant
+  path; behind one it is a `CONFIG_ERROR`. Call the `Authorizer` directly with
+  the scope and the home tenant that authenticator knows. This is a known
+  limit, not a safe default: a pooled deployment that kept single-scope
+  bindings from an earlier single-tenant life must not mount this gate behind
+  such an authenticator.
 
 `DecisionGate.UserExists` takes the subject's home tenant:
 `func(ctx, home tenant.ID, userID string)`. The ghost probe must look where

@@ -178,10 +178,15 @@ func (e *RBAC) ListSubjects(ctx context.Context, tenantID tenant.ID, act Action,
 			return nil, false, fmt.Errorf("authz: list subjects for %q: %w", act, err)
 		}
 		for _, b := range bs {
-			// A subject with no home tenant is one Check would refuse;
-			// an access review must not list it as having access.
-			if b.Tenant != tenantID || b.Resource != target || !b.Subject.Tenant.Valid() {
+			if b.Tenant != tenantID || b.Resource != target {
 				continue // defensive: hold the store to its contract
+			}
+			// A subject with no home tenant is one Check refuses with
+			// ErrTenantRequired. The review says the same, loudly: an
+			// empty list would read as "nobody has access".
+			if !b.Subject.Tenant.Valid() {
+				return nil, false, fmt.Errorf("%w: the store returned subject %s:%s with no home tenant",
+					ErrTenantRequired, b.Subject.Type, b.Subject.ID)
 			}
 			if e.h.rank(target.Type, b.Role) >= minRank && !seen[b.Subject] {
 				seen[b.Subject] = true

@@ -77,7 +77,34 @@ const (
 	keyA  = "thing.a"
 	keyB  = "thing.b"
 	keyS  = "thing.single"
+	// keyG is granted on the GLOBAL resource (empty id), in A only. A
+	// type-level grant is where a store computes "unbounded", and it is
+	// the grant most easily read without its scope.
+	keyG = "thing.global"
 )
+
+// sameSet reports whether got holds exactly the elements of want, each
+// as many times. A duplicate does not stand in for a missing element.
+func sameSet[T comparable](got, want []T) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	left := append([]T(nil), got...)
+	for _, w := range want {
+		found := false
+		for i, g := range left {
+			if g == w {
+				left = append(left[:i], left[i+1:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
 
 // harnessT is the slice of *testing.T the suites use. It exists so this
 // package's own tests can drive a suite with a recorder and assert that
@@ -158,23 +185,8 @@ func wantBindings(t harnessT, what string, scope tenant.ID, got []authz.Binding,
 			t.Errorf("%s returned a binding of scope %q (%+v); the scope asked for was %q", what, b.Tenant, b, scope)
 		}
 	}
-	if len(got) != len(want) {
+	if !sameSet(got, want) {
 		t.Errorf("%s returned %d binding(s) %+v, want %d %+v", what, len(got), got, len(want), want)
-		return
-	}
-	left := append([]authz.Binding(nil), got...)
-	for _, w := range want {
-		found := false
-		for i, g := range left {
-			if g == w {
-				left = append(left[:i], left[i+1:]...)
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("%s did not return %+v; got %+v", what, w, got)
-		}
 	}
 }
 
@@ -317,6 +329,7 @@ func runPermissionSuite(t harnessT, newHarness func() PermissionHarness) {
 //	scope B: userB holds keyB on res
 //	scope P: the guest holds keyB on res and keyA on resHome (at home)
 //	single : userS holds keyS on res
+//	scope A: userA also holds keyG on the global resource
 func seedPermissions(t harnessT, h PermissionHarness) authz.PermissionStore {
 	t.Helper()
 	for _, g := range []struct {
@@ -331,6 +344,7 @@ func seedPermissions(t harnessT, h PermissionHarness) authz.PermissionStore {
 		{tenantP, guest, res, keyB},
 		{tenantP, guest, resHome, keyA},
 		{tenant.Single, userS, res, keyS},
+		{tenantA, userA, global, keyG},
 	} {
 		if err := h.Grant(g.scope, g.sub, g.res, g.key); err != nil {
 			t.Fatalf("seed %s %v %s: %v", g.scope, g.sub, g.key, err)
@@ -386,6 +400,16 @@ func permissionsFor(t harnessT, s authz.PermissionStore) {
 	wantKeys(t, "PermissionsFor(P, guest)", got, err, keyB)
 	got, err = s.PermissionsFor(ctx, tenantB, guest, res)
 	wantKeys(t, "PermissionsFor(B, guest) — the guest holds nothing in B", got, err)
+
+	// The type-level grant is A's, and userA's.
+	got, err = s.PermissionsFor(ctx, tenantA, userA, global)
+	wantKeys(t, "PermissionsFor(A, userA, global)", got, err, keyG)
+	got, err = s.PermissionsFor(ctx, tenantB, userA, global)
+	wantKeys(t, "PermissionsFor(B, userA, global) — a type-level grant asked about in another scope", got, err)
+	got, err = s.PermissionsFor(ctx, tenantB, userB, global)
+	wantKeys(t, "PermissionsFor(B, userB, global) — another tenant's subject with the same id", got, err)
+	got, err = s.PermissionsFor(ctx, tenant.Single, userS, global)
+	wantKeys(t, "PermissionsFor(single, userS, global)", got, err)
 }
 
 func resourcesWithPermission(t harnessT, s authz.PermissionStore) {
@@ -401,20 +425,8 @@ func resourcesWithPermission(t harnessT, s authz.PermissionStore) {
 		if unbounded {
 			t.Errorf("%s reported unbounded access; nobody was granted it", what)
 		}
-		if len(got) != len(want) {
+		if !sameSet(got, want) {
 			t.Errorf("%s returned %v, want %v", what, got, want)
-			return
-		}
-		for _, w := range want {
-			found := false
-			for _, g := range got {
-				if g == w {
-					found = true
-				}
-			}
-			if !found {
-				t.Errorf("%s returned %v, want %v", what, got, want)
-			}
 		}
 	}
 	check("ResourcesWithPermission(A, userA, keyA)", tenantA, userA, keyA, res)
@@ -428,6 +440,26 @@ func resourcesWithPermission(t harnessT, s authz.PermissionStore) {
 	// Each scope returns its own.
 	check("ResourcesWithPermission(A, guest, keyA)", tenantA, guest, keyA, res)
 	check("ResourcesWithPermission(P, guest, keyA) — the guest at home", tenantP, guest, keyA, resHome)
+
+	// The type-level grant in A. Whether it makes A's own listing
+	// unbounded is the store's choice; it must make nobody else's so.
+	for what, q := range map[string]struct {
+		scope tenant.ID
+		sub   authz.Subject
+	}{
+		"B, userA":      {tenantB, userA},
+		"B, userB":      {tenantB, userB},
+		"A, userB":      {tenantA, userB},
+		"single, userS": {tenant.Single, userS},
+	} {
+		got, unbounded, err := s.ResourcesWithPermission(ctx, q.scope, q.sub, keyG, res.Type)
+		if err != nil {
+			t.Fatalf("ResourcesWithPermission(%s, keyG): %v", what, err)
+		}
+		if unbounded || len(got) != 0 {
+			t.Errorf("ResourcesWithPermission(%s, keyG) = %v unbounded=%v; the type-level grant belongs to userA in A only", what, got, unbounded)
+		}
+	}
 }
 
 func subjectsWithPermission(t harnessT, s authz.PermissionStore) {
@@ -438,20 +470,8 @@ func subjectsWithPermission(t harnessT, s authz.PermissionStore) {
 		if err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
-		if len(got) != len(want) {
+		if !sameSet(got, want) {
 			t.Errorf("%s returned %v, want %v", what, got, want)
-			return
-		}
-		for _, w := range want {
-			found := false
-			for _, g := range got {
-				if g == w {
-					found = true
-				}
-			}
-			if !found {
-				t.Errorf("%s returned %v, want %v", what, got, want)
-			}
 		}
 	}
 	// In A: A's user and the guest, each with the tenant they are from.
@@ -562,6 +582,18 @@ func superuser(t harnessT, h PermissionHarness) {
 	for _, s := range subs {
 		if s == userA {
 			t.Errorf("SubjectsWithPermission(B) lists A's superuser")
+		}
+		if s == guest {
+			t.Errorf("SubjectsWithPermission(B) lists the guest, who is a superuser only at home")
+		}
+	}
+	subs, err = h.Store.SubjectsWithPermission(ctx, tenantA, keyB, res)
+	if err != nil {
+		t.Fatalf("SubjectsWithPermission(A): %v", err)
+	}
+	for _, s := range subs {
+		if s == guest {
+			t.Errorf("SubjectsWithPermission(A) lists the guest, who is a superuser only at home")
 		}
 	}
 }

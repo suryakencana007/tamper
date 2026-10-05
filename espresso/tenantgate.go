@@ -41,6 +41,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/tenant"
 )
 
@@ -57,8 +58,34 @@ type tenantCtxKey struct{}
 // forgotten middleware into an unscoped query. Handlers in a pooled
 // deployment should treat !ok as a programmer error and fail closed.
 func TenantFromContext(ctx context.Context) (tenant.ID, bool) {
-	id, ok := ctx.Value(tenantCtxKey{}).(tenant.ID)
-	return id, ok
+	p, ok := pinnedFromContext(ctx)
+	return p.id, ok
+}
+
+// pinnedTenant is the ONE value a tenant gate leaves in the context. Every
+// gate writes it whole, so the tenant and what the gate decided about
+// guests cannot disagree: a later gate replaces both.
+type pinnedTenant struct {
+	id tenant.ID
+	// guests is true only behind RequireTenantAllowEntered. PinTenant
+	// leaves it false: it looks at no token, so it invites nobody.
+	guests bool
+}
+
+func pinnedFromContext(ctx context.Context) (pinnedTenant, bool) {
+	p, ok := ctx.Value(tenantCtxKey{}).(pinnedTenant)
+	return p, ok
+}
+
+// tokenFitsTenant is the one rule for "may this token be used on a
+// route of this tenant". RequireTenant applies it, and RequireDecision
+// applies it again behind PinTenant, which pins without a token.
+//
+//   - the token's tid is exactly the routed tenant; absent, empty and
+//     mismatched all fail the one equality;
+//   - an entered token only where guests were invited.
+func tokenFitsTenant(claims *crypto.AccessClaims, routed string, guests bool) bool {
+	return claims != nil && claims.TenantID == routed && (guests || !claims.Entered())
 }
 
 // RequireTenant returns middleware that pins the request to the tenant
@@ -135,17 +162,6 @@ func EnteredFromContext(ctx context.Context) (home tenant.ID, entered bool) {
 	return tenant.New(claims.HomeTenantID), true
 }
 
-// guestsInvitedKey marks a request whose tenant gate invited guests:
-// RequireTenantAllowEntered ran. RequireDecision reads it, because
-// PinTenant pins a tenant without looking at the token and so cannot
-// refuse an entered one.
-type guestsInvitedKey struct{}
-
-func guestsInvited(ctx context.Context) bool {
-	invited, _ := ctx.Value(guestsInvitedKey{}).(bool)
-	return invited
-}
-
 func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(http.Handler) http.Handler {
 	if resolve == nil {
 		panic("tamper/espresso: RequireTenant requires a resolve function — " +
@@ -153,32 +169,17 @@ func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(h
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims, ok := AccessClaimsFromContext(r.Context())
-			if !ok || claims == nil {
-				// RequireAuth did not run, so there is nothing to pin
-				// against. Fail closed and say nothing more than the
-				// ordinary rejection says.
-				writeUnauthenticated(w, "invalid token")
-				return
-			}
+			// No claims means RequireAuth did not run: there is nothing
+			// to pin against. A wrong tenant, and a guest on a route that
+			// did not invite guests, get the same refusal, so the
+			// response never says the token is good somewhere else.
+			claims, _ := AccessClaimsFromContext(r.Context())
 			routed := resolve(r)
-			// The same single equality crypto.VerifyAccess
-			// applies. Absent, empty and mismatched all land here.
-			if claims.TenantID != routed {
+			if !tokenFitsTenant(claims, routed, allowEntered) {
 				writeUnauthenticated(w, "invalid token")
 				return
 			}
-			// A guest of this tenant, on a route that did not invite
-			// guests. The same refusal: the response must not say the
-			// token is good for this tenant somewhere else.
-			if claims.Entered() && !allowEntered {
-				writeUnauthenticated(w, "invalid token")
-				return
-			}
-			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
-			if allowEntered {
-				ctx = context.WithValue(ctx, guestsInvitedKey{}, true)
-			}
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, pinnedTenant{id: tenant.FromStored(routed), guests: allowEntered})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -211,7 +212,7 @@ func PinTenant(resolve func(*http.Request) string) func(http.Handler) http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			routed := resolve(r)
-			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, pinnedTenant{id: tenant.FromStored(routed)})
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

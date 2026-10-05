@@ -113,6 +113,18 @@ type DecisionGate struct {
 //
 // This cannot be checked when the gate is built: a middleware does not
 // know what is mounted around it. The CONFIG_ERROR is the first request.
+//
+// Two consequences for a pooled deployment:
+//
+//   - A route that is not tenant-routed (a platform console, a
+//     singleton admin gate) still needs a tenant gate. It is a route of
+//     ONE tenant, the operator's: mount it behind RequireTenant with a
+//     resolver that returns that tenant.
+//   - An authenticator that puts only a user id in the context cannot
+//     be used with this gate. With no tenant gate it is taken for the
+//     single-tenant path, and behind one it is a CONFIG_ERROR. Call the
+//     Authorizer directly, with the scope and the subject's home tenant
+//     the authenticator knows.
 func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,41 +153,38 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 			}
 
 			claims, _ := AccessClaimsFromContext(r.Context())
-			scope, gated := TenantFromContext(r.Context())
-			home := tenant.Single
+			pin, gated := pinnedFromContext(r.Context())
+			// Both are assigned in every arm that goes on. Neither has a
+			// default to inherit.
+			var scope, home tenant.ID
 			switch {
-			case !gated && claims == nil:
-				// Only a user id, and no tenant anywhere: the
-				// single-tenant path as it was before Phase 8b.
-				scope = tenant.Single
-			case !gated && claims.TenantID != "":
+			case !gated && claims != nil && claims.TenantID != "":
 				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate got a tenant token on a route with no tenant gate").
 					WithCode("CONFIG_ERROR").
 					WriteResponse(w)
 				return
 			case !gated:
-				scope = tenant.Single
+				// No tenant anywhere — a token without one, or only a
+				// user id: the single-tenant path as it always was.
+				scope, home = tenant.Single, tenant.Single
 			case claims == nil:
 				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate is behind a tenant gate but has no access claims (RequireAuth did not run)").
 					WithCode("CONFIG_ERROR").
 					WriteResponse(w)
 				return
-			case claims.TenantID != scope.String():
+			case !tokenFitsTenant(claims, pin.id.String(), pin.guests):
+				// The rule RequireTenant applies, applied again: behind
+				// PinTenant nothing has looked at the token yet.
 				writeUnauthenticated(w, "invalid token")
 				return
-			case claims.Entered() && !guestsInvited(r.Context()):
-				// A guest on a route that did not invite guests. Only
-				// PinTenant lets one get this far.
-				writeUnauthenticated(w, "invalid token")
-				return
-			case claims.Entered():
-				// tenant.New, not FromStored: an htid is a claim, and
-				// an empty one must not become a tenant.
-				home = tenant.New(claims.HomeTenantID)
 			default:
-				// The token is for exactly this scope, and its subject
-				// is one of the scope's own.
-				home = scope
+				// The token is for exactly this scope. Its subject is
+				// one of the scope's own, unless it entered from
+				// somewhere else.
+				scope, home = pin.id, pin.id
+				if from, entered := EnteredFromContext(r.Context()); entered {
+					home = from
+				}
 			}
 			subject := authz.Subject{Tenant: home, Type: g.SubjectType, ID: userID}
 			resource := authz.Resource{Type: g.ResourceType, ID: resourceID}

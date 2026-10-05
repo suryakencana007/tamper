@@ -42,7 +42,7 @@ func gatedRoute(store tenant.EntitlementStore, c Capability, ran *bool, opts ...
 func callAsTenant(h http.Handler, tenantID string, pinned bool) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/start/okta", nil)
 	if pinned {
-		req = req.WithContext(context.WithValue(req.Context(), tenantCtxKey{}, tenant.FromStored(tenantID)))
+		req = req.WithContext(context.WithValue(req.Context(), tenantCtxKey{}, pinnedTenant{id: tenant.FromStored(tenantID)}))
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

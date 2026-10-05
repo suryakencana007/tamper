@@ -205,8 +205,13 @@ func (e *PermissionSet) ListSubjects(ctx context.Context, tenantID tenant.ID, ac
 	seen := make(map[Subject]bool, len(subs))
 	out := make([]Subject, 0, len(subs))
 	for _, s := range subs {
-		// A subject with no home tenant is one Check would refuse.
-		if seen[s] || !s.Tenant.Valid() {
+		// A subject with no home tenant is one Check refuses with
+		// ErrTenantRequired. The review says the same, loudly.
+		if !s.Tenant.Valid() {
+			return nil, false, fmt.Errorf("%w: the store returned subject %s:%s with no home tenant",
+				ErrTenantRequired, s.Type, s.ID)
+		}
+		if seen[s] {
 			continue
 		}
 		seen[s] = true

@@ -372,14 +372,18 @@ func (orphanSubjects) SubjectsWithPermission(context.Context, tenant.ID, string,
 	return []Subject{{Type: "user", ID: "orphan"}, acmeU1}, nil
 }
 
-// An access review does not list a subject that Check would refuse.
-// The reference stores cannot hold such a subject, so the stores here
-// are ones that hand it over anyway.
-func TestTenant_ListSubjectsSkipsASubjectWithNoHomeTenant(t *testing.T) {
+// An access review does not list a subject that Check would refuse,
+// and it does not hide the problem either: a store that returns a
+// subject with no home tenant gets the error Check gives. An empty list
+// would read as "nobody has access". The reference stores cannot hold
+// such a subject, so the stores here are ones that hand it over anyway.
+func TestTenant_ListSubjectsRefusesASubjectWithNoHomeTenant(t *testing.T) {
 	noHome := Subject{Type: "user", ID: "orphan"}
 	rbac, err := NewRBAC(leakyBindings{all: []Binding{
 		{Tenant: tAcme, Subject: noHome, Resource: c1, Role: "cluster-admin"},
 		{Tenant: tAcme, Subject: acmeU1, Resource: c1, Role: "cluster-admin"},
+		// Another scope's broken row is not this scope's problem.
+		{Tenant: tGlobex, Subject: noHome, Resource: c2, Role: "cluster-admin"},
 	}}, testHierarchy(), testPolicy())
 	if err != nil {
 		t.Fatalf("NewRBAC: %v", err)
@@ -390,12 +394,16 @@ func TestTenant_ListSubjectsSkipsASubjectWithNoHomeTenant(t *testing.T) {
 	}
 	for name, a := range map[string]Authorizer{"RBAC": rbac, "PermissionSet": pset} {
 		subs, _, err := a.ListSubjects(context.Background(), tAcme, "cluster.view", c1)
-		if err != nil {
-			t.Fatalf("%s: ListSubjects: %v", name, err)
+		if !errors.Is(err, ErrTenantRequired) {
+			t.Errorf("%s: ListSubjects err = %v, want ErrTenantRequired", name, err)
 		}
-		if len(subs) != 1 || subs[0] != acmeU1 {
-			t.Errorf("%s: ListSubjects = %v, want only acme's u-1; %+v is a subject Check refuses", name, subs, noHome)
+		if len(subs) != 0 {
+			t.Errorf("%s: ListSubjects returned %v beside its error", name, subs)
 		}
+	}
+	// The broken row is on c1 in acme. A review of c2 in acme is clean.
+	if subs, _, err := rbac.ListSubjects(context.Background(), tAcme, "cluster.view", c2); err != nil || len(subs) != 0 {
+		t.Errorf("RBAC: ListSubjects(acme, c2) = %v, %v; want nobody and no error", subs, err)
 	}
 }
 
@@ -448,6 +456,11 @@ func TestMemStores_GrantPanicsWithoutTenants(t *testing.T) {
 		"MemPermissionStore.Grant, no scope":           func() { NewMemPermissionStore().Grant(tenant.ID{}, acmeU1, c1, "cluster.view") },
 		"MemPermissionStore.Grant, subject, no tenant": func() { NewMemPermissionStore().Grant(tAcme, noHome, c1, "cluster.view") },
 		"MemPermissionStore.GrantSuperuser, no scope":  func() { NewMemPermissionStore().GrantSuperuser(tenant.ID{}, acmeU1) },
+		// A revoke that can equal nothing would leave the access in place.
+		"MemStore.Revoke, no scope": func() { NewMemStore().Revoke(Binding{Subject: acmeU1, Resource: c1, Role: "cluster-admin"}) },
+		"MemStore.Revoke, subject without tenant": func() {
+			NewMemStore().Revoke(Binding{Tenant: tAcme, Subject: noHome, Resource: c1, Role: "cluster-admin"})
+		},
 	} {
 		func() {
 			defer func() {

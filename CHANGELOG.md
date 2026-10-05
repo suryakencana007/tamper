@@ -81,8 +81,9 @@ redacted. Everything that existed for older rows is removed.
   `authz.ErrTenantRequired`.** Callers treat it as deny, like every error.
 - **`MemPermissionStore.Grant` and `GrantSuperuser` take the scope** as their
   first argument. A superuser is a superuser of one scope.
-- **`MemStore.Grant`, `NewMemStore`, and the `MemPermissionStore` grant
-  methods panic** on an unset scope or a subject with no home tenant. A keyed
+- **`MemStore.Grant`, `MemStore.Revoke`, `NewMemStore`, and the
+  `MemPermissionStore` grant methods panic** on an unset scope or a subject
+  with no home tenant. A keyed
   literal such as `Binding{Subject: ..., Resource: ..., Role: ...}` still
   compiles after the upgrade; without the panic it would be stored and never
   matched. The read methods return `ErrTenantRequired` for an unset scope.
@@ -105,7 +106,18 @@ new argument in your stores. Decisions are the same as before.
 **To upgrade a pooled deployment:** filter by the scope in every store query,
 match subjects with their home tenant, and run
 `authz/tenanttest.RunBindingStoreLeakSuite` or
-`RunPermissionStoreLeakSuite` against your store.
+`RunPermissionStoreLeakSuite` against your store. Then check every route that
+uses `RequireDecision`:
+
+- It must be behind a tenant gate. A route that is not tenant-routed, such as
+  a platform console, is a route of one tenant: mount it behind
+  `RequireTenant` with a resolver that returns that tenant. Without a tenant
+  gate, a token that has a `tid` gets a 500 `CONFIG_ERROR`.
+- `RequireDecision` cannot be used behind an authenticator that puts only a
+  user id in the context. Call the `Authorizer` directly there.
+
+`ListSubjects` returns `ErrTenantRequired` if a store returns a subject with
+no home tenant. Backfill that column before the upgrade.
 
 ### ⚠️ Changed — behaviour
 

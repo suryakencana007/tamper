@@ -48,7 +48,12 @@ func (m *MemStore) Grant(b Binding) {
 }
 
 // Revoke removes every binding exactly equal to b.
+//
+// Panics like Grant on a binding without tenants. It could equal no
+// stored binding, so the revoke would quietly remove nothing and the
+// subject would keep the access.
 func (m *MemStore) Revoke(b Binding) {
+	mustTenants("MemStore.Revoke", b.Tenant, b.Subject)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	kept := m.bindings[:0]

@@ -263,7 +263,7 @@ func TestThrottled_RoutedTenantKeyFallsBackToOneBucket(t *testing.T) {
 	callPath(h, "/api/auth/oidc/start/okta")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/oidc/start/okta", nil)
-	req = req.WithContext(context.WithValue(req.Context(), tenantCtxKey{}, tenant.New("acme")))
+	req = req.WithContext(context.WithValue(req.Context(), tenantCtxKey{}, pinnedTenant{id: tenant.New("acme")}))
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
 	keys := st.seen()

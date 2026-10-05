@@ -178,9 +178,9 @@ func (t tenantIdentity) IssueTOTPPending(userID string) (string, error) {
 
 // VerifyTOTPPending is where a pending token minted under another
 // tenant's prefix is refused — before any code is checked and before
-// anything is minted. The plain VerifyTOTPPending would be wrong here in
-// both directions: it rejects every tenant-bound token, and the tid-less
-// ones it does accept say nothing about where the password step ran.
+// anything is minted. The port hands this method no tenant, so the
+// adapter names its own: the token must have been minted for exactly
+// this tenant.
 func (t tenantIdentity) VerifyTOTPPending(sessionToken string) (string, error) {
 	return t.jwt.VerifyTOTPPending(sessionToken, tenant.New(t.tenantID))
 }

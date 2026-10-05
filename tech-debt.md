@@ -850,9 +850,8 @@ change is made.
 | `espresso.IdentityService` (port) | `IssueTokensForUser(ctx, userID)` and the TOTP-pending methods take no tenant. This is the root of TD-10, which was patched in the adapter, not in the port. |
 | `espresso` SCIM | `SCIMConfig.TenantBoundStores` and the unscoped store path. |
 | `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
-| `espresso` step-up | `RequireFreshAuth` still has a branch for a token with `auth_time` 0 ("the pre-v1.14 legacy-JWT case"). Since #57 such a token does not parse, so the branch cannot be reached through `RequireAuth`. |
 | `espresso` | The resolvers of `RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` return a `string`, and `""` becomes `tenant.Single`. A route pattern with no tenant segment is then served as a single-tenant route. `DecisionGate.Tenant` already returns `(tenant.ID, bool)`; these should too. |
-| tests and comments | "byte-identical" tests, and history comments about Barista. |
+| tests and comments | "byte-identical" tests, and history comments about Barista. A stale line in this file: the slice list still says TD-03 is "Open as #56"; it merged. |
 
 **Impact.** Each shim is a second way to do something, and the second way is
 the one without a tenant. #56 showed the cost: a gate that had to serve both
@@ -908,8 +907,8 @@ Suggested slice order if this work moves into Tamper:
    that the five fixes leave open, and TD-22 makes the example show the gate
    that pooled routes need.
 3. **TD-01 + TD-02** — the membership port and `EnterTenant`. Merged (#55).
-4. **TD-03** — the tenant contract for `authz`, with its leak suite. Merged
-   (#56).
+4. **TD-03** — the tenant contract for `authz`, with its leak suite. Open as
+   #56.
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is

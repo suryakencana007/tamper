@@ -237,11 +237,8 @@ func TestNewJWTService_PanicsOnEmptySecret(t *testing.T) {
 	_ = NewJWTService(JWTConfig{Secret: ""})
 }
 
-// v1.14 Sprint 0 task 00: IssueAccess + VerifyAccess + ACR claims
-// round-trip + boundary cases. Pre-v1.14 JWTs (issued via the v0.1
-// shim shape, no auth_time + no acr claims) MUST still parse via
-// VerifyAccess with zero values — the migration story for live
-// sessions during the v1.14 rollout.
+// IssueAccess + VerifyAccess: the auth_time and acr claims round-trip,
+// and a token without them is refused.
 
 func TestIssueAccess_RoundTrip(t *testing.T) {
 	svc := newTestJWT(t, "s3cr3t")
@@ -537,11 +534,10 @@ func TestIssueAccess_DeniesUnsetTenant(t *testing.T) {
 
 // --- Phase 7 slice 7c-1: the `tid` claim ---------------------------
 
-// pinnedPre7cToken is a GOLDEN VECTOR: an access token for the single
+// goldenAccessToken is a GOLDEN VECTOR: an access token for the single
 // tenant, captured once and pasted here verbatim. It pins the wire
 // format. A value written down cannot drift when the code changes, which
-// a freshly-computed expectation could. (The name records where it was
-// captured; the token carries every claim an access token carries now.)
+// a freshly-computed expectation could.
 const (
 	pinnedSecret  = "pin-secret"
 	pinnedIssuer  = "pin-issuer"
@@ -549,9 +545,9 @@ const (
 	pinnedNow     = 1700000000
 	pinnedAuthAt  = 1699999000
 
-	pinnedPre7cPayload = "eyJhdXRoX3RpbWUiOjE2OTk5OTkwMDAsImFjciI6InVybjp0YW1wZXI6YXV0aDpsb2NhbC1wYXNzd29yZCIsInB1cnBvc2UiOiJhY2Nlc3MiLCJpc3MiOiJwaW4taXNzdWVyIiwic3ViIjoidXNlci0xIiwiZXhwIjoxNzAwMDAzNjAwLCJpYXQiOjE3MDAwMDAwMDB9"
+	goldenAccessPayload = "eyJhdXRoX3RpbWUiOjE2OTk5OTkwMDAsImFjciI6InVybjp0YW1wZXI6YXV0aDpsb2NhbC1wYXNzd29yZCIsInB1cnBvc2UiOiJhY2Nlc3MiLCJpc3MiOiJwaW4taXNzdWVyIiwic3ViIjoidXNlci0xIiwiZXhwIjoxNzAwMDAzNjAwLCJpYXQiOjE3MDAwMDAwMDB9"
 
-	pinnedPre7cToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." + pinnedPre7cPayload +
+	goldenAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." + goldenAccessPayload +
 		".AJXqC7-FmGqvpioil-LBHnweaYrqTafXSI3XRdVkmLk"
 )
 
@@ -578,38 +574,38 @@ func TestIssueAccess_GoldenVector(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("token has %d segments, want 3", len(parts))
 	}
-	if parts[1] != pinnedPre7cPayload {
+	if parts[1] != goldenAccessPayload {
 		t.Errorf("encoded payload drifted from the golden vector.\n got: %s\nwant: %s\n"+
 			"A single-tenant token carries no tid claim — check that omitempty is still on TenantID.",
-			parts[1], pinnedPre7cPayload)
+			parts[1], goldenAccessPayload)
 	}
 	// The signature covers header+payload, so a whole-token match proves
 	// the header did not move either.
-	if tok != pinnedPre7cToken {
-		t.Errorf("full token drifted:\n got: %s\nwant: %s", tok, pinnedPre7cToken)
+	if tok != goldenAccessToken {
+		t.Errorf("full token drifted:\n got: %s\nwant: %s", tok, goldenAccessToken)
 	}
 
 	// And the vector verifies, for the single tenant and for no other.
-	claims, err := s.VerifyAccess(pinnedPre7cToken, tenant.Single)
+	claims, err := s.VerifyAccess(goldenAccessToken, tenant.Single)
 	if err != nil {
 		t.Fatalf("the golden vector does not verify: %v", err)
 	}
 	if claims.TenantID != "" || claims.Subject != pinnedSubject {
 		t.Errorf("tid=%q sub=%q, want empty / %q", claims.TenantID, claims.Subject, pinnedSubject)
 	}
-	if _, err := s.VerifyAccess(pinnedPre7cToken, tenant.New("acme")); !errors.Is(err, ErrInvalidToken) {
+	if _, err := s.VerifyAccess(goldenAccessToken, tenant.New("acme")); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("a tid-less token verified for a named tenant: %v", err)
 	}
 }
 
-// TestIssueAccessForTenant_RoundTrip: a tenant goes in, the same tenant
+// TestIssueAccess_TenantRoundTrip: a tenant goes in, the same tenant
 // comes out, and the claim is actually on the wire.
-func TestIssueAccessForTenant_RoundTrip(t *testing.T) {
+func TestIssueAccess_TenantRoundTrip(t *testing.T) {
 	s := pinnedService(t)
 
 	tok, err := s.IssueAccess(pinnedSubject, tenant.New("acme"), pinnedAuthAt, ACRIncommonSilver)
 	if err != nil {
-		t.Fatalf("IssueAccessForTenant: %v", err)
+		t.Fatalf("IssueAccess: %v", err)
 	}
 	claims, err := s.VerifyAccess(tok, tenant.New("acme"))
 	if err != nil {
@@ -630,9 +626,9 @@ func TestIssueAccessForTenant_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestIssueAccessForTenant_RejectionsUnchanged: adding a parameter must
+// TestIssueAccess_TenantRejectionsUnchanged: adding a parameter must
 // not weaken the existing guards.
-func TestIssueAccessForTenant_RejectionsUnchanged(t *testing.T) {
+func TestIssueAccess_TenantRejectionsUnchanged(t *testing.T) {
 	s := pinnedService(t)
 	for _, tc := range []struct {
 		name     string
@@ -688,11 +684,9 @@ func TestVerifyAccess_Matrix(t *testing.T) {
 		routeTenant tenant.ID
 		wantOK      bool
 	}{
-		// The compatibility path — a single-tenant deployment's token on
-		// a single-tenant route. Must still verify.
+		// The single tenant: its token, asked about the single tenant.
 		{"single-tenant token, single-tenant route", tenant.Single, tenant.Single, true},
-		// Where 7c-1's legacy tolerance ends. A route that names a tenant
-		// cannot accept a token that names none.
+		// A named tenant cannot accept a token that names none.
 		{"single-tenant token, tenanted route", tenant.Single, tenant.New("acme"), false},
 		{"tenanted token, single-tenant route", tenant.New("acme"), tenant.Single, false},
 		{"matching", tenant.New("acme"), tenant.New("acme"), true},
@@ -763,9 +757,9 @@ func TestVerifyAccess_MismatchIsIndistinguishable(t *testing.T) {
 	}
 }
 
-// TestVerifyAccess_PreservesVerifyAccessRejections: pinning a
+// TestVerifyAccess_RejectionsComeBeforeTheTenantCheck: pinning a
 // tenant must not weaken any check VerifyAccess already made.
-func TestVerifyAccess_PreservesVerifyAccessRejections(t *testing.T) {
+func TestVerifyAccess_RejectionsComeBeforeTheTenantCheck(t *testing.T) {
 	s := pinnedService(t)
 	for _, tc := range []struct{ name, token string }{
 		{"malformed", "not-a-jwt"},
@@ -881,12 +875,12 @@ func TestVerifyAccess_SingleTenantIsUnaffected(t *testing.T) {
 // oracle, an unset tenant denies, and the single-tenant shape does not
 // move by a byte.
 
-// pinnedPreTD10PendingToken is a GOLDEN VECTOR: a totp-pending token for
+// goldenPendingToken is a GOLDEN VECTOR: a totp-pending token for
 // the single tenant, captured once and pasted here verbatim — the same
-// fixed-point discipline as pinnedPre7cToken. Its payload decodes to
+// fixed-point discipline as goldenAccessToken. Its payload decodes to
 //
 //	{"purpose":"totp_pending","iss":"pin-issuer","sub":"user-1","exp":1700000300,"iat":1700000000}
-const pinnedPreTD10PendingToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+const goldenPendingToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
 	"eyJwdXJwb3NlIjoidG90cF9wZW5kaW5nIiwiaXNzIjoicGluLWlzc3VlciIsInN1YiI6InVzZXItMSIsImV4cCI6MTcwMDAwMDMwMCwiaWF0IjoxNzAwMDAwMDAwfQ" +
 	".WBe2JU1m0w8aVN1NvqMhwYg7LWsgfv2z-gmpqHvOeCQ"
 
@@ -901,11 +895,11 @@ func TestIssueTOTPPending_GoldenVector(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueTOTPPending: %v", err)
 	}
-	if tok != pinnedPreTD10PendingToken {
+	if tok != goldenPendingToken {
 		t.Errorf("single-tenant pending token drifted from the golden vector.\n got: %s\nwant: %s\n"+
-			"check that omitempty is still on totpPendingClaims.TenantID", tok, pinnedPreTD10PendingToken)
+			"check that omitempty is still on totpPendingClaims.TenantID", tok, goldenPendingToken)
 	}
-	sub, err := s.VerifyTOTPPending(pinnedPreTD10PendingToken, tenant.Single)
+	sub, err := s.VerifyTOTPPending(goldenPendingToken, tenant.Single)
 	if err != nil {
 		t.Fatalf("the golden vector does not verify: %v", err)
 	}
@@ -1068,7 +1062,7 @@ func TestTOTPPending_DeniesUnsetTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	for _, in := range []string{valid, pinnedPreTD10PendingToken, "", "not-a-jwt", "a.b.c"} {
+	for _, in := range []string{valid, goldenPendingToken, "", "not-a-jwt", "a.b.c"} {
 		sub, err := s.VerifyTOTPPending(in, unset)
 		if !errors.Is(err, ErrTenantRequired) {
 			t.Errorf("verify %q: err = %v, want ErrTenantRequired (the tenant gate must precede the parse)", in, err)

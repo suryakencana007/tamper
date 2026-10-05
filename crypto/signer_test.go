@@ -69,11 +69,11 @@ func TestSignerSeam_DefaultHS256DidNotMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueAccess: %v", err)
 	}
-	if tok != pinnedPre7cToken {
+	if tok != goldenAccessToken {
 		t.Errorf("default HS256 token moved:\n got: %s\nwant: %s\n"+
-			"The Signer seam must not touch the default path.", tok, pinnedPre7cToken)
+			"The Signer seam must not touch the default path.", tok, goldenAccessToken)
 	}
-	if got, want := strings.Split(tok, ".")[0], strings.Split(pinnedPre7cToken, ".")[0]; got != want {
+	if got, want := strings.Split(tok, ".")[0], strings.Split(goldenAccessToken, ".")[0]; got != want {
 		t.Errorf("header segment changed: %s", got)
 	}
 }
@@ -115,7 +115,7 @@ func TestSignerSeam_AsymmetricRoundTrip(t *testing.T) {
 
 	tok, err := s.IssueAccess(pinnedSubject, tenant.New("acme"), pinnedAuthAt, ACRLocalPassword)
 	if err != nil {
-		t.Fatalf("IssueAccessForTenant: %v", err)
+		t.Fatalf("IssueAccess: %v", err)
 	}
 	claims, err := s.VerifyAccess(tok, tenant.New("acme"))
 	if err != nil {

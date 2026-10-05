@@ -80,9 +80,9 @@ without a tenant are removed.
   `IssueTOTPPendingInTenant` and `VerifyTOTPPendingInTenant` are the same
   functions under their old names and are removed.
 - **An access token must carry `purpose`, `auth_time` and `acr`.**
-  `ParseAccess` and `VerifyAccess` refuse a token without any of them. They
-  used to accept a token with no `purpose`, and one with no `auth_time` or
-  `acr`, as tokens from an older version. Every token `IssueAccess` mints has
+  `ParseAccess` and `VerifyAccess` refuse a token that lacks any one of the
+  three. They used to accept a token with no `purpose`, and one with no
+  `auth_time` or `acr`, as tokens from an older version. Every token `IssueAccess` mints has
   all three, so tokens minted by this version are not affected.
 
 - **`IssueAccess` returns `ErrTenantRequired` for an unset tenant.** It used
@@ -173,10 +173,10 @@ no home tenant. Backfill that column before the upgrade.
   query does not select the tenant column now fails the suite; fix the query,
   because every tenant-bound mint would fail with it.
 
-- **`crypto.JWTService.VerifyTOTPPending` rejects a tenant-bound pending
-  token** (#40, TD-10). It is now the `tenant.Single` form of
-  `VerifyTOTPPendingInTenant`. A token minted by `IssueTOTPPending` carries no
-  `tid` and verifies as before.
+- **A TOTP-pending token is verified for a tenant** (#40, TD-10; final shape
+  in #57). `crypto.JWTService.VerifyTOTPPending(token, tenant)` refuses a
+  pending token minted for another tenant. See the `crypto` breaking entry
+  above for the signatures.
 
 - **A tenant-bound credential on an unscoped SCIM surface is refused** (#39,
   TD-15). With `SCIMConfig.Tenancy` off, a request whose validated principal
@@ -231,8 +231,7 @@ no home tenant. Backfill that column before the upgrade.
   are unchanged.
 
 - **Every token verification failure prints one text** (#52, TD-23). The error
-  from `VerifyAccess`, `ParseAccess`, `Verify`, `VerifyTOTPPending` and
-  `VerifyTOTPPendingInTenant` now always reads
+  from `VerifyAccess`, `ParseAccess` and `VerifyTOTPPending` now always reads
   `auth: invalid token: token not valid`. It used to say which check failed,
   which let a log line or an adapter's response tell a wrong-tenant token from
   an expired one. `errors.Is(err, ErrInvalidToken)` is unchanged, and the
@@ -276,11 +275,12 @@ no home tenant. Backfill that column before the upgrade.
   several tenants re-opens the leak. `Tenancy` and `TenantBoundStores`
   together are rejected by `NewSCIMRoutes`.
 
-- **`crypto.JWTService.IssueTOTPPendingInTenant` and
-  `VerifyTOTPPendingInTenant`** (#40, TD-10). A TOTP-pending token can now
-  carry a `tid` claim, and verification pins it the same way `VerifyAccess`
-  pins an access token. A pooled adapter should use these, so a pending token
-  minted in one tenant cannot be finished in another.
+- **A TOTP-pending token carries a `tid` claim** (#40, TD-10). Verification
+  pins it the same way `VerifyAccess` pins an access token, so a pending
+  token minted in one tenant cannot be finished in another. The functions
+  are `IssueTOTPPending(userID, tenant)` and
+  `VerifyTOTPPending(token, tenant)`; #40 added them under `…InTenant` names,
+  which #57 removed.
 
 - **Audit DB migration 006** (#54, TD-26). A partial index over rows that are
   not `canonical_version=4`. It is empty on a healthy DB and makes the check

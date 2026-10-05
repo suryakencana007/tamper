@@ -71,10 +71,10 @@ var (
 // This is the crypto-side twin of identity's error of the same name,
 // and it exists for the same reason: tenant.ID distinguishes "I forgot
 // to thread a tenant" from "I am deliberately single-tenant", and only
-// the first denies. Before v0.5.0 the two were indistinguishable here,
-// because an unset id stringifies to "" and so compared EQUAL to a
-// tid-less token's claim -- a caller that never resolved a tenant
-// verified single-tenant tokens happily and looked correct doing it.
+// the first denies. The check has to be explicit: an unset id
+// stringifies to "" and so compares EQUAL to a tid-less token's claim.
+// Without it a caller that never resolved a tenant would verify, and
+// mint, single-tenant tokens and look correct doing it.
 //
 // Deliberately NOT collapsed into ErrInvalidToken, despite that being
 // this package's rule for every other failure. The rule exists to deny
@@ -87,7 +87,7 @@ var (
 //
 // Transport obligation: map it onto the SAME generic 401 envelope as
 // ErrInvalidToken. It is legible in logs, never on the wire.
-var ErrTenantRequired = errors.New("auth: tenant id is required to verify an access token")
+var ErrTenantRequired = errors.New("auth: tenant id is required")
 
 // JWTConfig is tamper's native JWT options struct. It intentionally
 // carries no dependency on any host application's config package — the
@@ -531,7 +531,7 @@ func (j *JWTService) keyFunc(t *jwt.Token) (any, error) {
 	return j.secret, nil
 }
 
-// totpPendingClaims is the v0.8 task 02 short-lived session token
+// totpPendingClaims is the short-lived session token
 // minted between password-success and TOTP-verify on logins where 2FA
 // is required. The `purpose` claim discriminates it from the standard
 // access JWT, and the discrimination is enforced in BOTH directions:

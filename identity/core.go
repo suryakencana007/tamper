@@ -561,6 +561,12 @@ func (c *Core) issueTokens(ctx context.Context, userID string, tenantID tenant.I
 	if c.jwt == nil {
 		return Tokens{}, ErrNoTokenService
 	}
+	// Every caller has already resolved the tenant. This is here so that
+	// one that has not gets identity's own ErrTenantRequired, not the
+	// crypto error of the same name wrapped as a signing failure.
+	if err := c.tenantGate(tenantID); err != nil {
+		return Tokens{}, err
+	}
 	if authTime <= 0 {
 		authTime = c.now().Unix()
 	}

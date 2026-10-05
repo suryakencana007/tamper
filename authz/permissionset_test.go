@@ -62,7 +62,7 @@ func TestPermissionSet_NonDownwardClosedRole(t *testing.T) {
 	st := NewMemPermissionStore()
 	frank := Subject{Tenant: tenant.Single, Type: "user", ID: "frank"}
 	c1 := Resource{"cluster", "c1"}
-	st.Grant(tenant.Single, frank, c1, "cluster.view", "cluster.manage") // note: no cluster.deploy
+	ok(t, st.Grant(tenant.Single, frank, c1, "cluster.view", "cluster.manage")) // note: no cluster.deploy
 	e := ps(t, st)
 
 	mustAllow(t, e, frank, "cluster.view", c1, true)

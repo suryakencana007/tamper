@@ -92,7 +92,7 @@ func newParityFixture(t *testing.T) parityFixture {
 	ok(t, pstore.GrantSuperuser(tenant.Single, pAlice))
 	ok(t, pstore.Grant(tenant.Single, pBob, pC1, "cluster.view", "cluster.deploy"))
 	ok(t, pstore.Grant(tenant.Single, pCarol, pC1, "cluster.view"))
-	pstore.GrantSuperuser(tenant.Single, pDave) // system admin ⇒ superuser; his cluster-viewer row is subsumed
+	ok(t, pstore.GrantSuperuser(tenant.Single, pDave)) // system admin ⇒ superuser; his cluster-viewer row is subsumed
 	permset, err := NewPermissionSet(pstore)
 	if err != nil {
 		t.Fatalf("NewPermissionSet: %v", err)

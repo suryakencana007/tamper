@@ -621,7 +621,7 @@ func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *t
 	// Password step done in globex.
 	pending, err := c.jwt.IssueTOTPPending(user.ID, globex)
 	if err != nil {
-		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+		t.Fatalf("IssueTOTPPending: %v", err)
 	}
 
 	// Fence 1: the token is replayed at ACME's verify.

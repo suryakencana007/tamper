@@ -57,15 +57,15 @@ type IdentityService interface {
 	// IssueTOTPPending mints the session token returned after a
 	// password-only Login, for the user that Login just authenticated.
 	//
-	// Pooled: bind the token to the adapter's tenant —
-	// crypto.JWTService.IssueTOTPPendingInTenant. The unbound form names
-	// a user and no tenant, so every tenant's verify would accept it.
+	// The port passes no tenant, so the adapter supplies its own:
+	// crypto.JWTService.IssueTOTPPending(userID, tenant). A single-tenant
+	// adapter passes tenant.Single.
 	IssueTOTPPending(userID string) (string, error)
 	// VerifyTOTPPending validates that session token and returns the user
 	// id it was minted for. Any error renders as the generic 401.
 	//
-	// Pooled: verify against the adapter's tenant —
-	// crypto.JWTService.VerifyTOTPPendingInTenant — so a pending token
+	// Verify against the adapter's tenant —
+	// crypto.JWTService.VerifyTOTPPending(token, tenant) — so a pending token
 	// minted under another tenant's routes is refused here, before a code
 	// is checked or anything is minted. This is the only place the second
 	// leg can be tied to the tenant the first leg ran in: VerifyTOTP and

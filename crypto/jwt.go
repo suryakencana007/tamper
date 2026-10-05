@@ -62,8 +62,9 @@ var (
 	errBadHomeTenant      = errors.New("htid without a different tid")
 )
 
-// ErrTenantRequired — [JWTService.VerifyAccess] was handed an UNSET
-// tenant id (the zero [tenant.ID], not [tenant.Single]). The
+// ErrTenantRequired — [JWTService.IssueAccess] or
+// [JWTService.VerifyAccess] was handed an UNSET tenant id (the zero
+// [tenant.ID], not [tenant.Single]). The
 // totp-pending pair ([JWTService.IssueTOTPPending],
 // [JWTService.VerifyTOTPPending]) returns it on the same terms.
 //
@@ -388,10 +389,12 @@ const (
 // IssueAccess mints an access JWT for userID in tenantID.
 //
 // tenant.Single is a tenant like any other here; its token carries no
-// `tid` claim (see AccessClaims.TenantID). An unset tenantID is not
-// checked by this method: it is the lowest-level mint, and
-// identity.Core, which is what applications call, refuses an unset
-// tenant before it gets here.
+// `tid` claim (see AccessClaims.TenantID).
+//
+// An UNSET tenant denies with [ErrTenantRequired]. This is the only
+// mint of an ordinary access token, and the zero tenant.ID has the same
+// string form as tenant.Single: without the check, a caller whose
+// tenant was never resolved would get a valid single-tenant token.
 //
 // tenantID is otherwise NOT validated. tamper does not parse, namespace
 // or canonicalize a tenant id; deciding that a tenant is real is the
@@ -400,6 +403,9 @@ const (
 // Rejected with ErrInvalidToken: an empty userID, a non-positive
 // authTime, an empty acr.
 func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int64, acr string) (string, error) {
+	if !tenantID.Valid() {
+		return "", ErrTenantRequired
+	}
 	return j.issueAccess(userID, tenantID.String(), "", authTime, acr, j.ttl)
 }
 
@@ -641,19 +647,19 @@ func (j *JWTService) VerifyTOTPPending(tokenStr string, tenantID tenant.ID) (str
 	return claims.Subject, nil
 }
 
-// ParseAccess validates an access token's signature, purpose and subject
-// and returns its claims WITHOUT checking the tenant.
+// ParseAccess validates an access token and returns its claims WITHOUT
+// checking the tenant. It checks the signature, expiry and issuer, that
+// the purpose is "access", and that the token has a subject, a positive
+// auth_time and an acr. A caller may rely on all of those being set on
+// the claims it gets back.
 //
 // The name is the warning. Use [JWTService.VerifyAccess] unless you are
 // composing the tenant check yourself — espresso's RequireAuth does,
 // because RequireTenant runs after it and performs the comparison against
 // the ROUTED tenant, which RequireAuth cannot know.
 //
-// This is deliberately not called VerifyAccess-something. Before v0.4.0 the
-// unpinned form WAS the short name and the pinned one carried the suffix,
-// so the safe call was the longer one and the foot-gun was the default.
-// That is now inverted: VerifyAccess checks the tenant, and skipping the
-// check requires saying Parse.
+// This is deliberately not called VerifyAccess-something: VerifyAccess
+// checks the tenant, and skipping the check requires saying Parse.
 func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	claims := &AccessClaims{}
 	if err := j.parseClaims(tokenStr, claims); err != nil {

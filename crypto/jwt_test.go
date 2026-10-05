@@ -395,12 +395,6 @@ func TestVerifyAccess_RejectsTOTPPendingToken(t *testing.T) {
 	} else if !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("VerifyAccess err %v: not wrapping ErrInvalidToken", err)
 	}
-
-	// Verify() shares the VerifyAccess path, so it must reject too —
-	// it is the other exported entry point onto the same token.
-	if _, err := verifySingle(svc, pending); err == nil {
-		t.Fatal("Verify accepted a totp-pending token — 2FA bypass")
-	}
 }
 
 func TestVerifyTOTPPending_RejectsAccessToken(t *testing.T) {
@@ -467,31 +461,77 @@ func TestVerifyAccess_RejectsATokenWithoutPurpose(t *testing.T) {
 	// Every access token this service mints says purpose="access". One
 	// that says nothing is refused like one that says something else:
 	// "no purpose" must not be a second way to be an access token.
+	//
+	// Two fixtures, because "nothing" has two spellings on the wire: the
+	// claim absent, and the claim present and empty. Both are otherwise
+	// complete, so the purpose is the only thing that can refuse them.
 	secret := []byte("s3cr3t")
 	now := time.Now()
-	claims := AccessClaims{
-		AuthTime: now.Unix(),
-		ACR:      ACRIncommonSilver,
-		// Purpose deliberately unset.
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "u-1",
-			Issuer:    "barista-test",
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
-		},
+	reg := jwt.RegisteredClaims{
+		Subject:   "u-1",
+		Issuer:    "barista-test",
+		IssuedAt:  jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
 	}
-	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	absent := struct {
+		AuthTime int64  `json:"auth_time"`
+		ACR      string `json:"acr"`
+		jwt.RegisteredClaims
+	}{now.Unix(), ACRIncommonSilver, reg}
+	empty := AccessClaims{AuthTime: now.Unix(), ACR: ACRIncommonSilver, RegisteredClaims: reg}
 
 	svc := newTestJWT(t, "s3cr3t")
-	got, err := svc.VerifyAccess(tok, tenant.Single)
-	if !errors.Is(err, ErrInvalidToken) || got != nil {
-		t.Fatalf("VerifyAccess = %v, %v; want nil and ErrInvalidToken", got, err)
+	for name, tc := range map[string]struct {
+		claims     jwt.Claims
+		wantOnWire bool
+	}{
+		"claim absent":            {absent, false},
+		"claim present and empty": {empty, true},
+	} {
+		tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, tc.claims).SignedString(secret)
+		if err != nil {
+			t.Fatalf("%s: sign: %v", name, err)
+		}
+		// Assert the WIRE shape: decode the payload, so the fixture is
+		// proven to be the spelling its name says.
+		raw, derr := base64.RawURLEncoding.DecodeString(strings.Split(tok, ".")[1])
+		if derr != nil {
+			t.Fatalf("%s: decode payload: %v", name, derr)
+		}
+		if got := strings.Contains(string(raw), `"purpose"`); got != tc.wantOnWire {
+			t.Fatalf("%s: test setup: purpose key on the wire = %v, want %v (%s)", name, got, tc.wantOnWire, raw)
+		}
+
+		got, err := svc.VerifyAccess(tok, tenant.Single)
+		if !errors.Is(err, ErrInvalidToken) || got != nil {
+			t.Errorf("%s: VerifyAccess = %v, %v; want nil and ErrInvalidToken", name, got, err)
+		}
+		if !errors.Is(err, errWrongPurpose) {
+			t.Errorf("%s: refused for another reason than the purpose: %#v", name, errors.Unwrap(err))
+		}
 	}
-	if !errors.Is(err, errWrongPurpose) {
-		t.Errorf("refused for another reason than the purpose: %#v", errors.Unwrap(err))
+}
+
+// IssueAccess is the only mint of an ordinary access token. The zero
+// tenant.ID has the same string form as tenant.Single, so without a
+// check an unresolved tenant would mint a valid single-tenant token.
+func TestIssueAccess_DeniesUnsetTenant(t *testing.T) {
+	svc := newTestJWT(t, "s3cr3t")
+	now := time.Now().Unix()
+	for name, unset := range map[string]tenant.ID{"the zero ID": {}, `tenant.New("")`: tenant.New("")} {
+		tok, err := svc.IssueAccess("u-1", unset, now, ACRLocalPassword)
+		if !errors.Is(err, ErrTenantRequired) || tok != "" {
+			t.Errorf("%s: IssueAccess = %q, %v; want no token and ErrTenantRequired", name, tok, err)
+		}
+	}
+	// Before the other arguments are looked at: a wiring bug reads the
+	// same whatever else is wrong with the call.
+	if _, err := svc.IssueAccess("", tenant.ID{}, 0, ""); !errors.Is(err, ErrTenantRequired) {
+		t.Errorf("unset tenant with other bad arguments: err = %v, want ErrTenantRequired", err)
+	}
+	// tenant.Single is not unset.
+	if _, err := svc.IssueAccess("u-1", tenant.Single, now, ACRLocalPassword); err != nil {
+		t.Errorf("IssueAccess(tenant.Single): %v", err)
 	}
 }
 
@@ -627,9 +667,9 @@ func decodeSegment(t *testing.T, token string) string {
 	return string(raw)
 }
 
-// --- Phase 7 slice 7c-2: VerifyAccessInTenant ----------------------
+// --- Phase 7 slice 7c-2: VerifyAccess ----------------------
 
-// TestVerifyAccessInTenant_Matrix is the whole rule. Only exact equality
+// TestVerifyAccess_Matrix is the whole rule. Only exact equality
 // passes; absent, empty and mismatched all reject.
 //
 // v0.5.0 note on the fixtures: the single-tenant cases pass
@@ -640,7 +680,7 @@ func decodeSegment(t *testing.T, token string) string {
 // VerifyAccess compared String() (where both render "") instead of
 // checking Valid(). That is precisely the ambiguity tenant.ID exists to
 // remove, and the unset case now has its own subtest below.
-func TestVerifyAccessInTenant_Matrix(t *testing.T) {
+func TestVerifyAccess_Matrix(t *testing.T) {
 	s := pinnedService(t)
 	for _, tc := range []struct {
 		name        string
@@ -666,7 +706,7 @@ func TestVerifyAccessInTenant_Matrix(t *testing.T) {
 			claims, err := s.VerifyAccess(tok, tc.routeTenant)
 			if tc.wantOK {
 				if err != nil {
-					t.Fatalf("VerifyAccessInTenant: %v", err)
+					t.Fatalf("VerifyAccess: %v", err)
 				}
 				if claims.TenantID != tc.tokenTenant.String() {
 					t.Errorf("TenantID = %q, want %q", claims.TenantID, tc.tokenTenant.String())
@@ -686,12 +726,12 @@ func TestVerifyAccessInTenant_Matrix(t *testing.T) {
 	}
 }
 
-// TestVerifyAccessInTenant_MismatchIsIndistinguishable pins the
+// TestVerifyAccess_MismatchIsIndistinguishable pins the
 // anti-oracle property at the crypto layer. A wrong-tenant rejection
 // must not be separable from an ordinary invalid-token one: if it were,
 // a caller could enumerate which tenants exist by watching the error
 // change, and could learn that its token is genuine but misaimed.
-func TestVerifyAccessInTenant_MismatchIsIndistinguishable(t *testing.T) {
+func TestVerifyAccess_MismatchIsIndistinguishable(t *testing.T) {
 	s := pinnedService(t)
 
 	tok, err := s.IssueAccess(pinnedSubject, tenant.New("acme"), pinnedAuthAt, ACRLocalPassword)
@@ -723,9 +763,9 @@ func TestVerifyAccessInTenant_MismatchIsIndistinguishable(t *testing.T) {
 	}
 }
 
-// TestVerifyAccessInTenant_PreservesVerifyAccessRejections: pinning a
+// TestVerifyAccess_PreservesVerifyAccessRejections: pinning a
 // tenant must not weaken any check VerifyAccess already made.
-func TestVerifyAccessInTenant_PreservesVerifyAccessRejections(t *testing.T) {
+func TestVerifyAccess_PreservesVerifyAccessRejections(t *testing.T) {
 	s := pinnedService(t)
 	for _, tc := range []struct{ name, token string }{
 		{"malformed", "not-a-jwt"},
@@ -882,11 +922,11 @@ func TestTOTPPending_RoundTrip(t *testing.T) {
 
 	tok, err := s.IssueTOTPPending(pinnedSubject, acme)
 	if err != nil {
-		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+		t.Fatalf("IssueTOTPPending: %v", err)
 	}
 	sub, err := s.VerifyTOTPPending(tok, acme)
 	if err != nil {
-		t.Fatalf("VerifyTOTPPendingInTenant: %v", err)
+		t.Fatalf("VerifyTOTPPending: %v", err)
 	}
 	if sub != pinnedSubject {
 		t.Errorf("sub = %q, want %q", sub, pinnedSubject)
@@ -900,10 +940,10 @@ func TestTOTPPending_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestVerifyTOTPPendingInTenant_Matrix is the whole rule, and it is the
+// TestVerifyTOTPPending_Matrix is the whole rule, and it is the
 // VerifyAccess table row for row. Only exact equality passes.
 //
-// Mutation check: delete the tid comparison in VerifyTOTPPendingInTenant
+// Mutation check: delete the tid comparison in VerifyTOTPPending
 // and the three rejecting rows fail.
 func TestVerifyTOTPPending_Matrix(t *testing.T) {
 	s := pinnedService(t)
@@ -931,7 +971,7 @@ func TestVerifyTOTPPending_Matrix(t *testing.T) {
 			sub, err := s.VerifyTOTPPending(tok, tc.routeTenant)
 			if tc.wantOK {
 				if err != nil {
-					t.Fatalf("VerifyTOTPPendingInTenant: %v", err)
+					t.Fatalf("VerifyTOTPPending: %v", err)
 				}
 				if sub != pinnedSubject {
 					t.Errorf("sub = %q, want %q", sub, pinnedSubject)
@@ -953,7 +993,7 @@ func TestVerifyTOTPPending_Matrix(t *testing.T) {
 
 // TestVerifyTOTPPending_MismatchIsIndistinguishable pins the
 // anti-oracle property for the pending token, as
-// TestVerifyAccessInTenant_MismatchIsIndistinguishable does for the
+// TestVerifyAccess_MismatchIsIndistinguishable does for the
 // access token. A wrong-tenant rejection that read differently would
 // tell the holder its token is genuine and merely misaimed.
 func TestVerifyTOTPPending_MismatchIsIndistinguishable(t *testing.T) {
@@ -997,7 +1037,7 @@ func TestVerifyTOTPPending_MismatchIsIndistinguishable(t *testing.T) {
 	}
 }
 
-// TestTOTPPendingInTenant_DeniesUnsetTenant: the zero tenant.ID is what
+// TestTOTPPending_DeniesUnsetTenant: the zero tenant.ID is what
 // a caller who forgot to thread the tenant produces, and both halves of
 // the pair refuse it rather than reading it as tenant.Single.
 //
@@ -1039,7 +1079,7 @@ func TestTOTPPending_DeniesUnsetTenant(t *testing.T) {
 	}
 }
 
-// TestTOTPPendingInTenant_RejectionsUnchanged: adding the tenant must not
+// TestTOTPPending_RejectionsUnchanged: adding the tenant must not
 // weaken a check the pair already made.
 func TestTOTPPending_RejectionsUnchanged(t *testing.T) {
 	s := pinnedService(t)
@@ -1065,7 +1105,7 @@ func TestTOTPPending_RejectionsUnchanged(t *testing.T) {
 	}
 }
 
-// TestTOTPPendingInTenant_PurposeStaysBidirectional: the two token shapes
+// TestTOTPPending_PurposeStaysBidirectional: the two token shapes
 // now share a `tid` claim as well as a secret, so the purpose check is
 // the ONLY thing separating a tenant-bound pending token from a
 // tenant-bound access token. A matching tenant must not be enough to
@@ -1077,7 +1117,7 @@ func TestTOTPPending_PurposeStaysBidirectional(t *testing.T) {
 
 	pending, err := s.IssueTOTPPending(pinnedSubject, acme)
 	if err != nil {
-		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+		t.Fatalf("IssueTOTPPending: %v", err)
 	}
 	if _, err := s.VerifyAccess(pending, acme); !errors.Is(err, ErrInvalidToken) {
 		t.Errorf("VerifyAccess accepted a tenant-bound pending token in its own tenant — 2FA bypass: %v", err)
@@ -1091,6 +1131,6 @@ func TestTOTPPending_PurposeStaysBidirectional(t *testing.T) {
 		t.Fatalf("IssueAccess: %v", err)
 	}
 	if _, err := s.VerifyTOTPPending(access, acme); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("VerifyTOTPPendingInTenant accepted an access token in its own tenant: %v", err)
+		t.Errorf("VerifyTOTPPending accepted an access token in its own tenant: %v", err)
 	}
 }

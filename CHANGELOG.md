@@ -85,6 +85,11 @@ without a tenant are removed.
   `acr`, as tokens from an older version. Every token `IssueAccess` mints has
   all three, so tokens minted by this version are not affected.
 
+- **`IssueAccess` returns `ErrTenantRequired` for an unset tenant.** It used
+  to mint: the zero `tenant.ID` has the same string form as `tenant.Single`,
+  so a caller whose tenant was never resolved got a valid single-tenant
+  token.
+
 A single-tenant application passes `tenant.Single`. Its tokens are the same
 bytes as before: the single tenant is still spelled as no `tid` claim.
 

@@ -135,6 +135,17 @@ func EnteredFromContext(ctx context.Context) (home tenant.ID, entered bool) {
 	return tenant.New(claims.HomeTenantID), true
 }
 
+// guestsInvitedKey marks a request whose tenant gate invited guests:
+// RequireTenantAllowEntered ran. RequireDecision reads it, because
+// PinTenant pins a tenant without looking at the token and so cannot
+// refuse an entered one.
+type guestsInvitedKey struct{}
+
+func guestsInvited(ctx context.Context) bool {
+	invited, _ := ctx.Value(guestsInvitedKey{}).(bool)
+	return invited
+}
+
 func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(http.Handler) http.Handler {
 	if resolve == nil {
 		panic("tamper/espresso: RequireTenant requires a resolve function — " +
@@ -164,7 +175,11 @@ func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(h
 				writeUnauthenticated(w, "invalid token")
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))))
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
+			if allowEntered {
+				ctx = context.WithValue(ctx, guestsInvitedKey{}, true)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

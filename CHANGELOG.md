@@ -81,12 +81,20 @@ redacted. Everything that existed for older rows is removed.
   `authz.ErrTenantRequired`.** Callers treat it as deny, like every error.
 - **`MemPermissionStore.Grant` and `GrantSuperuser` take the scope** as their
   first argument. A superuser is a superuser of one scope.
+- **`MemStore.Grant`, `NewMemStore`, and the `MemPermissionStore` grant
+  methods panic** on an unset scope or a subject with no home tenant. A keyed
+  literal such as `Binding{Subject: ..., Resource: ..., Role: ...}` still
+  compiles after the upgrade; without the panic it would be stored and never
+  matched. The read methods return `ErrTenantRequired` for an unset scope.
 - **`espresso.RequireDecision`** asks in the tenant a tenant gate put in the
-  context and builds the subject with the token's home tenant. It refuses
-  where a tenant is missing: a user id with no access claims in the context,
-  or a tenant token on a route with no tenant gate, is a 500 `CONFIG_ERROR`;
-  a token that is not for the pinned tenant is a 401. A single-tenant
-  deployment (no gate, no `tid`) is unchanged.
+  context and builds the subject with the token's home tenant. On a
+  tenanted route it refuses where a tenant is missing: a tenant token on a
+  route with no tenant gate, or no access claims behind a tenant gate, is a
+  500 `CONFIG_ERROR`; a token that is not for the pinned tenant, or an
+  entered token on a route that is not behind `RequireTenantAllowEntered`,
+  is a 401. A single-tenant deployment is unchanged: with no tenant gate, a
+  token without `tid`, or a bare user id in the context, is asked about in
+  `tenant.Single`.
 - **`espresso.DecisionGate.UserExists` takes the subject's home tenant**:
   `func(ctx, home tenant.ID, userID string)`. Look the user up there.
 

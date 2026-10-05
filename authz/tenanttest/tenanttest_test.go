@@ -86,10 +86,14 @@ const (
 	// through the tenant the subject is stored in, not the scope asked.
 	// Right for a tenant's own users; wrong for every guest.
 	answersFromTheHomeTenant
+	// emptyMeansAll: the store filters by tenant, except that an empty
+	// tenant string is read as "no filter" — `WHERE (? = '' OR tenant =
+	// ?)`. Only a question in the single scope reveals it.
+	emptyMeansAll
 )
 
 func (m leakMode) String() string {
-	return [...]string{"ignores the scope", "ignores the subject's tenant", "stamps the asked scope", "answers from the subject's home tenant"}[m]
+	return [...]string{"ignores the scope", "ignores the subject's tenant", "stamps the asked scope", "answers from the subject's home tenant", "reads the empty tenant as no filter"}[m]
 }
 
 // --- a leaky BindingStore ----------------------------------------------
@@ -102,6 +106,9 @@ type leakyBindings struct {
 func (l *leakyBindings) grant(b authz.Binding) error { l.all = append(l.all, b); return nil }
 
 func (l *leakyBindings) scopeOK(b authz.Binding, scope tenant.ID) bool {
+	if l.mode == emptyMeansAll {
+		return scope.String() == "" || b.Tenant == scope
+	}
 	return (l.mode != ignoresSubjectTenant && l.mode != answersFromTheHomeTenant) || b.Tenant == scope
 }
 
@@ -171,6 +178,8 @@ func TestBindingSuite_FailsAgainstLeakyStores(t *testing.T) {
 		ignoresSubjectTenant: {"BindingsFor", "BindingsForSubject"},
 		// Only the guest cases can see this one.
 		answersFromTheHomeTenant: {"BindingsFor", "BindingsForSubject"},
+		// Only the single-scope case can see this one.
+		emptyMeansAll: {"SingleScope"},
 	} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rec := &recorderT{}
@@ -219,6 +228,9 @@ func (l *leakyPermissions) grantSuperuser(scope tenant.ID, sub authz.Subject) er
 }
 
 func (l *leakyPermissions) scopeOK(g permGrant, scope tenant.ID) bool {
+	if l.mode == emptyMeansAll {
+		return scope.String() == "" || g.scope == scope
+	}
 	return (l.mode != ignoresSubjectTenant && l.mode != answersFromTheHomeTenant) || g.scope == scope
 }
 
@@ -238,7 +250,7 @@ func (l *leakyPermissions) subjectOK(g permGrant, sub authz.Subject) bool {
 
 func (l *leakyPermissions) isSuper(scope tenant.ID, sub authz.Subject) bool {
 	for _, g := range l.supers {
-		if l.scopeOK(g, scope) && l.subjectOK(g, sub) {
+		if l.scopeOK(g, l.eff(scope, sub)) && l.subjectOK(g, sub) {
 			return true
 		}
 	}
@@ -306,7 +318,10 @@ func TestPermissionSuite_FailsAgainstLeakyStores(t *testing.T) {
 		ignoresSubjectTenant: {"PermissionsFor", "ResourcesWithPermission", "Superuser"},
 		// Only the guest cases can see this one. ResourcesWithPermission
 		// catches it by the resource returned, not by how many.
-		answersFromTheHomeTenant: {"PermissionsFor", "ResourcesWithPermission"},
+		// The superuser case catches it through the guest who is a
+		// superuser at home.
+		answersFromTheHomeTenant: {"PermissionsFor", "ResourcesWithPermission", "Superuser"},
+		emptyMeansAll:            {"SingleScope"},
 	} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rec := &recorderT{}

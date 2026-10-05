@@ -90,21 +90,29 @@ type DecisionGate struct {
 //     guest inside this scope; the roles they hold at home are bindings
 //     of another scope and are never consulted.
 //
-// Neither is ever filled in with a guess. Where a tenant is missing the
-// gate refuses:
+// Where a tenant is missing on a tenanted route the gate refuses; it
+// does not fill one in:
 //
-//   - No access claims in the context (a user id stashed by something
-//     other than RequireAuth) is a 500 CONFIG_ERROR: nothing says where
-//     the subject is from.
 //   - No tenant gate ran and the token HAS a tenant: a pooled route that
 //     forgot its tenant gate. 500 CONFIG_ERROR, loudly, rather than a
 //     decision taken in the wrong scope.
-//   - No tenant gate ran and the token has no tenant: the single-tenant
-//     deployment. Scope and subject are both tenant.Single.
+//   - A tenant gate ran but there are no access claims in the context:
+//     500 CONFIG_ERROR. Nothing says where the subject is from.
 //   - A tenant gate ran and the token is not for that tenant (possible
 //     behind PinTenant, which checks no token): the 401 RequireTenant
 //     writes. A subject may not be authorized in a scope its token was
 //     not minted for.
+//   - The token is an entered one and the route did not invite guests
+//     with RequireTenantAllowEntered: the same 401. PinTenant alone does
+//     not invite them.
+//
+// The single-tenant deployment is what it was before tenants existed
+// here (standing rule 1): with no tenant gate, and a token without a
+// tenant OR only a user id in the context (ContextWithUserID, a custom
+// auth middleware), scope and subject are both tenant.Single.
+//
+// This cannot be checked when the gate is built: a middleware does not
+// know what is mounted around it. The CONFIG_ERROR is the first request.
 func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -132,15 +140,14 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 				}
 			}
 
-			claims, ok := AccessClaimsFromContext(r.Context())
-			if !ok || claims == nil {
-				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate has a user id but no access claims (RequireAuth did not run)").
-					WithCode("CONFIG_ERROR").
-					WriteResponse(w)
-				return
-			}
+			claims, _ := AccessClaimsFromContext(r.Context())
 			scope, gated := TenantFromContext(r.Context())
+			home := tenant.Single
 			switch {
+			case !gated && claims == nil:
+				// Only a user id, and no tenant anywhere: the
+				// single-tenant path as it was before Phase 8b.
+				scope = tenant.Single
 			case !gated && claims.TenantID != "":
 				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate got a tenant token on a route with no tenant gate").
 					WithCode("CONFIG_ERROR").
@@ -148,17 +155,27 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 				return
 			case !gated:
 				scope = tenant.Single
+			case claims == nil:
+				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate is behind a tenant gate but has no access claims (RequireAuth did not run)").
+					WithCode("CONFIG_ERROR").
+					WriteResponse(w)
+				return
 			case claims.TenantID != scope.String():
 				writeUnauthenticated(w, "invalid token")
 				return
-			}
-			// From here the token is for exactly this scope. Its subject
-			// is from the scope itself, unless the token says it entered
-			// from somewhere else. tenant.New, not FromStored: an htid is
-			// a claim, and an empty one must not become a tenant.
-			home := scope
-			if claims.Entered() {
+			case claims.Entered() && !guestsInvited(r.Context()):
+				// A guest on a route that did not invite guests. Only
+				// PinTenant lets one get this far.
+				writeUnauthenticated(w, "invalid token")
+				return
+			case claims.Entered():
+				// tenant.New, not FromStored: an htid is a claim, and
+				// an empty one must not become a tenant.
 				home = tenant.New(claims.HomeTenantID)
+			default:
+				// The token is for exactly this scope, and its subject
+				// is one of the scope's own.
+				home = scope
 			}
 			subject := authz.Subject{Tenant: home, Type: g.SubjectType, ID: userID}
 			resource := authz.Resource{Type: g.ResourceType, ID: resourceID}

@@ -93,7 +93,8 @@ entered token; a route takes guests only through `RequireTenantAllowEntered`.
 a `tenant.ID` (the scope), and `Subject` carries its home tenant. Decided and
 not to be loosened: no binding spans tenants, so a guest needs a binding in
 the tenant entered. Every `BindingStore` and `PermissionStore` must pass
-`authz/tenanttest`.
+`authz/tenanttest` (the one exception, the RBAC-backed store, is explained in
+the sketch).
 
 ### The M5 decision, settled
 

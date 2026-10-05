@@ -50,6 +50,7 @@ func NewMemPermissionStore() *MemPermissionStore {
 // rejected silently — superuser is expressed via GrantSuperuser, never as a
 // stored key, so a wildcard can never leak in through a grant.
 func (m *MemPermissionStore) Grant(tenantID tenant.ID, sub Subject, res Resource, keys ...string) {
+	mustTenants("MemPermissionStore.Grant", tenantID, sub)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := permGrantKey{tenantID, sub, res}
@@ -68,6 +69,7 @@ func (m *MemPermissionStore) Grant(tenantID tenant.ID, sub Subject, res Resource
 
 // GrantSuperuser marks sub as superuser on every resource.
 func (m *MemPermissionStore) GrantSuperuser(tenantID tenant.ID, sub Subject) {
+	mustTenants("MemPermissionStore.GrantSuperuser", tenantID, sub)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.superusers[permSuperKey{tenantID, sub}] = struct{}{}
@@ -75,8 +77,8 @@ func (m *MemPermissionStore) GrantSuperuser(tenantID tenant.ID, sub Subject) {
 
 // PermissionsFor implements PermissionStore.
 func (m *MemPermissionStore) PermissionsFor(_ context.Context, tenantID tenant.ID, sub Subject, res Resource) (PermissionSetResult, error) {
-	if !tenantID.Valid() {
-		return PermissionSetResult{}, nil
+	if err := scopeGate(tenantID); err != nil {
+		return PermissionSetResult{}, err
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -94,8 +96,8 @@ func (m *MemPermissionStore) PermissionsFor(_ context.Context, tenantID tenant.I
 // ResourcesWithPermission implements PermissionStore. A superuser's access is
 // non-enumerable (every resource of the type), so it reports unbounded.
 func (m *MemPermissionStore) ResourcesWithPermission(_ context.Context, tenantID tenant.ID, sub Subject, key string, resourceType string) ([]Resource, bool, error) {
-	if !tenantID.Valid() {
-		return nil, false, nil
+	if err := scopeGate(tenantID); err != nil {
+		return nil, false, err
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -117,8 +119,8 @@ func (m *MemPermissionStore) ResourcesWithPermission(_ context.Context, tenantID
 // SubjectsWithPermission implements PermissionStore: every subject holding key
 // on exactly res, plus every global superuser (they hold every key everywhere).
 func (m *MemPermissionStore) SubjectsWithPermission(_ context.Context, tenantID tenant.ID, key string, res Resource) ([]Subject, error) {
-	if !tenantID.Valid() {
-		return nil, nil
+	if err := scopeGate(tenantID); err != nil {
+		return nil, err
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()

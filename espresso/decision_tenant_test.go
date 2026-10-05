@@ -143,6 +143,9 @@ func TestRequireDecision_RefusesWhenATenantIsMissing(t *testing.T) {
 		{"another tenant's token behind PinTenant", PinTenant(routeTo(tenantA)), tokenFor(t, j, tenant.New(tenantB)), http.StatusUnauthorized},
 		{"a single-tenant token behind PinTenant", PinTenant(routeTo(tenantA)), tokenFor(t, j, tenant.Single), http.StatusUnauthorized},
 		{"a token entered elsewhere behind PinTenant", PinTenant(routeTo(tenantA)), enteredToken(t, j, tenantB), http.StatusUnauthorized},
+		// Entered into THIS tenant, but nothing invited guests: PinTenant
+		// is not RequireTenantAllowEntered.
+		{"a token entered here behind PinTenant", PinTenant(routeTo(tenantA)), enteredToken(t, j, tenantA), http.StatusUnauthorized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &recordingAuthorizer{allow: true}
@@ -156,10 +159,11 @@ func TestRequireDecision_RefusesWhenATenantIsMissing(t *testing.T) {
 		})
 	}
 
-	// A user id with no claims: nothing says where the subject is from.
-	t.Run("a user id in the context without claims", func(t *testing.T) {
+	// A user id with no claims, on a tenanted route: nothing says where
+	// the subject is from.
+	t.Run("a user id without claims behind a tenant gate", func(t *testing.T) {
 		a := &recordingAuthorizer{allow: true}
-		h := decisionGate(a)(http.HandlerFunc(noContent))
+		h := PinTenant(routeTo(tenantA))(decisionGate(a)(http.HandlerFunc(noContent)))
 		req := httptest.NewRequest(http.MethodPost, "/things", nil)
 		req = req.WithContext(ContextWithUserID(req.Context(), "u-1"))
 		rec := httptest.NewRecorder()
@@ -168,9 +172,30 @@ func TestRequireDecision_RefusesWhenATenantIsMissing(t *testing.T) {
 			t.Errorf("status %d, want 500", rec.Code)
 		}
 		if len(a.scopes) != 0 {
-			t.Error("the Authorizer was asked about a subject with no claims")
+			t.Error("the Authorizer was asked about a subject with no claims in a tenant scope")
 		}
 	})
+}
+
+// Standing rule 1: the single-tenant path is what it was. A user id put
+// in the context without a token (ContextWithUserID, a custom auth
+// middleware), on a route with no tenant gate, is asked about in the
+// single scope as a single-tenant subject.
+func TestRequireDecision_UserIDOnlyIsTheSingleTenantPath(t *testing.T) {
+	a := &recordingAuthorizer{allow: true}
+	h := decisionGate(a)(http.HandlerFunc(noContent))
+	req := httptest.NewRequest(http.MethodPost, "/things", nil)
+	req = req.WithContext(ContextWithUserID(req.Context(), "u-1"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status %d, want 204", rec.Code)
+	}
+	want := authz.Subject{Tenant: tenant.Single, Type: "user", ID: "u-1"}
+	if len(a.scopes) != 1 || a.scopes[0] != tenant.Single || a.subjects[0] != want {
+		t.Errorf("asked scopes=%v subjects=%+v, want the single scope and %+v", a.scopes, a.subjects, want)
+	}
 }
 
 // The ghost probe is told where the subject is stored. A denied guest

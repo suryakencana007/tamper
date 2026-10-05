@@ -46,6 +46,12 @@ func NewRBACPermissionStore(store BindingStore, h Hierarchy, p Policy) (Permissi
 
 // PermissionsFor returns the set of actions RBAC would allow sub on res.
 func (s *rbacPermissionStore) PermissionsFor(ctx context.Context, tenantID tenant.ID, sub Subject, res Resource) (PermissionSetResult, error) {
+	// The store can be called without the PermissionSet engine in front
+	// of it, and effective()'s filter compares for equality: two unset
+	// tenants are equal.
+	if err := gate(tenantID, sub); err != nil {
+		return PermissionSetResult{}, err
+	}
 	// Memoize effective rank per target: RBAC reads the same target across
 	// multiple actions' requirements (especially the shared global singleton),
 	// so caching keeps the DB cost at RBAC's level.

@@ -144,8 +144,8 @@ func (e *PermissionSet) Check(ctx context.Context, tenantID tenant.ID, sub Subje
 // CheckBulk implements Authorizer. Results are index-aligned with reqs; the
 // first evaluation error fails the whole call.
 func (e *PermissionSet) CheckBulk(ctx context.Context, tenantID tenant.ID, reqs []CheckRequest) ([]Decision, error) {
-	if !tenantID.Valid() {
-		return nil, fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	if err := scopeGate(tenantID); err != nil {
+		return nil, err
 	}
 	out := make([]Decision, len(reqs))
 	for i, r := range reqs {
@@ -192,8 +192,8 @@ func (e *PermissionSet) ListResources(ctx context.Context, tenantID tenant.ID, s
 // The engine never reports unbounded — SQL stores enumerate global-role holders
 // concretely (matching RBAC, rbac.go:144). Sorted by (Type, ID).
 func (e *PermissionSet) ListSubjects(ctx context.Context, tenantID tenant.ID, act Action, res Resource) ([]Subject, bool, error) {
-	if !tenantID.Valid() {
-		return nil, false, fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	if err := scopeGate(tenantID); err != nil {
+		return nil, false, err
 	}
 	if act == "" {
 		return nil, false, nil

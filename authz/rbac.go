@@ -79,8 +79,8 @@ func (e *RBAC) Check(ctx context.Context, tenantID tenant.ID, sub Subject, act A
 // first evaluation error fails the whole call.
 func (e *RBAC) CheckBulk(ctx context.Context, tenantID tenant.ID, reqs []CheckRequest) ([]Decision, error) {
 	// Here and not only in Check: an empty reqs must not hide the bug.
-	if !tenantID.Valid() {
-		return nil, fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	if err := scopeGate(tenantID); err != nil {
+		return nil, err
 	}
 	out := make([]Decision, len(reqs))
 	for i, r := range reqs {
@@ -158,8 +158,8 @@ func (e *RBAC) ListResources(ctx context.Context, tenantID tenant.ID, sub Subjec
 // reports unbounded — the parameter exists for engines that cannot
 // enumerate (see the interface docs).
 func (e *RBAC) ListSubjects(ctx context.Context, tenantID tenant.ID, act Action, res Resource) ([]Subject, bool, error) {
-	if !tenantID.Valid() {
-		return nil, false, fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	if err := scopeGate(tenantID); err != nil {
+		return nil, false, err
 	}
 	reqs, ok := e.p[act]
 	if !ok {

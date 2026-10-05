@@ -28,11 +28,20 @@ import (
 // value is not "single tenant"; it is "nobody said".
 var ErrTenantRequired = errors.New("authz: tenant is required")
 
+// scopeGate refuses a question that names no scope. It is the one place
+// the rule is written; the engines and the reference stores all call it.
+func scopeGate(tenantID tenant.ID) error {
+	if !tenantID.Valid() {
+		return fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	}
+	return nil
+}
+
 // gate refuses a question that names no scope, and one whose subject
 // has no home tenant.
 func gate(tenantID tenant.ID, sub Subject) error {
-	if !tenantID.Valid() {
-		return fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	if err := scopeGate(tenantID); err != nil {
+		return err
 	}
 	if !sub.Tenant.Valid() {
 		return fmt.Errorf("%w: subject %s:%s has no home tenant", ErrTenantRequired, sub.Type, sub.ID)

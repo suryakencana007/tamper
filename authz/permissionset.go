@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // SuperuserKey is the wildcard permission string that must NEVER appear as a
@@ -55,24 +57,33 @@ func (r PermissionSetResult) allows(act Action) bool {
 //
 // Implementations MUST be safe for concurrent use. Queries are read-only; how
 // permissions are granted/revoked is out of the PDP's scope.
+//
+// THE ISOLATION CONTRACT. Every method takes tenantID, the scope, and
+// answers from grants that live in it and nowhere else. sub is matched
+// whole, home tenant included. A superuser is a superuser of one scope.
+//
+// The engine cannot check any of this: a PermissionSetResult carries no
+// tenant, so nothing a leaking store returns looks wrong.
+// authz/tenanttest.RunPermissionStoreLeakSuite is the only guard. Run it
+// against your store.
 type PermissionStore interface {
 	// PermissionsFor returns the effective permission set sub holds on exactly
 	// res (same Type AND ID; an empty ID is the global/type-level query). A
 	// store error means "could not decide" — the engine surfaces it and
 	// callers must treat it as deny.
-	PermissionsFor(ctx context.Context, sub Subject, res Resource) (PermissionSetResult, error)
+	PermissionsFor(ctx context.Context, tenantID tenant.ID, sub Subject, res Resource) (PermissionSetResult, error)
 
 	// ResourcesWithPermission enumerates the CONCRETE resources (ID != "") of
 	// resourceType on which sub holds key. Fuel for ListResources.
 	// unbounded=true means a grant makes the subject's access non-enumerable
 	// (a superuser, or a global grant covering every resource of the type);
 	// the caller owns the catalog and must treat that as "all".
-	ResourcesWithPermission(ctx context.Context, sub Subject, key string, resourceType string) (resources []Resource, unbounded bool, err error)
+	ResourcesWithPermission(ctx context.Context, tenantID tenant.ID, sub Subject, key string, resourceType string) (resources []Resource, unbounded bool, err error)
 
 	// SubjectsWithPermission enumerates the subjects holding key on exactly
 	// res. Fuel for ListSubjects. SQL stores can enumerate global-role holders,
 	// which is why the engine's ListSubjects never reports unbounded.
-	SubjectsWithPermission(ctx context.Context, key string, res Resource) ([]Subject, error)
+	SubjectsWithPermission(ctx context.Context, tenantID tenant.ID, key string, res Resource) ([]Subject, error)
 }
 
 // PermissionSet is an Authorizer that decides by set membership: an action is
@@ -110,11 +121,14 @@ func NewPermissionSet(store PermissionStore) (*PermissionSet, error) {
 // engine has no policy to validate against — every string is a potential key,
 // so an absent key is simply a deny); store failures return an error, which
 // callers must also treat as deny.
-func (e *PermissionSet) Check(ctx context.Context, sub Subject, act Action, res Resource) (Decision, error) {
+func (e *PermissionSet) Check(ctx context.Context, tenantID tenant.ID, sub Subject, act Action, res Resource) (Decision, error) {
+	if err := gate(tenantID, sub); err != nil {
+		return Decision{}, err
+	}
 	if act == "" {
 		return Decision{Allowed: false, Reason: "empty action"}, nil
 	}
-	set, err := e.store.PermissionsFor(ctx, sub, res)
+	set, err := e.store.PermissionsFor(ctx, tenantID, sub, res)
 	if err != nil {
 		return Decision{}, fmt.Errorf("authz: check %q on %s: %w", act, label(res), err)
 	}
@@ -129,10 +143,13 @@ func (e *PermissionSet) Check(ctx context.Context, sub Subject, act Action, res 
 
 // CheckBulk implements Authorizer. Results are index-aligned with reqs; the
 // first evaluation error fails the whole call.
-func (e *PermissionSet) CheckBulk(ctx context.Context, reqs []CheckRequest) ([]Decision, error) {
+func (e *PermissionSet) CheckBulk(ctx context.Context, tenantID tenant.ID, reqs []CheckRequest) ([]Decision, error) {
+	if err := scopeGate(tenantID); err != nil {
+		return nil, err
+	}
 	out := make([]Decision, len(reqs))
 	for i, r := range reqs {
-		d, err := e.Check(ctx, r.Subject, r.Action, r.Resource)
+		d, err := e.Check(ctx, tenantID, r.Subject, r.Action, r.Resource)
 		if err != nil {
 			return nil, err
 		}
@@ -147,11 +164,14 @@ func (e *PermissionSet) CheckBulk(ctx context.Context, reqs []CheckRequest) ([]D
 // action nobody was granted simply yields an empty, non-unbounded result. The
 // store owns enumeration; the engine sorts by ID for a deterministic listing
 // (matching RBAC's ordering, rbac.go:136).
-func (e *PermissionSet) ListResources(ctx context.Context, sub Subject, act Action, resourceType string) ([]Resource, bool, error) {
+func (e *PermissionSet) ListResources(ctx context.Context, tenantID tenant.ID, sub Subject, act Action, resourceType string) ([]Resource, bool, error) {
+	if err := gate(tenantID, sub); err != nil {
+		return nil, false, err
+	}
 	if act == "" {
 		return nil, false, nil
 	}
-	rs, unbounded, err := e.store.ResourcesWithPermission(ctx, sub, string(act), resourceType)
+	rs, unbounded, err := e.store.ResourcesWithPermission(ctx, tenantID, sub, string(act), resourceType)
 	if err != nil {
 		return nil, false, fmt.Errorf("authz: list resources for %q: %w", act, err)
 	}
@@ -171,28 +191,32 @@ func (e *PermissionSet) ListResources(ctx context.Context, sub Subject, act Acti
 // ListSubjects implements Authorizer: the subjects who may perform act on res.
 // The engine never reports unbounded — SQL stores enumerate global-role holders
 // concretely (matching RBAC, rbac.go:144). Sorted by (Type, ID).
-func (e *PermissionSet) ListSubjects(ctx context.Context, act Action, res Resource) ([]Subject, bool, error) {
+func (e *PermissionSet) ListSubjects(ctx context.Context, tenantID tenant.ID, act Action, res Resource) ([]Subject, bool, error) {
+	if err := scopeGate(tenantID); err != nil {
+		return nil, false, err
+	}
 	if act == "" {
 		return nil, false, nil
 	}
-	subs, err := e.store.SubjectsWithPermission(ctx, string(act), res)
+	subs, err := e.store.SubjectsWithPermission(ctx, tenantID, string(act), res)
 	if err != nil {
 		return nil, false, fmt.Errorf("authz: list subjects for %q: %w", act, err)
 	}
 	seen := make(map[Subject]bool, len(subs))
 	out := make([]Subject, 0, len(subs))
 	for _, s := range subs {
+		// A subject with no home tenant is one Check refuses with
+		// ErrTenantRequired. The review says the same, loudly.
+		if !s.Tenant.Valid() {
+			return nil, false, fmt.Errorf("%w: the store returned subject %s:%s with no home tenant",
+				ErrTenantRequired, s.Type, s.ID)
+		}
 		if seen[s] {
 			continue
 		}
 		seen[s] = true
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Type != out[j].Type {
-			return out[i].Type < out[j].Type
-		}
-		return out[i].ID < out[j].ID
-	})
+	sortSubjects(out)
 	return out, false, nil
 }

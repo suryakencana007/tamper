@@ -40,9 +40,8 @@ stop before writing code.
 ### Decisions already taken — do not relitigate in passing
 
 - **Pooled**, not silo. One process, N tenants.
-- **Additive first, break later.** An empty `TenantID` means today's behavior,
-  the same escape hatch already used for `acr` and `purpose`. The breaking flip
-  is its own milestone (M6, v0.4.0).
+- **Additive first, break later** was the rule through Phase 7. It ended on
+  2026-10-05; see standing rule 1.
 - **`examples/multitenant` is the proving ground, not Barista.** Barista is
   single-tenant and structurally cannot prove the tenant path — a Barista
   façade would pass `tenantID=""` everywhere and prove only the compat half.
@@ -51,20 +50,34 @@ stop before writing code.
 
 ### Standing rules while Phase 7 is open
 
-1. `tenantID == ""` is byte-identical to pre-Phase-7 behavior. Same bytes,
-   headers, status codes, error envelopes.
+1. **No compatibility code. Decided by the repo owner on 2026-10-05.** Do not
+   keep an old function, an old signature or an old behaviour alive beside
+   the new one, and do not add a fallback so that old callers keep working.
+   Nothing is in production. Change the API, change every caller in this
+   repo, and write the breaking change in `CHANGELOG.md`.
 
-   **Exception, decided 2026-10-04: audit rows.** The audit log is
-   `canonical_version=4` only. A single-tenant deployment writes v4 rows with
-   an empty tenant, so its audit-row payloads and hashes are NOT the ones it
-   wrote before Phase 7, and an audit DB written by an earlier version cannot
-   be opened. Nothing was in production when this was decided. The rule still
-   holds for everything else on the `""` path. See sketch §8 item 1.
+   This replaces the Phase 7 rule that `tenantID == ""` must be
+   byte-identical to pre-Phase-7 behavior. That rule and rule 2 could not
+   both hold in one place (the `""` path had to keep working, and a missing
+   tenant had to deny), and code written to satisfy both guessed tenants.
+
+   **Single-tenant is still a supported deployment.** It is said out loud:
+   the application passes `tenant.Single`, or a resolver that returns `""`.
+   What is gone is the idea that leaving the tenant out means single-tenant.
+   A user in a single-tenant deployment is stored in `tenant.Single` and
+   needs no membership.
+
+   Barista is not kept compiling against `main`. Moving it is separate work
+   (TD-27).
+
+   Shims that still exist from before this rule are listed in TD-28 of
+   `tech-debt.md`. Remove them one package per change (rule 7).
 2. Deny-by-default extends to tenancy. Absent, empty or mismatched tenant
    resolves to deny; no error return may be read as allow.
 3. Cross-tenant misses are **404, never 403** — a deny and a miss must be
    indistinguishable (the discipline `espresso/decision.go` already documents).
 4. Tenancy misconfiguration fails at `New`, never as a per-request denial.
+
 5. tamper still names no table. Ports and neutral records only.
 6. Optional-interface upgrades ship a boot guard **and** a test that the guard
    fires. This is the mechanism that silently disabled the exit-3 chain guard
@@ -88,6 +101,13 @@ Read it before touching them. Two things are decided and not to be loosened in
 passing: entering gives an access token only (no refresh session), and no
 token is ever valid for more than one tenant. `RequireTenant` refuses an
 entered token; a route takes guests only through `RequireTenantAllowEntered`.
+
+`PHASE8B-AUTHZ-TENANT-SKETCH.md` governs tenants in `authz`: every port takes
+a `tenant.ID` (the scope), and `Subject` carries its home tenant. Decided and
+not to be loosened: no binding spans tenants, so a guest needs a binding in
+the tenant entered. Every `BindingStore` and `PermissionStore` must pass
+`authz/tenanttest` (the one exception, the RBAC-backed store, is explained in
+the sketch).
 
 ### The M5 decision, settled
 

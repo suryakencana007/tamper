@@ -235,9 +235,9 @@ application, and the route shape is the application's.
   enter. The exposure ends at the home token's expiry plus the entered TTL.
 - **Entering is not throttled** and a refused entry is not recorded by
   tamper. The hook runs on success only.
-- **Authorization for guests is the application's.** On a route opted in with
-  `RequireTenantAllowEntered`, the `authz` subject is still the bare user id.
-  TD-03 is the tenant contract for `authz`.
+- **Authorization for guests** was the application's problem when this phase
+  merged. Phase 8b (`PHASE8B-AUTHZ-TENANT-SKETCH.md`) closes it: the subject
+  carries its home tenant, and a guest needs a binding in the tenant entered.
 - **A removed membership keeps working until the token expires.** There is no
   revocation list. Keep `WithEnterTenantTTL` short.
 - **Deactivating the admin** has the same window, for the same reason.

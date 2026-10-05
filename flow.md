@@ -83,16 +83,22 @@ cross-tenant leak test. Every `Store` implementation must pass it.
 
 | Function / type | Purpose |
 |---|---|
-| `Authorizer.Check(subject, action, resource)` | Answers one authorization question. |
+| `Authorizer.Check(tenant, subject, action, resource)` | Answers one authorization question. `tenant` is the scope: whose resources. `subject` carries its home tenant. |
 | `CheckBulk` | Answers many questions in one call. |
-| `ListResources(subject, action, type)` | "Which resources may this subject act on?" `unbounded=true` means all of them. |
-| `ListSubjects(action, resource)` | "Who may do this?" Used for access reviews. |
+| `ListResources(tenant, subject, action, type)` | "Which resources may this subject act on?" `unbounded=true` means all of them. |
+| `ListSubjects(tenant, action, resource)` | "Who may do this?" Used for access reviews. A guest is listed with the tenant they are from. |
 | `NewRBAC(BindingStore, Hierarchy, Policy)` | The role-ladder engine. A policy is an OR of `Requirement{Type, Min}`. When `Type` differs from the resource type, it is a global alternative. |
 | `NewPermissionSet(PermissionStore)` | The permission-key engine. `Superuser` is an explicit flag, not a `*` key. |
 | `NewRBACPermissionStore` | A converter that makes `PermissionSet` decide exactly like `RBAC`. |
 
 All indirection (groups, custom roles, inheritance) is the store's job. The
 engine only compares.
+
+Every method of `Authorizer`, `BindingStore` and `PermissionStore` takes a
+`tenant.ID`. A binding lives in one tenant and never answers a question in
+another. `authz/tenanttest` has the leak suites
+(`RunBindingStoreLeakSuite`, `RunPermissionStoreLeakSuite`); every store must
+pass them.
 
 ### `oidc`, `saml`, `oauth2social` — federation
 
@@ -139,7 +145,7 @@ engine only compares.
 | `RequireTenant(resolve)` | Checks that the token `tid` equals the route tenant. Anything else is a 401. |
 | `RequireEntitlement(store, capability, resolve)` | Gate for paid features. |
 | `RequireFreshAuth(maxAge, acrValues)` | Step-up: requires a recent authentication and an accepted ACR. |
-| `RequireDecision(DecisionGate)` | PDP gate: visibility check (404), then tier check (403). |
+| `RequireDecision(DecisionGate)` | PDP gate: visibility check (404), then tier check (403). The gate has its own `Tenant` resolver (required) and an `AllowEntered` flag; the token must be for that tenant. |
 | `RequireServiceAccount(validator)` | Machine credentials. The tenant comes from the token. |
 | `Throttled(throttle, key)` | Rate limit per address, per tenant, or per service account. |
 | `Auditor.For` / `Auditor.Mutation` | Writes an audit event after a 2xx response. |
@@ -337,7 +343,8 @@ Authorization: Bearer <access>
   │                        ─> context: tenant.ID
   ├─ RequireEntitlement   EntitlementStore.ForTenant(tenant) ─> feature bought? : 403 FEATURE_NOT_ENABLED
   ├─ RequireFreshAuth     auth_time recent enough and acr accepted? : 401 STEP_UP_REQUIRED
-  ├─ RequireDecision      authz.Check(Subject{user}, action, Resource{type, id from path})
+  ├─ RequireDecision      authz.Check(routed tenant, Subject{token's home tenant, user},
+  │                                    action, Resource{type, id from path})
   │                        ├─ visibility check fails ─> 404 (a deny and a miss look the same)
   │                        └─ tier check fails       ─> 403
   ├─ application handler
@@ -346,38 +353,50 @@ Authorization: Bearer <access>
 
 The application chooses this order. Tamper does not force it.
 
-Two middlewares put a tenant in the context, and they give different
+Four middlewares put a tenant in the context, and they give different
 guarantees:
 
-- `RequireTenant` sets it **after** checking the token `tid` against the
-  route.
+- `RequireTenant` and `RequireTenantAllowEntered` set it **after** checking
+  the token `tid` against the route.
+- `RequireDecision` sets it after the same check against its own `Tenant`
+  resolver, but only for what runs **behind** it. Middleware mounted in front
+  of it (`Auditor.For`, `RequireEntitlement`) does not see that tenant.
 - `PinTenant` sets it with **no** token check. It is for routes before login.
 
 So `TenantFromContext` returning `ok=true` does not prove that the token was
-checked. On an authenticated route, only `RequireTenant` gives that guarantee.
-If `PinTenant` is mounted globally, authenticated routes still need
-`RequireTenant`. With neither middleware, a handler gets `(zero, false)`.
-
-(The comment at `espresso/tenantgate.go:31` still says this gate is the only
-one that sets the tenant. That comment was written before `PinTenant`
-existed.)
+checked. If `PinTenant` is mounted globally, authenticated routes still need
+`RequireTenant`. A pooled route that audits or checks entitlements before its
+decision gate also needs `RequireTenant` first. With none of these, a handler
+gets `(zero, false)`.
 
 ### 4.8 Authorization decision
 
 ```
-authz.Check(sub, act, res)
+authz.Check(scope, sub, act, res)
+  scope unset, or sub.Tenant unset ─> ErrTenantRequired (callers deny)
 
 RBAC
   Policy[act] = [Requirement{Type, Min}, …]          (OR)
   for each requirement:
-    Type == res.Type ─> BindingStore.BindingsFor(sub, res)               binding on the instance
-    Type != res.Type ─> BindingStore.BindingsFor(sub, Resource{Type,""}) global alternative
+    Type == res.Type ─> BindingStore.BindingsFor(scope, sub, res)               binding on the instance
+    Type != res.Type ─> BindingStore.BindingsFor(scope, sub, Resource{Type,""}) global alternative
+    drop bindings of another scope or another subject
     rank(highest role) >= rank(Min) ─> ALLOW
   nothing satisfied, or unknown action ─> DENY
 
 PermissionSet
-  PermissionStore.PermissionsFor(sub, res) ─> {Keys, Superuser}
+  PermissionStore.PermissionsFor(scope, sub, res) ─> {Keys, Superuser}
   Superuser ─> ALLOW ; act ∈ Keys ─> ALLOW ; otherwise DENY
+```
+
+Two tenants are in every question. `scope` is whose resources these are.
+`sub.Tenant` is where the subject is stored. They are the same for a tenant's
+own user and different for a guest:
+
+```
+acme's user in acme          scope=acme  sub={acme, user, u-1}
+platform admin entered acme  scope=acme  sub={platform, user, a-9}   needs a binding in acme
+single-tenant deployment     scope=""    sub={"", user, u-1}         (tenant.Single)
 ```
 
 ### 4.9 SCIM (machine to machine)
@@ -432,10 +451,13 @@ actor comes from. The export filters on the first one.
 
 ### Standing rules
 
-These five come from `CLAUDE.md` and `PHASE7-MULTITENANCY-SKETCH.md` §6. The
-numbers match those documents.
+These five come from `CLAUDE.md`. The numbers match that document.
 
-1. `tenant.Single` behaves byte-for-byte the same as before tenancy existed.
+1. No compatibility code (since 2026-10-05). An old function or behaviour is
+   not kept beside the new one. Single-tenant is still supported, and the
+   application says it with `tenant.Single`; leaving the tenant out never
+   means single-tenant. This replaced the Phase 7 rule that `tenant.Single`
+   must behave byte-for-byte as before tenancy existed.
 2. A tenant that is missing, empty, or different means deny.
 3. A cross-tenant miss is a 404, never a 403.
 4. A tenancy misconfiguration fails at `New`, not as a per-request denial.

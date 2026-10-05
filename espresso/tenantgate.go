@@ -28,9 +28,10 @@
 // The honest cost of separate: it is skippable, therefore forgettable,
 // and a pooled deployment that forgets it on an authed route accepts
 // cross-tenant tokens there. Three things blunt that, and none of them
-// eliminates it: this gate is the ONLY thing that puts a tenant in the
-// context, so any handler that reads TenantFromContext gets ("", false)
-// rather than a wrong answer; a missing-claims request denies rather
+// eliminates it: only a gate puts a tenant in the context (RequireTenant,
+// RequireTenantAllowEntered, PinTenant, and RequireDecision for what
+// runs behind it), so any handler that reads TenantFromContext with
+// none of them mounted gets ("", false) rather than a wrong answer; a missing-claims request denies rather
 // than passing; and crypto.VerifyAccess exists for callers who
 // would rather do the check at verification time, where it cannot be
 // composed wrong. A deployment enabling tenancy should wrap every authed
@@ -41,6 +42,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/tenant"
 )
 
@@ -49,16 +51,29 @@ import (
 // with or forge it.
 type tenantCtxKey struct{}
 
-// TenantFromContext returns the tenant RequireTenant pinned for this
-// request, and whether one was pinned at all.
+// TenantFromContext returns the tenant a gate pinned for this request,
+// and whether one was pinned at all. RequireTenant,
+// RequireTenantAllowEntered and RequireDecision pin it after checking
+// the token against it; PinTenant pins it with no token check.
 //
-// (the zero ID, false) means RequireTenant did not run. It is NOT "the
+// (the zero ID, false) means none of them ran. It is NOT "the
 // single-tenant deployment" — a handler that treats it as one turns a
 // forgotten middleware into an unscoped query. Handlers in a pooled
 // deployment should treat !ok as a programmer error and fail closed.
 func TenantFromContext(ctx context.Context) (tenant.ID, bool) {
 	id, ok := ctx.Value(tenantCtxKey{}).(tenant.ID)
 	return id, ok
+}
+
+// tokenFitsTenant is the one rule for "may this token be used on a
+// route of this tenant". RequireTenant and RequireDecision both apply
+// it, each to the tenant it resolves itself.
+//
+//   - the token's tid is exactly the routed tenant; absent, empty and
+//     mismatched all fail the one equality;
+//   - an entered token only where guests were invited.
+func tokenFitsTenant(claims *crypto.AccessClaims, routed string, guests bool) bool {
+	return claims != nil && claims.TenantID == routed && (guests || !claims.Entered())
 }
 
 // RequireTenant returns middleware that pins the request to the tenant
@@ -92,8 +107,7 @@ func TenantFromContext(ctx context.Context) (tenant.ID, bool) {
 // An entered token belongs to a platform admin acting inside this
 // tenant. Its subject is NOT a user of this tenant, and most routes are
 // written for the tenant's own users: "my account" routes act on the
-// subject's row wherever it is stored, and an authorization check finds
-// whatever roles the subject holds at home. So this gate keeps the
+// subject's row wherever it is stored. So this gate keeps the
 // promise it made before entered tokens existed — the subject is a user
 // of the routed tenant — and a route that is meant for platform admins
 // says so with [RequireTenantAllowEntered].
@@ -117,10 +131,11 @@ func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.H
 //     mount "my account" handlers (the AuthRoutes TOTP and profile
 //     routes, identity linking) behind this gate; they would act on the
 //     admin's home account.
-//   - Its authorization must know the subject may be a guest. The user
-//     id alone finds the roles the admin holds in their home tenant.
-//     Read [EnteredFromContext] or the claims, and decide what a guest
-//     may do.
+//   - Its authorization must know the subject may be a guest.
+//     [RequireDecision] does when DecisionGate.AllowEntered is set: it
+//     asks with the guest's home tenant on the subject, so the guest
+//     gets only what this tenant granted them. A handler that decides
+//     by itself reads [EnteredFromContext].
 func RequireTenantAllowEntered(resolve func(*http.Request) string) func(http.Handler) http.Handler {
 	return requireTenant(resolve, true)
 }
@@ -143,29 +158,18 @@ func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(h
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims, ok := AccessClaimsFromContext(r.Context())
-			if !ok || claims == nil {
-				// RequireAuth did not run, so there is nothing to pin
-				// against. Fail closed and say nothing more than the
-				// ordinary rejection says.
-				writeUnauthenticated(w, "invalid token")
-				return
-			}
+			// No claims means RequireAuth did not run: there is nothing
+			// to pin against. A wrong tenant, and a guest on a route that
+			// did not invite guests, get the same refusal, so the
+			// response never says the token is good somewhere else.
+			claims, _ := AccessClaimsFromContext(r.Context())
 			routed := resolve(r)
-			// The same single equality crypto.VerifyAccess
-			// applies. Absent, empty and mismatched all land here.
-			if claims.TenantID != routed {
+			if !tokenFitsTenant(claims, routed, allowEntered) {
 				writeUnauthenticated(w, "invalid token")
 				return
 			}
-			// A guest of this tenant, on a route that did not invite
-			// guests. The same refusal: the response must not say the
-			// token is good for this tenant somewhere else.
-			if claims.Entered() && !allowEntered {
-				writeUnauthenticated(w, "invalid token")
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))))
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

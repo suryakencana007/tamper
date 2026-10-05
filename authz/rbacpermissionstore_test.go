@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"github.com/suryakencana007/tamper/tenant"
 	"testing"
 )
 
@@ -28,13 +29,13 @@ func TestRBACPermissionStore_ParityWithRBAC(t *testing.T) {
 		"org.own":        {{Type: "org", Min: "org-owner"}, sysBypass},
 		"system.admin":   {sysBypass},
 	}
-	alice := Subject{"user", "alice"} // system admin, NO scoped rows (bypass case)
-	bob := Subject{"user", "bob"}     // cluster deployer on c1 + org member on o1
-	erin := Subject{"user", "erin"}   // nothing
+	alice := Subject{Tenant: tenant.Single, Type: "user", ID: "alice"} // system admin, NO scoped rows (bypass case)
+	bob := Subject{Tenant: tenant.Single, Type: "user", ID: "bob"}     // cluster deployer on c1 + org member on o1
+	erin := Subject{Tenant: tenant.Single, Type: "user", ID: "erin"}   // nothing
 	store := NewMemStore(
-		Binding{alice, Resource{"system", ""}, "system-admin"},
-		Binding{bob, Resource{"cluster", "c1"}, "cluster-deployer"},
-		Binding{bob, Resource{"org", "o1"}, "org-member"},
+		Binding{tenant.Single, alice, Resource{"system", ""}, "system-admin"},
+		Binding{tenant.Single, bob, Resource{"cluster", "c1"}, "cluster-deployer"},
+		Binding{tenant.Single, bob, Resource{"org", "o1"}, "org-member"},
 	)
 
 	rbac, err := NewRBAC(store, h, p)
@@ -58,8 +59,8 @@ func TestRBACPermissionStore_ParityWithRBAC(t *testing.T) {
 	for _, sub := range subjects {
 		for _, act := range actions {
 			for _, res := range resources {
-				dR, errR := rbac.Check(ctx, sub, act, res)
-				dP, errP := pset.Check(ctx, sub, act, res)
+				dR, errR := rbac.Check(ctx, tenant.Single, sub, act, res)
+				dP, errP := pset.Check(ctx, tenant.Single, sub, act, res)
 				if (errR == nil) != (errP == nil) {
 					t.Errorf("(%s, %q, %s): error mismatch rbac=%v permset=%v", sub.ID, act, res.ID, errR, errP)
 					continue
@@ -72,8 +73,8 @@ func TestRBACPermissionStore_ParityWithRBAC(t *testing.T) {
 	}
 
 	// Reverse queries delegate to RBAC, so they match exactly.
-	rsR, uR, _ := rbac.ListResources(ctx, bob, "cluster.view", "cluster")
-	rsP, uP, _ := pset.ListResources(ctx, bob, "cluster.view", "cluster")
+	rsR, uR, _ := rbac.ListResources(ctx, tenant.Single, bob, "cluster.view", "cluster")
+	rsP, uP, _ := pset.ListResources(ctx, tenant.Single, bob, "cluster.view", "cluster")
 	if uR != uP || len(rsR) != len(rsP) {
 		t.Fatalf("ListResources parity: rbac=(%v,%v) permset=(%v,%v)", rsR, uR, rsP, uP)
 	}

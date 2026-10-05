@@ -66,6 +66,56 @@ redacted. Everything that existed for older rows is removed.
 - `CanonicalPayloadV2ForDebug`
 - `VerifyBootResult.Segments`
 
+### ⚠️ Breaking — the `authz` ports take a tenant (#56, TD-03)
+
+`authz` now has a tenant contract. Design: `PHASE8B-AUTHZ-TENANT-SKETCH.md`.
+
+- **Every method of `authz.Authorizer`, `authz.BindingStore` and
+  `authz.PermissionStore` takes a `tenant.ID` after `ctx`.** It is the scope
+  of the question: the tenant whose resources are being acted on. Code that
+  calls or implements these does not compile until it is changed.
+- **`authz.Subject` has a `Tenant` field**, the subject's home tenant, and
+  **`authz.Binding` has a `Tenant` field**, the scope the binding lives in.
+  Unkeyed literals such as `Subject{"user", "u-1"}` no longer compile.
+- **An unset scope, or a subject with no home tenant, is the new error
+  `authz.ErrTenantRequired`.** Callers treat it as deny, like every error.
+- **`MemPermissionStore.Grant` and `GrantSuperuser` take the scope** as their
+  first argument. A superuser is a superuser of one scope.
+- **`MemStore.Grant`, `MemStore.Revoke`, and `MemPermissionStore.Grant` and
+  `GrantSuperuser` return an error.** They return `ErrTenantRequired`, and
+  store nothing, for an unset scope or a subject with no home tenant. A
+  keyed literal such as `Binding{Subject: ..., Resource: ..., Role: ...}`
+  still compiles after the upgrade; stored quietly it would never match.
+  `NewMemStore` panics on such a seed binding. The read methods of both
+  stores return `ErrTenantRequired` for the same two cases.
+- **`espresso.DecisionGate` has a required `Tenant` resolver**,
+  `func(*http.Request) (tenant.ID, bool)`, and `RequireDecision` panics
+  without it. The gate asks in the tenant it resolves and builds the subject
+  with the token's home tenant. The token must be for exactly that tenant;
+  an entered token passes only with the new `AllowEntered` field. Anything
+  else is a 401: a tenant that did not resolve, and a user id put in the
+  context without a token (`ContextWithUserID`), included. The gate never
+  treats "no tenant" as single-tenant.
+- **`espresso.DecisionGate.UserExists` takes the subject's home tenant**:
+  `func(ctx, home tenant.ID, userID string)`. Look the user up there.
+
+**To upgrade a single-tenant deployment:** pass `tenant.Single` as the scope,
+set `Tenant: tenant.Single` on every `Subject` and `Binding`, accept the new
+argument in your stores and in `UserExists`, and give every `DecisionGate` a
+`Tenant` resolver that returns `(tenant.Single, true)`. Decisions are the
+same as before.
+
+**To upgrade a pooled deployment:** filter by the scope in every store query,
+match subjects with their home tenant, and run
+`authz/tenanttest.RunBindingStoreLeakSuite` or
+`RunPermissionStoreLeakSuite` against your store. Give every `DecisionGate`
+the resolver its route uses; behind `RequireTenant` that is
+`TenantFromRoutedContext`. A route that is not tenant-routed, such as a
+platform console, is a route of one tenant: its resolver returns that tenant.
+
+`ListSubjects` returns `ErrTenantRequired` if a store returns a subject with
+no home tenant. Backfill that column before the upgrade.
+
 ### ⚠️ Changed — behaviour
 
 - **`identity.Core.IssueTokensForUserInTenant` denies a mismatched tenant**
@@ -187,6 +237,9 @@ redacted. Everything that existed for older rows is removed.
   - The audit actor that `espresso.RequireAuth` puts in the context carries
     the token's home tenant. For an ordinary token that is `tid`, as before.
   - `identity.MemStore` implements the port.
+
+- **`authz/tenanttest`** (#56, TD-03). Leak suites for `BindingStore` and
+  `PermissionStore`, the `authz` sibling of `identity/tenanttest`.
 
 - **`espresso.SCIMConfig.TenantBoundStores`** (#39, TD-15). The opt-out for
   the SCIM refusal above. Set it when the unscoped stores given to

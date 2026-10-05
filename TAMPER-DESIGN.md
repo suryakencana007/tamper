@@ -213,6 +213,9 @@ type Decision struct {
 	Reason  string // for audit + debugging, never for control flow
 }
 
+// NOTE: since Phase 8b every method also takes a tenant.ID, the scope,
+// after ctx, and Subject carries its home tenant. This block shows the
+// original shape. See PHASE8B-AUTHZ-TENANT-SKETCH.md.
 type Authorizer interface {
 	Check(ctx context.Context, sub Subject, act Action, res Resource) (Decision, error)
 	CheckBulk(ctx context.Context, reqs []CheckRequest) ([]Decision, error)
@@ -290,7 +293,7 @@ r.Post("/api/auth/login", espresso.Doppio(surfaces.Auth.Login))
 r.Get("/api/auth/me", surfaces.RequireAuth(espresso.HandlerCtx(surfaces.Auth.Me)))
 // ... register the rest of surfaces.Auth (+ Federation/SAML/SCIM when configured)
 
-dec, err := tp.Authz.Check(ctx, subj, "doc.delete", res) // SQL-RBAC today, swappable later
+dec, err := tp.Authz.Check(ctx, tenantID, subj, "doc.delete", res) // SQL-RBAC today, swappable later
 ```
 
 ## Open items

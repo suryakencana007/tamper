@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/suryakencana007/tamper/tenant"
 	"strings"
 	"sync"
 	"testing"
@@ -34,10 +35,10 @@ func testPolicy() Policy {
 }
 
 var (
-	alice = Subject{Type: "user", ID: "alice"} // per-cluster roles only
-	bob   = Subject{Type: "user", ID: "bob"}   // system cluster-admin (global)
-	carol = Subject{Type: "user", ID: "carol"} // mixed direct + group-derived ranks
-	dave  = Subject{Type: "user", ID: "dave"}  // stale enum value binding
+	alice = Subject{Tenant: tenant.Single, Type: "user", ID: "alice"} // per-cluster roles only
+	bob   = Subject{Tenant: tenant.Single, Type: "user", ID: "bob"}   // system cluster-admin (global)
+	carol = Subject{Tenant: tenant.Single, Type: "user", ID: "carol"} // mixed direct + group-derived ranks
+	dave  = Subject{Tenant: tenant.Single, Type: "user", ID: "dave"}  // stale enum value binding
 
 	c1     = Resource{Type: "cluster", ID: "c1"}
 	c2     = Resource{Type: "cluster", ID: "c2"}
@@ -49,22 +50,22 @@ var (
 func testStore() *MemStore {
 	return NewMemStore(
 		// alice: deployer on c1 only.
-		Binding{Subject: alice, Resource: c1, Role: "cluster-deployer"},
+		Binding{Tenant: tenant.Single, Subject: alice, Resource: c1, Role: "cluster-deployer"},
 		// bob: global system cluster-admin AND a direct viewer row on c1
 		// (exercises ListSubjects dedup).
-		Binding{Subject: bob, Resource: system, Role: "cluster-admin"},
-		Binding{Subject: bob, Resource: c1, Role: "cluster-viewer"},
+		Binding{Tenant: tenant.Single, Subject: bob, Resource: system, Role: "cluster-admin"},
+		Binding{Tenant: tenant.Single, Subject: bob, Resource: c1, Role: "cluster-viewer"},
 		// carol: viewer directly on c1 plus deployer on c1 via a group
 		// grant — the store resolves indirection, the engine takes max.
 		// Also deployer on c2 and admin on c3 for reverse queries.
-		Binding{Subject: carol, Resource: c1, Role: "cluster-viewer"},
-		Binding{Subject: carol, Resource: c1, Role: "cluster-deployer"},
-		Binding{Subject: carol, Resource: c2, Role: "cluster-deployer"},
-		Binding{Subject: carol, Resource: c3, Role: "cluster-admin"},
-		Binding{Subject: carol, Resource: org1, Role: "member"},
+		Binding{Tenant: tenant.Single, Subject: carol, Resource: c1, Role: "cluster-viewer"},
+		Binding{Tenant: tenant.Single, Subject: carol, Resource: c1, Role: "cluster-deployer"},
+		Binding{Tenant: tenant.Single, Subject: carol, Resource: c2, Role: "cluster-deployer"},
+		Binding{Tenant: tenant.Single, Subject: carol, Resource: c3, Role: "cluster-admin"},
+		Binding{Tenant: tenant.Single, Subject: carol, Resource: org1, Role: "member"},
 		// dave: a role value not in the cluster ladder (stale enum) —
 		// must rank 0 and satisfy nothing.
-		Binding{Subject: dave, Resource: c1, Role: "superadmin"},
+		Binding{Tenant: tenant.Single, Subject: dave, Resource: c1, Role: "superadmin"},
 	)
 }
 
@@ -99,11 +100,11 @@ func TestCheck(t *testing.T) {
 		{"type-level check denied without global role", alice, "cluster.create", Resource{Type: "cluster"}, false},
 		{"type-level check allowed via global role", bob, "cluster.create", Resource{Type: "cluster"}, true},
 		{"stale enum ranks zero (fail closed)", dave, "cluster.view", c1, false},
-		{"subject with no bindings at all", Subject{Type: "user", ID: "nobody"}, "cluster.view", c1, false},
+		{"subject with no bindings at all", Subject{Tenant: tenant.Single, Type: "user", ID: "nobody"}, "cluster.view", c1, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d, err := e.Check(ctx, tc.sub, tc.act, tc.res)
+			d, err := e.Check(ctx, tenant.Single, tc.sub, tc.act, tc.res)
 			if err != nil {
 				t.Fatalf("Check: %v", err)
 			}
@@ -119,7 +120,7 @@ func TestCheck(t *testing.T) {
 
 func TestCheckUnknownActionDenies(t *testing.T) {
 	e := testEngine(t)
-	d, err := e.Check(context.Background(), alice, "cluster.destroy", c1)
+	d, err := e.Check(context.Background(), tenant.Single, alice, "cluster.destroy", c1)
 	if err != nil {
 		t.Fatalf("unknown action must deny, not error: %v", err)
 	}
@@ -134,12 +135,12 @@ func TestCheckUnknownActionDenies(t *testing.T) {
 func TestCheckGlobalBindingDoesNotLeakToInstances(t *testing.T) {
 	// A binding on the SAME type's global singleton must not satisfy an
 	// instance check — only different-type requirements consult globals.
-	store := NewMemStore(Binding{Subject: alice, Resource: Resource{Type: "cluster"}, Role: "cluster-admin"})
+	store := NewMemStore(Binding{Tenant: tenant.Single, Subject: alice, Resource: Resource{Type: "cluster"}, Role: "cluster-admin"})
 	e, err := NewRBAC(store, testHierarchy(), testPolicy())
 	if err != nil {
 		t.Fatalf("NewRBAC: %v", err)
 	}
-	d, err := e.Check(context.Background(), alice, "cluster.deploy", c1)
+	d, err := e.Check(context.Background(), tenant.Single, alice, "cluster.deploy", c1)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestCheckBulk(t *testing.T) {
 		{Subject: alice, Action: "cluster.deploy", Resource: c2},
 		{Subject: bob, Action: "cluster.create", Resource: Resource{Type: "cluster"}},
 	}
-	ds, err := e.CheckBulk(context.Background(), reqs)
+	ds, err := e.CheckBulk(context.Background(), tenant.Single, reqs)
 	if err != nil {
 		t.Fatalf("CheckBulk: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestListResources(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("concrete set at min rank, sorted, deduped", func(t *testing.T) {
-		rs, unbounded, err := e.ListResources(ctx, carol, "cluster.deploy", "cluster")
+		rs, unbounded, err := e.ListResources(ctx, tenant.Single, carol, "cluster.deploy", "cluster")
 		if err != nil {
 			t.Fatalf("ListResources: %v", err)
 		}
@@ -193,7 +194,7 @@ func TestListResources(t *testing.T) {
 	})
 
 	t.Run("higher min shrinks the set", func(t *testing.T) {
-		rs, _, err := e.ListResources(ctx, carol, "cluster.acl.grant", "cluster")
+		rs, _, err := e.ListResources(ctx, tenant.Single, carol, "cluster.acl.grant", "cluster")
 		if err != nil {
 			t.Fatalf("ListResources: %v", err)
 		}
@@ -203,7 +204,7 @@ func TestListResources(t *testing.T) {
 	})
 
 	t.Run("global role reports unbounded", func(t *testing.T) {
-		rs, unbounded, err := e.ListResources(ctx, bob, "cluster.deploy", "cluster")
+		rs, unbounded, err := e.ListResources(ctx, tenant.Single, bob, "cluster.deploy", "cluster")
 		if err != nil {
 			t.Fatalf("ListResources: %v", err)
 		}
@@ -217,13 +218,13 @@ func TestListResources(t *testing.T) {
 	})
 
 	t.Run("unknown action errors loudly", func(t *testing.T) {
-		if _, _, err := e.ListResources(ctx, alice, "cluster.destroy", "cluster"); err == nil {
+		if _, _, err := e.ListResources(ctx, tenant.Single, alice, "cluster.destroy", "cluster"); err == nil {
 			t.Fatal("unknown action must error on list queries")
 		}
 	})
 
 	t.Run("action with no same-type requirement yields empty", func(t *testing.T) {
-		rs, unbounded, err := e.ListResources(ctx, alice, "cluster.create", "cluster")
+		rs, unbounded, err := e.ListResources(ctx, tenant.Single, alice, "cluster.create", "cluster")
 		if err != nil {
 			t.Fatalf("ListResources: %v", err)
 		}
@@ -235,7 +236,7 @@ func TestListResources(t *testing.T) {
 
 func TestListSubjects(t *testing.T) {
 	e := testEngine(t)
-	subs, unbounded, err := e.ListSubjects(context.Background(), "cluster.deploy", c1)
+	subs, unbounded, err := e.ListSubjects(context.Background(), tenant.Single, "cluster.deploy", c1)
 	if err != nil {
 		t.Fatalf("ListSubjects: %v", err)
 	}
@@ -285,13 +286,13 @@ func TestNewRBACValidation(t *testing.T) {
 // errStore fails every query — exercises the error-means-deny plumbing.
 type errStore struct{}
 
-func (errStore) BindingsFor(context.Context, Subject, Resource) ([]Binding, error) {
+func (errStore) BindingsFor(context.Context, tenant.ID, Subject, Resource) ([]Binding, error) {
 	return nil, errors.New("store down")
 }
-func (errStore) BindingsForSubject(context.Context, Subject, string) ([]Binding, error) {
+func (errStore) BindingsForSubject(context.Context, tenant.ID, Subject, string) ([]Binding, error) {
 	return nil, errors.New("store down")
 }
-func (errStore) BindingsOnResource(context.Context, Resource) ([]Binding, error) {
+func (errStore) BindingsOnResource(context.Context, tenant.ID, Resource) ([]Binding, error) {
 	return nil, errors.New("store down")
 }
 
@@ -301,16 +302,16 @@ func TestStoreErrorsPropagate(t *testing.T) {
 		t.Fatalf("NewRBAC: %v", err)
 	}
 	ctx := context.Background()
-	if d, err := e.Check(ctx, alice, "cluster.deploy", c1); err == nil || d.Allowed {
+	if d, err := e.Check(ctx, tenant.Single, alice, "cluster.deploy", c1); err == nil || d.Allowed {
 		t.Fatalf("Check must error and deny on store failure, got %+v err=%v", d, err)
 	}
-	if _, err := e.CheckBulk(ctx, []CheckRequest{{Subject: alice, Action: "cluster.deploy", Resource: c1}}); err == nil {
+	if _, err := e.CheckBulk(ctx, tenant.Single, []CheckRequest{{Subject: alice, Action: "cluster.deploy", Resource: c1}}); err == nil {
 		t.Fatal("CheckBulk must fail the whole call on store failure")
 	}
-	if _, _, err := e.ListResources(ctx, alice, "cluster.deploy", "cluster"); err == nil {
+	if _, _, err := e.ListResources(ctx, tenant.Single, alice, "cluster.deploy", "cluster"); err == nil {
 		t.Fatal("ListResources must error on store failure")
 	}
-	if _, _, err := e.ListSubjects(ctx, "cluster.deploy", c1); err == nil {
+	if _, _, err := e.ListSubjects(ctx, tenant.Single, "cluster.deploy", c1); err == nil {
 		t.Fatal("ListSubjects must error on store failure")
 	}
 }
@@ -324,11 +325,11 @@ func TestConcurrentUse(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < 50; i++ {
-				if _, err := e.Check(ctx, carol, "cluster.deploy", c1); err != nil {
+				if _, err := e.Check(ctx, tenant.Single, carol, "cluster.deploy", c1); err != nil {
 					t.Errorf("goroutine %d: %v", g, err)
 					return
 				}
-				if _, _, err := e.ListResources(ctx, carol, "cluster.view", "cluster"); err != nil {
+				if _, _, err := e.ListResources(ctx, tenant.Single, carol, "cluster.view", "cluster"); err != nil {
 					t.Errorf("goroutine %d: %v", g, err)
 					return
 				}
@@ -342,13 +343,13 @@ func TestConcurrentUse(t *testing.T) {
 // TAMPER-DESIGN.md compiles against the real API.
 func ExampleRBAC() {
 	store := NewMemStore(
-		Binding{Subject: Subject{Type: "user", ID: "u1"}, Resource: Resource{Type: "doc", ID: "d1"}, Role: "editor"},
+		Binding{Tenant: tenant.Single, Subject: Subject{Tenant: tenant.Single, Type: "user", ID: "u1"}, Resource: Resource{Type: "doc", ID: "d1"}, Role: "editor"},
 	)
 	authz, _ := NewRBAC(store,
 		Hierarchy{"doc": {"viewer", "editor"}},
 		Policy{"doc.delete": {{Type: "doc", Min: "editor"}}},
 	)
-	d, _ := authz.Check(context.Background(), Subject{Type: "user", ID: "u1"}, "doc.delete", Resource{Type: "doc", ID: "d1"})
+	d, _ := authz.Check(context.Background(), tenant.Single, Subject{Tenant: tenant.Single, Type: "user", ID: "u1"}, "doc.delete", Resource{Type: "doc", ID: "d1"})
 	fmt.Println(d.Allowed)
 	// Output: true
 }

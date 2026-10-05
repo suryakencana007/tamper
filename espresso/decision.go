@@ -7,6 +7,7 @@ import (
 	espressofw "github.com/suryakencana007/espresso/v2"
 
 	"github.com/suryakencana007/tamper/authz"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // DenyWriter writes the app's deny response — status, code, and copy
@@ -25,6 +26,24 @@ type DecisionGate struct {
 	// ("cluster role", "org role", "system role") so operator logs
 	// keep their pre-lift grep-ability.
 	Label string
+	// Tenant resolves the tenant the request is routed to — a path
+	// segment, a subdomain, a constant. Required: RequireDecision panics
+	// without it. It is the SCOPE of the question, and the token must be
+	// for exactly this tenant. The answer never comes from the token.
+	//
+	// It returns a tenant.ID and whether one was resolved, the shape
+	// RequireEntitlement takes. (zero, false) — a path with no tenant
+	// segment, a misspelt parameter — refuses the request. A
+	// single-tenant application returns (tenant.Single, true): the single
+	// tenant is said, it is never what an empty answer turns into.
+	// Behind RequireTenant, pass TenantFromRoutedContext.
+	Tenant func(*http.Request) (tenant.ID, bool)
+	// AllowEntered lets a platform admin who ENTERED this tenant
+	// (identity.Core.EnterTenant) through to the Authorizer. False, the
+	// default, refuses an entered token like a wrong-tenant one. A guest
+	// who is let through is asked about with their home tenant on the
+	// subject, so they get only what this tenant granted them.
+	AllowEntered bool
 	// SubjectType is the app's subject taxonomy value (e.g. "user").
 	SubjectType string
 	// ResourceType is the app's resource taxonomy value. Also used in
@@ -58,7 +77,13 @@ type DecisionGate struct {
 	// WriteGhost (the app's 401 so its session-refresh path logs the
 	// caller out) instead of WriteDenied. Allowed requests never pay
 	// the probe.
-	UserExists func(ctx context.Context, userID string) (bool, error)
+	//
+	// home is the tenant the subject is STORED in — the token's home
+	// tenant. Look the user up there. It is not always the routed
+	// tenant: a platform admin who entered this tenant has no row in
+	// it, and a probe that looked here would call every denied guest a
+	// ghost (or answer for a local user who happens to share the id).
+	UserExists func(ctx context.Context, home tenant.ID, userID string) (bool, error)
 	// WriteGhost writes the ghost-subject response. Required when
 	// UserExists is set.
 	WriteGhost DenyWriter
@@ -69,9 +94,44 @@ type DecisionGate struct {
 // (nil authorizer, empty action, missing path param, missing
 // writers) is a 500 CONFIG_ERROR — never a silent pass.
 //
-// Stack ordering: must run AFTER RequireAuth so the subject id is in
-// context.
+// Panics if g.Tenant is nil. A decision gate that does not know whose
+// resources it guards is a tenancy misconfiguration, and that fails
+// when the gate is built, not on a request (the posture RequireTenant
+// takes on a nil resolver).
+//
+// Stack ordering: must run AFTER RequireAuth. The gate carries its own
+// tenant, so its decision does not depend on a tenant gate having been
+// mounted first.
+//
+// That is a statement about THIS gate only. It pins the tenant for what
+// runs BEHIND it (TenantFromContext in the handler). Anything mounted in
+// FRONT of it — Auditor.For, RequireEntitlement with
+// TenantFromRoutedContext, RequireFreshAuth — does not see that tenant.
+// A pooled route that mounts such middleware still puts RequireTenant
+// first, and then gives this gate TenantFromRoutedContext.
+//
+// The question is asked with two tenants, and they are different facts:
+//
+//   - The SCOPE is the tenant g.Tenant resolves — whose resources these
+//     are.
+//   - The SUBJECT's tenant is where the token says its subject is from:
+//     the scope itself for the tenant's own user, the home tenant for a
+//     platform admin who entered. The Authorizer therefore finds only
+//     what was granted to that exact subject inside this scope; roles
+//     held at home are bindings of another scope and are never
+//     consulted.
+//
+// The token must fit the tenant by the one rule RequireTenant applies
+// (tokenFitsTenant): its tid is exactly the resolved tenant, and an
+// entered token only where AllowEntered is set. Anything else is the
+// 401 RequireTenant writes — including a tenant that did not resolve,
+// and a user id that reached the context without a token. There is no
+// path that guesses a tenant.
 func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
+	if g.Tenant == nil {
+		panic("tamper/espresso: RequireDecision requires DecisionGate.Tenant — " +
+			"a decision gate that names no tenant would authorize in no scope")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID, ok := GetUserID(r.Context())
@@ -87,6 +147,19 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 					WriteResponse(w)
 				return
 			}
+			claims, _ := AccessClaimsFromContext(r.Context())
+			scope, resolved := g.Tenant(r)
+			if !resolved || !scope.Valid() || !tokenFitsTenant(claims, scope.String(), g.AllowEntered) {
+				writeUnauthenticated(w, "invalid token")
+				return
+			}
+			// The subject is one of the scope's own, unless the token
+			// says it entered from somewhere else.
+			home := scope
+			if from, entered := EnteredFromContext(r.Context()); entered {
+				home = from
+			}
+			r = r.WithContext(context.WithValue(r.Context(), tenantCtxKey{}, scope))
 			resourceID := ""
 			if g.ResourceIDFrom != "" {
 				resourceID = r.PathValue(g.ResourceIDFrom)
@@ -98,12 +171,12 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 				}
 			}
 
-			subject := authz.Subject{Type: g.SubjectType, ID: userID}
+			subject := authz.Subject{Tenant: home, Type: g.SubjectType, ID: userID}
 			resource := authz.Resource{Type: g.ResourceType, ID: resourceID}
 
 			// Check 1 — visibility (the leak rule), when configured.
 			if g.VisibilityAction != "" {
-				visible, err := g.Authorizer.Check(r.Context(), subject, g.VisibilityAction, resource)
+				visible, err := g.Authorizer.Check(r.Context(), scope, subject, g.VisibilityAction, resource)
 				if err != nil {
 					_ = espressofw.ErrInternal("middleware: " + g.Label + " check failed").Wrap(err).
 						WriteResponse(w)
@@ -122,7 +195,7 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 			}
 
 			// Check 2 — the requested tier.
-			decision, err := g.Authorizer.Check(r.Context(), subject, g.Action, resource)
+			decision, err := g.Authorizer.Check(r.Context(), scope, subject, g.Action, resource)
 			if err != nil {
 				_ = espressofw.ErrInternal("middleware: " + g.Label + " check failed").Wrap(err).
 					WriteResponse(w)
@@ -131,7 +204,7 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 			if !decision.Allowed {
 				// Ghost probe: deny path only.
 				if g.UserExists != nil {
-					exists, exErr := g.UserExists(r.Context(), userID)
+					exists, exErr := g.UserExists(r.Context(), home, userID)
 					if exErr != nil {
 						if g.WriteProbeError != nil {
 							g.WriteProbeError(w)

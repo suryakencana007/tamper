@@ -11,7 +11,43 @@
 // four scopes, group→role grants, per-cluster ACLs).
 package authz
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/suryakencana007/tamper/tenant"
+)
+
+// ErrTenantRequired — an authorization question was asked without a
+// tenant: the scope is the zero tenant.ID, or the subject has no home
+// tenant. It is a wiring bug in the caller, said in its own words rather
+// than as a quiet deny. Callers treat every error as deny.
+//
+// A single-tenant deployment passes tenant.Single for both. The zero
+// value is not "single tenant"; it is "nobody said".
+var ErrTenantRequired = errors.New("authz: tenant is required")
+
+// scopeGate refuses a question that names no scope. It is the one place
+// the rule is written; the engines and the reference stores all call it.
+func scopeGate(tenantID tenant.ID) error {
+	if !tenantID.Valid() {
+		return fmt.Errorf("%w: the scope is unset", ErrTenantRequired)
+	}
+	return nil
+}
+
+// gate refuses a question that names no scope, and one whose subject
+// has no home tenant.
+func gate(tenantID tenant.ID, sub Subject) error {
+	if err := scopeGate(tenantID); err != nil {
+		return err
+	}
+	if !sub.Tenant.Valid() {
+		return fmt.Errorf("%w: subject %s:%s has no home tenant", ErrTenantRequired, sub.Type, sub.ID)
+	}
+	return nil
+}
 
 // Subject identifies WHO is asking. Type and ID are opaque, app-defined
 // identifiers — Tamper never hard-codes a principal taxonomy. Barista
@@ -23,9 +59,21 @@ import "context"
 // Small comparable struct rather than a "type:id" string: reverse queries
 // return these, and callers need the ID without parsing; comparability
 // makes Subjects usable as map keys for bulk dedup.
+//
+// Tenant is the subject's HOME tenant: the tenant it is stored in. It is
+// part of the identity. An id is unique inside one tenant only, so
+// {acme, user, u-1} and {globex, user, u-1} are two different subjects,
+// and a binding for one is not a binding for the other.
+//
+// The home tenant is not the scope of a question. A platform admin
+// stored in "platform" who has entered "acme" asks with Tenant=platform
+// in scope acme, and gets only what was granted to that exact subject
+// inside acme. The zero value is refused (ErrTenantRequired);
+// single-tenant code sets tenant.Single.
 type Subject struct {
-	Type string
-	ID   string
+	Tenant tenant.ID
+	Type   string
+	ID     string
 }
 
 // Resource identifies WHAT is being acted on. Type is the app-defined
@@ -33,6 +81,9 @@ type Subject struct {
 // means the check is type-level ("may the subject create clusters at all?")
 // — bindings scoped to a concrete instance do not satisfy a type-level
 // check unless the store reports them as such (e.g. a system-wide role).
+//
+// A Resource carries no tenant. Whose it is is the scope of the
+// question — the tenantID every Authorizer method takes.
 type Resource struct {
 	Type string
 	ID   string
@@ -67,15 +118,23 @@ type CheckRequest struct {
 // types, and store errors all resolve to a deny (with error where the
 // question could not be evaluated at all). An error return means "could not
 // decide" — callers must treat it as deny, never as allow.
+//
+// Every method takes tenantID, the SCOPE of the question: the tenant
+// whose resources are being acted on. Bindings live in a scope and never
+// answer a question in another one; there is no binding that spans
+// tenants. An unset scope is ErrTenantRequired. A single-tenant
+// deployment passes tenant.Single.
 type Authorizer interface {
 	// Check answers one authorization question.
-	Check(ctx context.Context, sub Subject, act Action, res Resource) (Decision, error)
+	Check(ctx context.Context, tenantID tenant.ID, sub Subject, act Action, res Resource) (Decision, error)
 
 	// CheckBulk answers many questions in one round trip. The result slice
 	// is index-aligned with reqs. Implementations should batch store access
 	// where possible; a failed evaluation fails the whole call (callers
 	// deny everything on error).
-	CheckBulk(ctx context.Context, reqs []CheckRequest) ([]Decision, error)
+	//
+	// All of reqs are asked in the one scope tenantID.
+	CheckBulk(ctx context.Context, tenantID tenant.ID, reqs []CheckRequest) ([]Decision, error)
 
 	// ListResources answers the reverse query "which resources of this
 	// type may the subject perform act on?" — the shape UI listings and
@@ -86,12 +145,15 @@ type Authorizer interface {
 	// catalog — must treat that as "all" and skip per-resource filtering.
 	// resources may be non-empty alongside unbounded=true; callers should
 	// check unbounded first.
-	ListResources(ctx context.Context, sub Subject, act Action, resourceType string) (resources []Resource, unbounded bool, err error)
+	ListResources(ctx context.Context, tenantID tenant.ID, sub Subject, act Action, resourceType string) (resources []Resource, unbounded bool, err error)
 
 	// ListSubjects answers "which subjects may perform act on res?" —
 	// access-review and admin-UI surfaces. unbounded=true means subjects
 	// beyond the returned set may also have access via grants the store
 	// cannot enumerate; stores that can enumerate global-role holders
 	// (the common SQL case) return them concretely with unbounded=false.
-	ListSubjects(ctx context.Context, act Action, res Resource) (subjects []Subject, unbounded bool, err error)
+	//
+	// The subjects come back with their home tenant, so a guest from
+	// another tenant is visible as one.
+	ListSubjects(ctx context.Context, tenantID tenant.ID, act Action, res Resource) (subjects []Subject, unbounded bool, err error)
 }

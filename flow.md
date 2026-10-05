@@ -145,7 +145,7 @@ pass them.
 | `RequireTenant(resolve)` | Checks that the token `tid` equals the route tenant. Anything else is a 401. |
 | `RequireEntitlement(store, capability, resolve)` | Gate for paid features. |
 | `RequireFreshAuth(maxAge, acrValues)` | Step-up: requires a recent authentication and an accepted ACR. |
-| `RequireDecision(DecisionGate)` | PDP gate: visibility check (404), then tier check (403). |
+| `RequireDecision(DecisionGate)` | PDP gate: visibility check (404), then tier check (403). The gate has its own `Tenant` resolver (required) and an `AllowEntered` flag; the token must be for that tenant. |
 | `RequireServiceAccount(validator)` | Machine credentials. The tenant comes from the token. |
 | `Throttled(throttle, key)` | Rate limit per address, per tenant, or per service account. |
 | `Auditor.For` / `Auditor.Mutation` | Writes an audit event after a 2xx response. |

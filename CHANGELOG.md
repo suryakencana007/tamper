@@ -87,34 +87,27 @@ redacted. Everything that existed for older rows is removed.
   literal such as `Binding{Subject: ..., Resource: ..., Role: ...}` still
   compiles after the upgrade; without the panic it would be stored and never
   matched. The read methods return `ErrTenantRequired` for an unset scope.
-- **`espresso.RequireDecision`** asks in the tenant a tenant gate put in the
-  context and builds the subject with the token's home tenant. On a
-  tenanted route it refuses where a tenant is missing: a tenant token on a
-  route with no tenant gate, or no access claims behind a tenant gate, is a
-  500 `CONFIG_ERROR`; a token that is not for the pinned tenant, or an
-  entered token on a route that is not behind `RequireTenantAllowEntered`,
-  is a 401. A single-tenant deployment is unchanged: with no tenant gate, a
-  token without `tid`, or a bare user id in the context, is asked about in
-  `tenant.Single`.
+- **`espresso.DecisionGate` has a required `Tenant` resolver**, and
+  `RequireDecision` panics without it. The gate asks in the tenant it
+  resolves and builds the subject with the token's home tenant. The token
+  must be for exactly that tenant; an entered token passes only with the new
+  `AllowEntered` field. Anything else is a 401, including a user id put in
+  the context without a token (`ContextWithUserID`). The gate no longer
+  treats "no tenant" as single-tenant.
 - **`espresso.DecisionGate.UserExists` takes the subject's home tenant**:
   `func(ctx, home tenant.ID, userID string)`. Look the user up there.
 
 **To upgrade a single-tenant deployment:** pass `tenant.Single` as the scope,
-set `Tenant: tenant.Single` on every `Subject` and `Binding`, and accept the
-new argument in your stores. Decisions are the same as before.
+set `Tenant: tenant.Single` on every `Subject` and `Binding`, accept the new
+argument in your stores and in `UserExists`, and give every `DecisionGate` a
+`Tenant` resolver that returns `""`. Decisions are the same as before.
 
 **To upgrade a pooled deployment:** filter by the scope in every store query,
 match subjects with their home tenant, and run
 `authz/tenanttest.RunBindingStoreLeakSuite` or
-`RunPermissionStoreLeakSuite` against your store. Then check every route that
-uses `RequireDecision`:
-
-- It must be behind a tenant gate. A route that is not tenant-routed, such as
-  a platform console, is a route of one tenant: mount it behind
-  `RequireTenant` with a resolver that returns that tenant. Without a tenant
-  gate, a token that has a `tid` gets a 500 `CONFIG_ERROR`.
-- `RequireDecision` cannot be used behind an authenticator that puts only a
-  user id in the context. Call the `Authorizer` directly there.
+`RunPermissionStoreLeakSuite` against your store. Give every `DecisionGate`
+the resolver its route uses. A route that is not tenant-routed, such as a
+platform console, is a route of one tenant: its resolver returns that tenant.
 
 `ListSubjects` returns `ErrTenantRequired` if a store returns a subject with
 no home tenant. Backfill that column before the upgrade.

@@ -103,59 +103,43 @@ Rules, for both engines:
 
 ### `espresso.RequireDecision`
 
-- Scope: the tenant a tenant gate put in the context (`RequireTenant`,
-  `RequireTenantAllowEntered`, `PinTenant`).
+The gate carries its own tenant:
+
+```go
+type DecisionGate struct {
+    Tenant       func(*http.Request) string  // required; the scope
+    AllowEntered bool                        // let an entered platform admin through
+    ...
+    UserExists   func(ctx, home tenant.ID, userID string) (bool, error)
+}
+```
+
+- `RequireDecision` panics when `Tenant` is nil. A gate that names no tenant
+  is a tenancy misconfiguration, and it fails when the gate is built
+  (standing rule 4).
+- Scope: the tenant `Tenant` resolves. A single-tenant application returns
+  `""`.
+- The token must fit that tenant by the one rule `RequireTenant` applies
+  (`tokenFitsTenant`): its `tid` is exactly the resolved tenant, and an
+  entered token only where `AllowEntered` is set. Anything else is the 401
+  `RequireTenant` writes. A user id that reached the context without a token
+  is refused the same way.
 - Subject tenant: the scope itself, or the token's `htid` when the token is
   an entered one. So an entered admin is (platform, …) in scope acme.
+- On success the gate pins the tenant for `TenantFromContext`, so the handler
+  and the `Auditor` behind it see the scope the decision was made in.
+- `UserExists`, the ghost probe, is given the subject's home tenant. With the
+  bare id it looked in the routed tenant, where a guest has no row, and
+  reported every denied guest as a deleted user.
 
-On a tenanted route the gate never fills in a missing tenant with a guess.
-The first draft did: with no tenant gate it always used `tenant.Single`.
-Review of #56 showed that could authorize a request in the wrong scope.
-
-| Situation | Answer |
-|---|---|
-| No tenant gate ran, and the token has a tenant | 500 `CONFIG_ERROR` (a pooled route that forgot its gate) |
-| A tenant gate ran, but there are no access claims | 500 `CONFIG_ERROR` |
-| A tenant gate ran, and the token is not for that tenant | 401, as `RequireTenant` writes it (possible behind `PinTenant`) |
-| The token is an entered one, and the gate was not `RequireTenantAllowEntered` | 401. `PinTenant` alone does not invite guests |
-| No tenant gate ran, and the token has no tenant | scope and subject are `tenant.Single` |
-| No tenant gate ran, and there is only a user id (no claims) | scope and subject are `tenant.Single` |
-
-The last two rows are the single-tenant deployment, and they are what the
-gate did before this phase (standing rule 1). The second review of #56
-corrected an over-fix here: for one commit the gate answered 500 for a user
-id without claims everywhere, which broke single-tenant code that uses
-`ContextWithUserID` or its own auth middleware.
-
-Standing rule 4 says tenancy misconfiguration fails at `New`. This gate cannot
-do that: a middleware does not know what is mounted around it. The
-`CONFIG_ERROR` appears on the first request with a tenant token. It is the
-same limit the gate already has for a nil `Authorizer`. `CLAUDE.md` records
-this as a bounded exception to rule 4.
-
-The token rule is written once. `tokenFitsTenant` is what `RequireTenant`
-applies, and the decision gate applies the same function behind `PinTenant`.
-A tenant gate leaves one value in the context, the tenant together with
-whether guests were invited, so the two cannot disagree.
-
-Two consequences for a pooled deployment:
-
-- **A route that is not tenant-routed still needs a tenant gate.** A platform
-  console or a singleton admin gate is a route of one tenant, the operator's.
-  Mount it behind `RequireTenant` with a resolver that returns that tenant.
-  Without it, a token that has a tenant gets the `CONFIG_ERROR`.
-- **An authenticator that puts only a user id in the context cannot be used
-  with this gate.** With no tenant gate it is taken for the single-tenant
-  path; behind one it is a `CONFIG_ERROR`. Call the `Authorizer` directly with
-  the scope and the home tenant that authenticator knows. This is a known
-  limit, not a safe default: a pooled deployment that kept single-scope
-  bindings from an earlier single-tenant life must not mount this gate behind
-  such an authenticator.
-
-`DecisionGate.UserExists` takes the subject's home tenant:
-`func(ctx, home tenant.ID, userID string)`. The ghost probe must look where
-the subject is stored. With the bare id it looked in the routed tenant, where
-a guest has no row, and reported every denied guest as a deleted user.
+**How this got here.** The first three versions took the scope from whatever
+tenant gate was mounted in front, and had to answer "what if there is none".
+Under the Phase 7 rule that the `""` path stay byte-identical, the answer was
+a guess (`tenant.Single`), and three reviews of #56 moved that guess around:
+refuse, restore, refuse again. On 2026-10-05 the repo owner dropped the
+compatibility rule (`CLAUDE.md` standing rule 1). The gate then needs no
+guess: it is told its tenant when it is built, and it does not depend on what
+is mounted around it.
 
 ### `authz/tenanttest`
 

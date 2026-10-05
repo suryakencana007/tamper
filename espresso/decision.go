@@ -26,6 +26,20 @@ type DecisionGate struct {
 	// ("cluster role", "org role", "system role") so operator logs
 	// keep their pre-lift grep-ability.
 	Label string
+	// Tenant resolves the tenant the request is routed to — a path
+	// segment, a subdomain, a constant. Required: RequireDecision panics
+	// without it. It is the SCOPE of the question, and the token must be
+	// for exactly this tenant. The answer never comes from the token.
+	//
+	// A single-tenant application returns "" for every request. That is
+	// the single tenant said out loud, not a tenant left out.
+	Tenant func(*http.Request) string
+	// AllowEntered lets a platform admin who ENTERED this tenant
+	// (identity.Core.EnterTenant) through to the Authorizer. False, the
+	// default, refuses an entered token like a wrong-tenant one. A guest
+	// who is let through is asked about with their home tenant on the
+	// subject, so they get only what this tenant granted them.
+	AllowEntered bool
 	// SubjectType is the app's subject taxonomy value (e.g. "user").
 	SubjectType string
 	// ResourceType is the app's resource taxonomy value. Also used in
@@ -76,56 +90,41 @@ type DecisionGate struct {
 // (nil authorizer, empty action, missing path param, missing
 // writers) is a 500 CONFIG_ERROR — never a silent pass.
 //
-// Stack ordering: must run AFTER RequireAuth so the subject id is in
-// context, and AFTER the tenant gate on a pooled route.
+// Panics if g.Tenant is nil. A decision gate that does not know whose
+// resources it guards is a tenancy misconfiguration, and that fails
+// when the gate is built, not on a request (the posture RequireTenant
+// takes on a nil resolver).
+//
+// Stack ordering: must run AFTER RequireAuth. It needs nothing else
+// around it. The gate carries its own tenant, so it does not depend on
+// a tenant gate having been mounted first, and it cannot be mounted
+// "without one" by mistake.
 //
 // The question is asked with two tenants, and they are different facts:
 //
-//   - The SCOPE is the tenant a tenant gate put in the context
-//     (RequireTenant, RequireTenantAllowEntered, PinTenant) — whose
-//     resources these are.
-//   - The SUBJECT's tenant is the token's home tenant. For a platform
-//     admin who entered this tenant that is their own tenant, not the
-//     routed one, so the Authorizer finds only what was granted to that
-//     guest inside this scope; the roles they hold at home are bindings
-//     of another scope and are never consulted.
+//   - The SCOPE is the tenant g.Tenant resolves — whose resources these
+//     are.
+//   - The SUBJECT's tenant is where the token says its subject is from:
+//     the scope itself for the tenant's own user, the home tenant for a
+//     platform admin who entered. The Authorizer therefore finds only
+//     what was granted to that exact subject inside this scope; roles
+//     held at home are bindings of another scope and are never
+//     consulted.
 //
-// Where a tenant is missing on a tenanted route the gate refuses; it
-// does not fill one in:
+// The token must fit the tenant by the one rule RequireTenant applies
+// (tokenFitsTenant): its tid is exactly the resolved tenant, and an
+// entered token only where AllowEntered is set. Anything else is the
+// 401 RequireTenant writes — including a user id that reached the
+// context without a token. There is no path that guesses a tenant.
 //
-//   - No tenant gate ran and the token HAS a tenant: a pooled route that
-//     forgot its tenant gate. 500 CONFIG_ERROR, loudly, rather than a
-//     decision taken in the wrong scope.
-//   - A tenant gate ran but there are no access claims in the context:
-//     500 CONFIG_ERROR. Nothing says where the subject is from.
-//   - A tenant gate ran and the token is not for that tenant (possible
-//     behind PinTenant, which checks no token): the 401 RequireTenant
-//     writes. A subject may not be authorized in a scope its token was
-//     not minted for.
-//   - The token is an entered one and the route did not invite guests
-//     with RequireTenantAllowEntered: the same 401. PinTenant alone does
-//     not invite them.
-//
-// The single-tenant deployment is what it was before tenants existed
-// here (standing rule 1): with no tenant gate, and a token without a
-// tenant OR only a user id in the context (ContextWithUserID, a custom
-// auth middleware), scope and subject are both tenant.Single.
-//
-// This cannot be checked when the gate is built: a middleware does not
-// know what is mounted around it. The CONFIG_ERROR is the first request.
-//
-// Two consequences for a pooled deployment:
-//
-//   - A route that is not tenant-routed (a platform console, a
-//     singleton admin gate) still needs a tenant gate. It is a route of
-//     ONE tenant, the operator's: mount it behind RequireTenant with a
-//     resolver that returns that tenant.
-//   - An authenticator that puts only a user id in the context cannot
-//     be used with this gate. With no tenant gate it is taken for the
-//     single-tenant path, and behind one it is a CONFIG_ERROR. Call the
-//     Authorizer directly, with the scope and the subject's home tenant
-//     the authenticator knows.
+// On success the tenant is also pinned for TenantFromContext, so what
+// runs behind the gate (a handler, the Auditor) sees the same scope the
+// decision was made in.
 func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
+	if g.Tenant == nil {
+		panic("tamper/espresso: RequireDecision requires DecisionGate.Tenant — " +
+			"a decision gate that names no tenant would authorize in no scope")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID, ok := GetUserID(r.Context())
@@ -141,6 +140,22 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 					WriteResponse(w)
 				return
 			}
+			claims, _ := AccessClaimsFromContext(r.Context())
+			routed := g.Tenant(r)
+			if !tokenFitsTenant(claims, routed, g.AllowEntered) {
+				writeUnauthenticated(w, "invalid token")
+				return
+			}
+			// FromStored, as RequireTenant does: routed has just been
+			// compared with a signed tid, so "" here is the single
+			// tenant as a fact. The home tenant of a guest is a claim
+			// of its own and goes through tenant.New.
+			scope := tenant.FromStored(routed)
+			home := scope
+			if claims.Entered() {
+				home = tenant.New(claims.HomeTenantID)
+			}
+			r = r.WithContext(context.WithValue(r.Context(), tenantCtxKey{}, scope))
 			resourceID := ""
 			if g.ResourceIDFrom != "" {
 				resourceID = r.PathValue(g.ResourceIDFrom)
@@ -152,40 +167,6 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 				}
 			}
 
-			claims, _ := AccessClaimsFromContext(r.Context())
-			pin, gated := pinnedFromContext(r.Context())
-			// Both are assigned in every arm that goes on. Neither has a
-			// default to inherit.
-			var scope, home tenant.ID
-			switch {
-			case !gated && claims != nil && claims.TenantID != "":
-				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate got a tenant token on a route with no tenant gate").
-					WithCode("CONFIG_ERROR").
-					WriteResponse(w)
-				return
-			case !gated:
-				// No tenant anywhere — a token without one, or only a
-				// user id: the single-tenant path as it always was.
-				scope, home = tenant.Single, tenant.Single
-			case claims == nil:
-				_ = espressofw.ErrInternal("middleware: " + g.Label + " gate is behind a tenant gate but has no access claims (RequireAuth did not run)").
-					WithCode("CONFIG_ERROR").
-					WriteResponse(w)
-				return
-			case !tokenFitsTenant(claims, pin.id.String(), pin.guests):
-				// The rule RequireTenant applies, applied again: behind
-				// PinTenant nothing has looked at the token yet.
-				writeUnauthenticated(w, "invalid token")
-				return
-			default:
-				// The token is for exactly this scope. Its subject is
-				// one of the scope's own, unless it entered from
-				// somewhere else.
-				scope, home = pin.id, pin.id
-				if from, entered := EnteredFromContext(r.Context()); entered {
-					home = from
-				}
-			}
 			subject := authz.Subject{Tenant: home, Type: g.SubjectType, ID: userID}
 			resource := authz.Resource{Type: g.ResourceType, ID: resourceID}
 

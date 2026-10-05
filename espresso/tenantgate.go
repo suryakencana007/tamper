@@ -58,28 +58,13 @@ type tenantCtxKey struct{}
 // forgotten middleware into an unscoped query. Handlers in a pooled
 // deployment should treat !ok as a programmer error and fail closed.
 func TenantFromContext(ctx context.Context) (tenant.ID, bool) {
-	p, ok := pinnedFromContext(ctx)
-	return p.id, ok
-}
-
-// pinnedTenant is the ONE value a tenant gate leaves in the context. Every
-// gate writes it whole, so the tenant and what the gate decided about
-// guests cannot disagree: a later gate replaces both.
-type pinnedTenant struct {
-	id tenant.ID
-	// guests is true only behind RequireTenantAllowEntered. PinTenant
-	// leaves it false: it looks at no token, so it invites nobody.
-	guests bool
-}
-
-func pinnedFromContext(ctx context.Context) (pinnedTenant, bool) {
-	p, ok := ctx.Value(tenantCtxKey{}).(pinnedTenant)
-	return p, ok
+	id, ok := ctx.Value(tenantCtxKey{}).(tenant.ID)
+	return id, ok
 }
 
 // tokenFitsTenant is the one rule for "may this token be used on a
-// route of this tenant". RequireTenant applies it, and RequireDecision
-// applies it again behind PinTenant, which pins without a token.
+// route of this tenant". RequireTenant and RequireDecision both apply
+// it, each to the tenant it resolves itself.
 //
 //   - the token's tid is exactly the routed tenant; absent, empty and
 //     mismatched all fail the one equality;
@@ -144,9 +129,10 @@ func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.H
 //     routes, identity linking) behind this gate; they would act on the
 //     admin's home account.
 //   - Its authorization must know the subject may be a guest.
-//     [RequireDecision] does: it asks with the guest's home tenant on
-//     the subject, so the guest gets only what this tenant granted
-//     them. A handler that decides by itself reads [EnteredFromContext].
+//     [RequireDecision] does when DecisionGate.AllowEntered is set: it
+//     asks with the guest's home tenant on the subject, so the guest
+//     gets only what this tenant granted them. A handler that decides
+//     by itself reads [EnteredFromContext].
 func RequireTenantAllowEntered(resolve func(*http.Request) string) func(http.Handler) http.Handler {
 	return requireTenant(resolve, true)
 }
@@ -179,7 +165,7 @@ func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(h
 				writeUnauthenticated(w, "invalid token")
 				return
 			}
-			ctx := context.WithValue(r.Context(), tenantCtxKey{}, pinnedTenant{id: tenant.FromStored(routed), guests: allowEntered})
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -212,7 +198,7 @@ func PinTenant(resolve func(*http.Request) string) func(http.Handler) http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			routed := resolve(r)
-			ctx := context.WithValue(r.Context(), tenantCtxKey{}, pinnedTenant{id: tenant.FromStored(routed)})
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

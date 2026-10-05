@@ -86,6 +86,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-25 | `VerifyLegacy` reports tamper on a mixed-version chain | resolved by #46 | — | — |
 | TD-26 | Generated SQL queries that nothing calls | fixed by #54 | — | — |
 | TD-27 | Barista must move to the v4-only audit API and the tenant-scoped `authz` API | gap | P1 | Barista |
+| TD-28 | Compatibility shims from before 2026-10-05 | gap | P1 | Tamper |
 
 P0 = the feature cannot be built safely without this. P1 = the application can
 work around it, but mistakes are easy. P2 = convenience and completeness.
@@ -263,10 +264,10 @@ a guest needs a binding in the tenant they entered. Design:
 - No binding spans tenants. A platform admin who entered `acme` is the
   subject `{platform, user, id}` in scope `acme`, and gets only what `acme`
   granted to that subject. Roles held at home are never checked.
-- `espresso.RequireDecision` takes the scope from the tenant gate and the
-  subject's tenant from the token. Where a tenant is missing it refuses and
-  does not guess. Its ghost probe (`UserExists`) is given the subject's home
-  tenant.
+- `espresso.DecisionGate` has a required `Tenant` resolver. The gate asks in
+  that tenant, requires the token to be for it, and takes the subject's
+  tenant from the token. It never guesses a tenant. Its ghost probe
+  (`UserExists`) is given the subject's home tenant.
 - `authz/tenanttest` has a leak suite for each store port, and tests that
   prove the suites fail on stores that leak.
 
@@ -825,9 +826,45 @@ start a fresh audit DB.
 permission store do not compile against #56 until they take the new argument.
 Barista is single-tenant, so the change is mechanical: pass `tenant.Single`
 as the scope, set `Tenant: tenant.Single` on every subject and binding,
-ignore the argument in the queries, and add the tenant argument to its
-`UserExists` probes. It was not done or tested where #56 was
+ignore the argument in the queries, add the tenant argument to its
+`UserExists` probes, and give every `DecisionGate` a `Tenant` resolver that
+returns `""`. It was not done or tested where #56 was
 written.
+
+### TD-28 — Compatibility shims from before 2026-10-05
+
+**Background.** Through Phase 7 the rule was that an empty tenant must behave
+exactly as before tenants existed. On 2026-10-05 the repo owner replaced it:
+no compatibility code (`CLAUDE.md` standing rule 1). Single-tenant stays
+supported, but the application says `tenant.Single` out loud.
+
+**Evidence.** These exist only so that old callers keep working. The list
+comes from a read of the code and each line must be checked again when its
+change is made.
+
+| Where | What |
+|---|---|
+| `crypto` | `Issue`, `Verify`, `IssueTOTPPending`, `VerifyTOTPPending` take no tenant and sit beside the `…InTenant` forms. A token with no `purpose` claim is still accepted as an access token. |
+| `identity` | `IssueTokensForUser` and `IssueTokensForUserWithACR` mint for `tenant.Single` without reading the user row. |
+| `espresso.IdentityService` (port) | `IssueTokensForUser(ctx, userID)` and the TOTP-pending methods take no tenant. This is the root of TD-10, which was patched in the adapter, not in the port. |
+| `espresso` SCIM | `SCIMConfig.TenantBoundStores` and the unscoped store path. |
+| `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
+| tests and comments | "byte-identical" tests, and history comments about Barista. |
+
+**Impact.** Each shim is a second way to do something, and the second way is
+the one without a tenant. #56 showed the cost: a gate that had to serve both
+ways guessed a tenant, and three reviews could not make the guess safe.
+
+**Proposal.** One change per package (standing rule 7), from the bottom up:
+
+1. `crypto`: one set of functions, all taking a tenant; `purpose` required.
+2. `identity`: one mint function that always reads the user and checks the
+   tenant.
+3. `espresso.IdentityService` and `AuthRoutes`: every method takes the
+   tenant, so the TOTP second leg is bound to a tenant by the library.
+4. SCIM: the scoped path only.
+5. The examples and docs follow in each change. History comments are cleaned
+   in a last, docs-only change.
 
 ## What is ready to use
 

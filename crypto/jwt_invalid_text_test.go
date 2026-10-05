@@ -37,9 +37,9 @@ func TestInvalidToken_EveryFailureHasTheSameText(t *testing.T) {
 	}
 	pending := func(tid tenant.ID) string {
 		t.Helper()
-		tok, err := svc.IssueTOTPPendingInTenant("user-1", tid)
+		tok, err := svc.IssueTOTPPending("user-1", tid)
 		if err != nil {
-			t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+			t.Fatalf("IssueTOTPPending: %v", err)
 		}
 		return tok
 	}
@@ -52,11 +52,41 @@ func TestInvalidToken_EveryFailureHasTheSameText(t *testing.T) {
 		return err
 	}
 	verifyPending := func(tok string, tid tenant.ID) error {
-		_, err := svc.VerifyTOTPPendingInTenant(tok, tid)
+		_, err := svc.VerifyTOTPPending(tok, tid)
 		return err
 	}
 
+	// Tokens signed with the right key that this service would never
+	// mint as access tokens: each lacks one claim it requires.
+	raw := func(claims jwt.Claims) string {
+		t.Helper()
+		tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("secret-one"))
+		if err != nil {
+			t.Fatalf("sign raw token: %v", err)
+		}
+		return tok
+	}
+	reg := jwt.RegisteredClaims{
+		Subject:   "user-1",
+		Issuer:    "barista-test",
+		IssuedAt:  jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+	}
+	noSubject := reg
+	noSubject.Subject = ""
+	full := func(mod func(*AccessClaims)) string {
+		c := AccessClaims{AuthTime: now.Unix(), ACR: ACRLocalPassword, Purpose: purposeAccess, TenantID: "acme", RegisteredClaims: reg}
+		mod(&c)
+		return raw(c)
+	}
+
 	for name, err := range map[string]error{
+		"no purpose":                       verifyAccess(svc, full(func(c *AccessClaims) { c.Purpose = "" }), acme),
+		"unknown purpose":                  verifyAccess(svc, full(func(c *AccessClaims) { c.Purpose = "password_reset" }), acme),
+		"no auth_time":                     verifyAccess(svc, full(func(c *AccessClaims) { c.AuthTime = 0 }), acme),
+		"no acr":                           verifyAccess(svc, full(func(c *AccessClaims) { c.ACR = "" }), acme),
+		"no subject":                       verifyAccess(svc, full(func(c *AccessClaims) { c.RegisteredClaims = noSubject }), acme),
+		"htid equal to tid":                verifyAccess(svc, full(func(c *AccessClaims) { c.HomeTenantID = "acme" }), acme),
 		"garbage":                          verifyAccess(svc, "not-a-token", acme),
 		"empty":                            verifyAccess(svc, "", acme),
 		"signed with another key":          verifyAccess(svc, access(other, acme), acme),
@@ -79,6 +109,12 @@ func TestInvalidToken_EveryFailureHasTheSameText(t *testing.T) {
 		if err.Error() != invalidTokenText {
 			t.Errorf("%s: text = %q, want %q — the message says which check failed", name, err.Error(), invalidTokenText)
 		}
+	}
+
+	// The complete raw token verifies: each row above is refused for the
+	// one thing it changed.
+	if err := verifyAccess(svc, full(func(*AccessClaims) {}), acme); err != nil {
+		t.Fatalf("the complete raw fixture does not verify: %v", err)
 	}
 
 	// ParseAccess has the same rule, with no tenant to check.

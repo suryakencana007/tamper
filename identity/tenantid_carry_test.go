@@ -619,24 +619,21 @@ func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *t
 	}
 
 	// Password step done in globex.
-	pending, err := c.jwt.IssueTOTPPendingInTenant(user.ID, globex)
+	pending, err := c.jwt.IssueTOTPPending(user.ID, globex)
 	if err != nil {
-		t.Fatalf("IssueTOTPPendingInTenant: %v", err)
+		t.Fatalf("IssueTOTPPending: %v", err)
 	}
 
 	// Fence 1: the token is replayed at ACME's verify.
-	if uid, err := c.jwt.VerifyTOTPPendingInTenant(pending, acme); !errors.Is(err, crypto.ErrInvalidToken) {
+	if uid, err := c.jwt.VerifyTOTPPending(pending, acme); !errors.Is(err, crypto.ErrInvalidToken) {
 		t.Errorf("acme accepted a globex pending token: uid=%q err=%v", uid, err)
 	}
 
 	// Fence 2: the adapter that mints with the routed tenant without
-	// comparing it to the user's stored tenant. The unbound pair is used
-	// on purpose — it is what such an adapter would still be calling.
-	unbound, err := c.jwt.IssueTOTPPending(user.ID)
-	if err != nil {
-		t.Fatalf("IssueTOTPPending: %v", err)
-	}
-	uid, err := c.jwt.VerifyTOTPPending(unbound)
+	// comparing it to the user's stored tenant. Globex's own verify
+	// accepts the token and hands back a bare user id; the mint is asked
+	// for acme with it.
+	uid, err := c.jwt.VerifyTOTPPending(pending, globex)
 	if err != nil {
 		t.Fatalf("VerifyTOTPPending: %v", err)
 	}
@@ -651,13 +648,8 @@ func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *t
 		t.Fatalf("sessions %d -> %d: the refused mint left a refresh session to rotate", before, after)
 	}
 
-	// The honest path: globex's verify accepts the token, and the mint
-	// for globex carries the user's tenant — not the empty tid the shim
-	// would have produced, which every tenant-pinned verifier refuses.
-	uid, err = c.jwt.VerifyTOTPPendingInTenant(pending, globex)
-	if err != nil {
-		t.Fatalf("VerifyTOTPPendingInTenant(globex): %v", err)
-	}
+	// The honest path: the same verified user id, minted for globex,
+	// carries the user's tenant.
 	tokens, err = c.IssueTokensForUserInTenant(ctx, uid, globex, 0, "")
 	if err != nil {
 		t.Fatalf("IssueTokensForUserInTenant(globex user, globex): %v", err)
@@ -749,5 +741,27 @@ func TestIssueTokensForUserInTenant_SingleIsByteIdenticalToTheShim(t *testing.T)
 	}
 	if !viaTenant.RefreshExpiresAt.Equal(viaShim.RefreshExpiresAt) {
 		t.Errorf("refresh expiry drifted: shim %v, tenant %v", viaShim.RefreshExpiresAt, viaTenant.RefreshExpiresAt)
+	}
+}
+
+// issueTokens is the one place every session mint goes through. An
+// unset tenant there is identity's own ErrTenantRequired, so a caller
+// that maps that error to "wiring bug" sees it, and it is not the
+// crypto error of the same name wrapped as a signing failure. No
+// exported method reaches it with an unset tenant today; this pins what
+// a future one would get.
+func TestIssueTokens_UnsetTenantIsIdentitysError(t *testing.T) {
+	c, store := testCore(t)
+	before := len(store.sessions)
+
+	tok, err := c.issueTokens(context.Background(), "u-1", tenant.ID{}, time.Now().Unix(), testACR)
+	if !errors.Is(err, ErrTenantRequired) {
+		t.Fatalf("err = %v, want identity.ErrTenantRequired", err)
+	}
+	if tok.Access != "" || tok.Refresh != "" {
+		t.Error("a refused mint returned tokens")
+	}
+	if after := len(store.sessions); after != before {
+		t.Errorf("sessions %d -> %d: a refused mint wrote a session", before, after)
 	}
 }

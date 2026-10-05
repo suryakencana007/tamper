@@ -51,7 +51,7 @@ type StepUpDenialReason string
 
 const (
 	// StepUpDenyStaleAuth — JWT's auth_time was older than the
-	// configured maxAge (or zero, in the pre-v1.14 legacy-JWT case).
+	// configured maxAge.
 	StepUpDenyStaleAuth StepUpDenialReason = "stale_auth_time"
 	// StepUpDenyWeakACR — JWT's acr was not in the configured
 	// acrValues set (local-password trying to satisfy a silver gate
@@ -189,7 +189,9 @@ func evaluateStepUpGate(claims *crypto.AccessClaims, maxAge time.Duration, acrSe
 	}
 	authTime = claims.AuthTime
 	maxAgeSec := int64(maxAge.Seconds())
-	if authTime <= 0 || now-authTime > maxAgeSec {
+	// No special case for a missing auth_time: ParseAccess refuses a
+	// token without one, so claims that reach this gate always carry it.
+	if now-authTime > maxAgeSec {
 		return claims.ACR, StepUpDenyStaleAuth, authTime, false
 	}
 	if _, hit := acrSet[claims.ACR]; !hit {

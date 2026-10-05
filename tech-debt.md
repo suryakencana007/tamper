@@ -845,13 +845,13 @@ change is made.
 
 | Where | What |
 |---|---|
-| `crypto` | `Issue`, `Verify`, `IssueTOTPPending`, `VerifyTOTPPending` take no tenant and sit beside the `…InTenant` forms. A token with no `purpose` claim is still accepted as an access token. |
+| `crypto` | **Done in #57.** `Issue`, `Verify`, and the tenant-less `IssueTOTPPending` / `VerifyTOTPPending` are removed. A token with no `purpose`, no `auth_time` or no `acr` is refused. |
 | `identity` | `IssueTokensForUser` and `IssueTokensForUserWithACR` mint for `tenant.Single` without reading the user row. |
 | `espresso.IdentityService` (port) | `IssueTokensForUser(ctx, userID)` and the TOTP-pending methods take no tenant. This is the root of TD-10, which was patched in the adapter, not in the port. |
 | `espresso` SCIM | `SCIMConfig.TenantBoundStores` and the unscoped store path. |
 | `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
 | `espresso` | The resolvers of `RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` return a `string`, and `""` becomes `tenant.Single`. A route pattern with no tenant segment is then served as a single-tenant route. `DecisionGate.Tenant` already returns `(tenant.ID, bool)`; these should too. |
-| tests and comments | "byte-identical" tests, and history comments about Barista. |
+| tests and comments | "byte-identical" tests, and history comments about Barista. A stale line in this file: the slice list still says TD-03 is "Open as #56"; it merged. |
 
 **Impact.** Each shim is a second way to do something, and the second way is
 the one without a tenant. #56 showed the cost: a gate that had to serve both
@@ -860,6 +860,7 @@ ways guessed a tenant, and three reviews could not make the guess safe.
 **Proposal.** One change per package (standing rule 7), from the bottom up:
 
 1. `crypto`: one set of functions, all taking a tenant; `purpose` required.
+   **Done, #57.**
 2. `identity`: one mint function that always reads the user and checks the
    tenant.
 3. `espresso.IdentityService` and `AuthRoutes`: every method takes the

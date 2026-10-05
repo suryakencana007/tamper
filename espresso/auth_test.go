@@ -11,6 +11,7 @@ import (
 
 	"github.com/suryakencana007/tamper/audit"
 	"github.com/suryakencana007/tamper/crypto"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 func testJWT(t *testing.T) (*crypto.JWTService, string) {
@@ -20,7 +21,7 @@ func testJWT(t *testing.T) (*crypto.JWTService, string) {
 		TTL:    time.Hour,
 		Issuer: "tamper-test",
 	})
-	tok, err := jwt.Issue("u-1")
+	tok, err := jwt.IssueAccess("u-1", tenant.Single, time.Now().Unix(), crypto.ACRLocalPassword)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}

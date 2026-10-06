@@ -165,6 +165,15 @@ var (
 	// membership store has no cross-tenant path, and saying "not found"
 	// instead would look like a missing membership row.
 	ErrNoMembershipStore = errors.New("identity: core has no membership store")
+
+	// ErrAuthContextRequired — a mint was asked for without saying how
+	// and when the user authenticated: a non-positive auth_time, an
+	// empty acr, or no session claims at all. A programmer error in the
+	// caller, surfaced loudly like ErrNoTokenService, and NOT
+	// ErrInvalidInput: that one is for the request, and adapters map it
+	// to their validation-error wire code. Nothing in the request was
+	// wrong here. Transport obligation: a 500, never a 400.
+	ErrAuthContextRequired = errors.New("identity: auth_time and acr of the authentication are required")
 )
 
 // ThrottledError carries the retry hint alongside ErrThrottled.

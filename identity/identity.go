@@ -40,8 +40,8 @@ type User struct {
 	// the same shape ACR already has (sketch §4.1).
 	//
 	// The core carries this field and, with ONE exception, never
-	// branches on it. The exception is IssueTokensForUserInTenant
-	// (TD-10), which refuses to mint unless the tenant on the row
+	// branches on it. The exception is IssueTokensForUser (TD-10),
+	// which refuses to mint unless the tenant on the row
 	// Store.UserByID returns equals the tenant it was asked for. So a
 	// Store MUST hand this field back on every read of the user, by id
 	// as much as by email: a by-id query that leaves it out returns ""
@@ -87,9 +87,9 @@ type RefreshSession struct {
 	// AuthTime + ACR are the step-up carry-forward pair: rotation copies
 	// them UNCHANGED onto the successor row and the new access JWT. If
 	// rotation advanced AuthTime, a fresh-auth gate would silently re-arm
-	// every access-token TTL, defeating the step-up promise. A zero
-	// AuthTime marks a legacy row: rotation falls back to now + the
-	// configured default ACR (one forced re-auth, then carried forward).
+	// every access-token TTL, defeating the step-up promise. Both are
+	// always set on a row this package writes; Refresh refuses a row
+	// that lacks either.
 	AuthTime time.Time
 	ACR      string
 }

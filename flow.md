@@ -68,7 +68,7 @@ not a separate service. Three properties shape every flow:
 | `Login(tenant, email, pw)` | Password login with throttling and equal timing. Returns `ErrTOTPRequired` when a second factor is needed. |
 | `Refresh(token)` | Rotates the session. `TenantID`, `auth_time`, and `acr` are copied unchanged. |
 | `Logout`, `RevokeAllSessions(user)`, `RevokeAllSessionsForTenant(tenant)` | Revokes sessions: one, all of a user, all of a tenant. |
-| `IssueTokensForUser`, `…WithACR`, `…InTenant` | Mints tokens after TOTP or federation. Only the `InTenant` variant carries a tenant. |
+| `IssueTokensForUser(user, tenant, authTime, acr)` | Mints a session after TOTP or federation. It reads the user's row, requires the tenant to be the user's, and requires `authTime` and `acr` from the caller. |
 | `StartTOTPEnrollment`, `CompleteTOTPEnrollment`, `EnrollTOTP`, `VerifyTOTP`, `VerifyRecoveryCode`, `DisableTOTP`, `ClearTOTP` | TOTP lifecycle. |
 | `ResolveByIdentity`, `ProvisionUserWithIdentity`, `Link`, `Unlink`, `ListIdentities` | Multi-IdP account linking and JIT provisioning. |
 | `Invite`, `AcceptInvitation` | Onboarding without SSO, through a single-use token. |
@@ -235,7 +235,7 @@ The pending token is bound to a tenant: `crypto` has one pair,
 no form without a tenant (#57). `Core.VerifyTOTP` itself is not
 tenant-scoped, and the `espresso.IdentityService` port still passes no
 tenant to its TOTP methods, so the adapter supplies it. Mint with
-`IssueTokensForUserInTenant`, which refuses a tenant that differs from the
+`IssueTokensForUser`, which refuses a tenant that differs from the
 user's stored tenant. Moving the tenant into the port is the next step of
 TD-28.
 
@@ -306,7 +306,7 @@ POST /oidc/exchange {code, state, provider}
       └─ FederationHooks.OnFederatedExchange   (owned by the app; returns FederationOutcome)
           ├─ Core.ResolveByIdentity(tenant, provider, subject)       already linked
           ├─ Core.ProvisionUserWithIdentity(tenant, email, …)        JIT, firstUser per tenant
-          └─ Core.IssueTokensForUserInTenant(user, tenant, authTime, acr)
+          └─ Core.IssueTokensForUser(user, tenant, authTime, acr)
 ```
 
 `PinTenant` is needed on **all three** routes, not only on start. `Start`,

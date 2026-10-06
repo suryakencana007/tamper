@@ -55,12 +55,10 @@ func WithRefreshTTL(d time.Duration) Option { return func(c *Core) { c.refreshTT
 // (the caller routes them into enrollment).
 func WithTOTPRequired(required bool) Option { return func(c *Core) { c.totpRequired = required } }
 
-// WithDefaultACR sets the ACR stamped on freshly-authenticated sessions
-// (Register, Login) and used as the legacy-row fallback during
-// rotation. Applications with persisted ACR values MUST pass their own
-// (Barista: urn:barista:auth:local-password — stored in
-// refresh_tokens.acr, so the framework default would break step-up
-// freshness against existing rows). Defaults to crypto.ACRLocalPassword.
+// WithDefaultACR sets the ACR stamped on the sessions this package
+// authenticates itself (Register, Login, the TOTP enrollment that ends
+// in a session). An application with its own ACR vocabulary passes its
+// own value. Defaults to crypto.ACRLocalPassword.
 func WithDefaultACR(acr string) Option { return func(c *Core) { c.defaultACR = acr } }
 
 // WithTenancy was here. It gated the fallback path while the additive
@@ -293,88 +291,51 @@ func (c *Core) Login(ctx context.Context, tenantID tenant.ID, email, password st
 	return user, tokens, nil
 }
 
-// IssueTokensForUser mints a session with fresh auth_time and the
-// default ACR — the post-TOTP-verify and shim path.
+// IssueTokensForUser mints a session for a user the caller has already
+// authenticated by its own means — the TOTP second leg, a federated
+// callback. It is the one mint that takes a user id, and it reads the
+// user's row before it mints.
 //
-// The minted session carries an EMPTY tenant. These two shims take a
-// bare user id, so there is no tenant to carry, and resolving one here
-// would mean a second store read this method has never done. A pooled
-// deployment mints through a tenant-aware entry point instead (7b-2);
-// until then this is byte-identical to pre-7b-1 behavior, because
-// nothing supplies a tenant yet.
-func (c *Core) IssueTokensForUser(ctx context.Context, userID string) (Tokens, error) {
-	return c.issueTokens(ctx, userID, tenant.Single, 0, "")
-}
-
-// IssueTokensForUserWithACR mints a session carrying explicit step-up
-// claims (federated logins thread their own auth_time + ACR through).
-// Non-positive authTime falls back to now; empty acr to the default.
-// Empty tenant, for the reason on IssueTokensForUser.
-func (c *Core) IssueTokensForUserWithACR(ctx context.Context, userID string, authTime int64, acr string) (Tokens, error) {
-	return c.issueTokens(ctx, userID, tenant.Single, authTime, acr)
-}
-
-// IssueTokensForUserInTenant mints a session BOUND TO A TENANT — the
-// entry point the two shims above promised and did not have (v0.5.0,
-// closing the 7b-2 gap).
-//
-// The tenant lands in two places, and both matter:
+// tenantID must be the tenant the user is stored in. The tenant lands
+// in two places, and both matter:
 //
 //   - the access JWT's `tid` claim, so a verifier can bind the request
 //     to a tenant without a store read;
 //   - the refresh session row, so the rotation successor inherits it
-//     unchanged (see Refresh) instead of silently reverting to Single.
+//     unchanged (see Refresh).
 //
-// An UNSET tenant DENIES with [ErrTenantRequired] rather than falling
-// back to [tenant.Single]. That asymmetry is the whole point of this
-// method existing next to the shims: those two take a bare user id and
-// have no tenant to carry, so Single is the honest answer there. A
-// caller who reached for THIS method is asserting it has a tenant, so
-// an unset one is a wiring bug — the tenant-resolving step did not run —
-// and quietly minting a Single-tenant session for it would hand back a
-// token that authorises the wrong scope. Deny-by-default extends to
-// tenancy: absent never means "every tenant".
+// An UNSET tenant denies with [ErrTenantRequired]: the tenant-resolving
+// step did not run, and a session quietly minted for [tenant.Single]
+// would authorize the wrong scope. A single-tenant deployment passes
+// tenant.Single.
 //
-// A MISMATCHED tenant denies too (TD-10). The user is loaded and the
-// mint is refused unless the tenant on the stored row equals tenantID.
-// Before this check the method rejected only the unset tenant and
-// minted for ANY user in ANY tenant, so the whole rights check sat with
-// the caller — and the one caller that matters could not make it: the
-// TOTP second leg is keyed by a bare user id, so an adapter that minted
-// with the ROUTED tenant turned a globex user's pending token into an
-// access+refresh pair with tid=acme. The tenant named here must be the
-// one the user is stored in, and the stored row is the only thing that
-// can say so.
+// A MISMATCHED tenant denies with [ErrNotFound], and it is the SAME
+// error, built on the same line, as the one for a user id with no row
+// at all. A deny and a miss must be indistinguishable: an error that
+// separated them would tell the caller that the user exists in some
+// other tenant. This is what keeps the TOTP second leg honest: it is
+// keyed by a bare user id, so an adapter that minted with the ROUTED
+// tenant would otherwise turn a globex user's pending token into a
+// session with tid=acme.
 //
-// The refusal is [ErrNotFound], and it is the SAME error, built on the
-// same line, as the one for a user id with no row at all. A deny and a
-// miss must be indistinguishable: an error that separated them would
-// tell the caller that the user exists in some other tenant.
+// A DEACTIVATED user is refused with [ErrUserInactive], checked AFTER
+// the tenant, so an inactive user of another tenant still gets the
+// not-found answer.
 //
-// That makes a second, smaller change: a user id with no row used to
-// mint, because this method never read the store. It is now refused.
-//
-// A DEACTIVATED user is refused as well, with [ErrUserInactive]. The
-// row is already in hand for the tenant check, and without this the one
-// mint path that reads the user would still be the one that ignores
-// what it read: Login and Refresh both reject an inactive account, but
-// a user deactivated in the five minutes between the password step and
-// the TOTP step would walk out of this method with a full session. The
-// tenant is checked FIRST, so an inactive user of ANOTHER tenant still
-// gets the not-found answer — "inactive" is disclosed only to a caller
-// already in the right tenant.
+// authTime and acr say how and when the user authenticated. Both are
+// required: a non-positive authTime or an empty acr is
+// [ErrAuthContextRequired], a caller bug. There is no fallback to "now"
+// or to the default ACR; the caller knows what it did, and this method
+// must not decide what a missing value means. For a second factor that
+// just succeeded, pass the time it succeeded and the ACR your deployment
+// gives that login — [Core.DefaultACR] is the one Login stamps.
 //
 // Nothing else about the user is consulted — not the enrollment state,
-// not the credentials. The callers that reach this method have already
-// authenticated the user by their own means.
-//
-// Single-tenant deployments keep calling the shims and are unaffected;
-// for an ACTIVE user stored in the single tenant this method is
-// byte-identical to IssueTokensForUserWithACR when passed
-// [tenant.Single] explicitly.
-// The shims themselves are unchanged and still read nothing.
-func (c *Core) IssueTokensForUserInTenant(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
-	if err := c.tenantGate(tenantID); err != nil {
+// not the credentials.
+func (c *Core) IssueTokensForUser(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
+	// Wiring first, before anything is read: a token-less Core and an
+	// unset tenant say so whatever else is true.
+	if err := c.mintGate(tenantID, authTime, acr); err != nil {
 		return Tokens{}, err
 	}
 	user, err := c.store.UserByID(ctx, userID)
@@ -405,8 +366,9 @@ func (c *Core) IssueTokensForUserInTenant(ctx context.Context, userID string, te
 // refused the same way, with ErrInvalidSession, and revoked.
 //
 // Step-up carry-forward: the successor row and access JWT inherit the
-// old row's auth_time + ACR UNCHANGED. Legacy rows (zero auth_time)
-// fall back to now + the default ACR exactly once.
+// old row's auth_time + ACR UNCHANGED. A row with no auth_time or no
+// ACR was not written by this package; it is refused as an invalid
+// session and revoked, like a row of the wrong tenant.
 func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, error) {
 	if c.refreshTTL <= 0 {
 		return User{}, Tokens{}, ErrInvalidSession
@@ -450,6 +412,16 @@ func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, 
 		_ = c.store.RevokeRefreshSession(ctx, session.ID, now)
 		return User{}, Tokens{}, ErrInvalidSession
 	}
+	// Every row this package writes carries both. One that lacks either
+	// cannot be rotated without deciding what the missing value means,
+	// and rotation must not decide that: a made-up auth_time is a fresh
+	// step-up for free. The predicate is the mint's own, auth_time > 0:
+	// a store that scans a NULL as the Unix epoch is caught here, not
+	// one step later as a signing failure after the row was revoked.
+	if session.AuthTime.Unix() <= 0 || session.ACR == "" {
+		_ = c.store.RevokeRefreshSession(ctx, session.ID, now)
+		return User{}, Tokens{}, ErrInvalidSession
+	}
 	if !user.Active {
 		// Revoke the presented session best-effort; the inactive verdict
 		// stands regardless.
@@ -461,15 +433,11 @@ func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, 
 		return User{}, Tokens{}, fmt.Errorf("identity: revoke session: %w", err)
 	}
 
-	carryAuthTime := int64(0)
-	if !session.AuthTime.IsZero() {
-		carryAuthTime = session.AuthTime.Unix()
-	}
 	// session.TenantID rides across the rotation UNCHANGED, exactly like
 	// AuthTime and ACR above. Dropping it here would widen the successor
 	// from one tenant to none — and "none" reads as the single-tenant
 	// shape, which is the wildcard.
-	tokens, err := c.issueTokens(ctx, session.UserID, tenant.FromStored(session.TenantID), carryAuthTime, session.ACR)
+	tokens, err := c.issueTokens(ctx, session.UserID, tenant.FromStored(session.TenantID), session.AuthTime.Unix(), session.ACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -549,29 +517,43 @@ func (c *Core) RevokeAllSessionsForTenant(ctx context.Context, tenantID tenant.I
 	return nil
 }
 
-// issueTokens mints an access JWT and (when refresh is enabled) a
-// persisted refresh session. Non-positive authTime falls back to now,
-// empty acr to the default — the legacy-shim shape.
-//
-// tenantID is stamped on the successor row verbatim and is never read
-// or defaulted: an empty tenant means a single-tenant deployment, and
-// substituting anything for it here would invent a tenant the caller
-// did not name.
-func (c *Core) issueTokens(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
+// mintGate is everything a mint refuses before it reads or writes: no
+// token service, an unset tenant, and no record of how the user
+// authenticated. One function, so the public mint and the internal one
+// cannot disagree about it.
+func (c *Core) mintGate(tenantID tenant.ID, authTime int64, acr string) error {
 	if c.jwt == nil {
-		return Tokens{}, ErrNoTokenService
+		return ErrNoTokenService
 	}
-	// Every caller has already resolved the tenant. This is here so that
-	// one that has not gets identity's own ErrTenantRequired, not the
-	// crypto error of the same name wrapped as a signing failure.
 	if err := c.tenantGate(tenantID); err != nil {
+		return err
+	}
+	if authTime <= 0 || acr == "" {
+		return ErrAuthContextRequired
+	}
+	return nil
+}
+
+// DefaultACR returns the ACR this Core stamps on the sessions it
+// authenticates itself (Register, Login). An adapter that mints after a
+// second factor passes it, or a stronger one, to IssueTokensForUser, so
+// that the two local logins agree.
+func (c *Core) DefaultACR() string { return c.defaultACR }
+
+// issueTokens mints an access JWT and (when refresh is enabled) a
+// persisted refresh session. Every caller supplies a real authTime and
+// acr; crypto refuses to mint without them, and nothing here fills one
+// in.
+//
+// tenantID is stamped on the session row verbatim and is never read or
+// defaulted: substituting anything for it here would invent a tenant
+// the caller did not name.
+func (c *Core) issueTokens(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
+	// Every caller has already passed this. It is here so that one that
+	// has not gets identity's own errors, not crypto's wrapped as a
+	// signing failure.
+	if err := c.mintGate(tenantID, authTime, acr); err != nil {
 		return Tokens{}, err
-	}
-	if authTime <= 0 {
-		authTime = c.now().Unix()
-	}
-	if acr == "" {
-		acr = c.defaultACR
 	}
 	access, err := c.jwt.IssueAccess(userID, tenantID, authTime, acr)
 	if err != nil {

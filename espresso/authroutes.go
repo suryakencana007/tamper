@@ -76,13 +76,14 @@ type IdentityService interface {
 	// IssueTokensForUser mints the session that completes the second
 	// leg, and returns the user alongside it.
 	//
-	// Pooled: mint with identity.Core.IssueTokensForUserInTenant and the
-	// adapter's tenant. Do NOT forward to Core.IssueTokensForUser — that
-	// shim mints for tenant.Single, so the token carries no `tid`. The
-	// tenant passed must be the one the user is STORED in; the Core
-	// refuses a mismatch with identity.ErrNotFound, the same error as a
-	// user that does not exist, and an adapter that loads the user itself
-	// must report its own mismatch the same way.
+	// Mint with identity.Core.IssueTokensForUser, the adapter's tenant
+	// (tenant.Single in a single-tenant deployment), the time the second
+	// factor was verified, and the ACR the deployment gives that login
+	// (Core.DefaultACR, or a stronger one). The tenant passed must be the
+	// one the user is STORED in; the Core refuses a mismatch with
+	// identity.ErrNotFound, the same error as a user that does not exist,
+	// and an adapter that loads the user itself must report its own
+	// mismatch the same way.
 	IssueTokensForUser(ctx context.Context, userID string) (AuthResult, error)
 	EnrollTOTP(ctx context.Context, userID string) (TOTPEnrollment, error)
 	DisableTOTP(ctx context.Context, userID, code string) error

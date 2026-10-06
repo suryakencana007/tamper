@@ -198,10 +198,10 @@ func TestEnterTenant_Refusals(t *testing.T) {
 		want    error
 	}{
 		{"unset target", sess(admin.ID, tPlatform, now, testACR), tenant.ID{}, ErrTenantRequired},
-		{"no session", nil, tAcme, ErrInvalidInput},
-		{"no subject", noSubject, tAcme, ErrInvalidInput},
-		{"no auth_time", sess(admin.ID, tPlatform, 0, testACR), tAcme, ErrInvalidInput},
-		{"no acr", sess(admin.ID, tPlatform, now, ""), tAcme, ErrInvalidInput},
+		{"no session", nil, tAcme, ErrAuthContextRequired},
+		{"no subject", noSubject, tAcme, ErrAuthContextRequired},
+		{"no auth_time", sess(admin.ID, tPlatform, 0, testACR), tAcme, ErrAuthContextRequired},
+		{"no acr", sess(admin.ID, tPlatform, now, ""), tAcme, ErrAuthContextRequired},
 		{"the user's own tenant", sess(admin.ID, tPlatform, now, testACR), tPlatform, ErrNotFound},
 		{"the single tenant as target", sess(admin.ID, tPlatform, now, testACR), tenant.Single, ErrNotFound},
 		{"a user stored in the single tenant", sess(single.ID, tenant.Single, now, testACR), tAcme, ErrNotFound},
@@ -350,14 +350,14 @@ func TestEnterTenant_InactiveUser(t *testing.T) {
 
 // A membership does not loosen the ordinary mint: a full session is
 // still only ever for the user's own tenant.
-func TestMembership_DoesNotLoosenIssueTokensForUserInTenant(t *testing.T) {
+func TestMembership_DoesNotLoosenIssueTokensForUser(t *testing.T) {
 	ctx := context.Background()
 	c, store := enterCore(t)
 	admin := platformAdmin(t, c)
 	store.AddMembership(admin.ID, tAcme)
 
-	if _, err := c.IssueTokensForUserInTenant(ctx, admin.ID, tAcme, 0, ""); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("IssueTokensForUserInTenant into a tenant the user is only a member of: err = %v, want ErrNotFound", err)
+	if _, err := c.IssueTokensForUser(ctx, admin.ID, tAcme, time.Now().Unix(), testACR); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("IssueTokensForUser into a tenant the user is only a member of: err = %v, want ErrNotFound", err)
 	}
 }
 

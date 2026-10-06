@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"time"
 
 	tamper "github.com/suryakencana007/tamper"
 	"github.com/suryakencana007/tamper/crypto"
@@ -120,17 +121,12 @@ func (t tenantIdentity) Logout(ctx context.Context, refreshToken string) error {
 // IssueTokensForUser is the mint at the end of the TOTP second leg, and
 // the port hands it nothing but a user id. The tenant therefore comes
 // from the adapter, and it is checked against the user's STORED row
-// twice over — here, and again inside IssueTokensForUserInTenant.
+// twice over — here, and again inside Core.IssueTokensForUser.
 //
-// It mints through the InTenant entry point, not Core.IssueTokensForUser.
-// That shim mints for tenant.Single: the token would carry no `tid`, and
-// a user who had just cleared 2FA would hold a session that every
-// tenant-pinned verifier refuses.
-//
-// The comparison below stays even though the Core now makes the same
-// one. The row is loaded here regardless — the port returns the user —
-// and an adapter that leans on a check it cannot see is one refactor
-// away from having none.
+// The comparison below stays even though the Core makes the same one.
+// The row is loaded here regardless — the port returns the user — and
+// an adapter that leans on a check it cannot see is one refactor away
+// from having none.
 func (t tenantIdentity) IssueTokensForUser(ctx context.Context, userID string) (tamperespresso.AuthResult, error) {
 	u, err := t.store.UserByID(ctx, userID)
 	if err != nil {
@@ -139,9 +135,9 @@ func (t tenantIdentity) IssueTokensForUser(ctx context.Context, userID string) (
 	if u.TenantID != t.tenantID {
 		return tamperespresso.AuthResult{}, identity.ErrNotFound
 	}
-	// authTime 0 and acr "" are the shim's own arguments: fresh auth_time,
-	// the Core's default ACR.
-	tok, err := t.core.IssueTokensForUserInTenant(ctx, userID, tenant.New(t.tenantID), 0, "")
+	// The user cleared a password and a code just now: auth_time is now,
+	// and the ACR is the one the Core stamps on a password login.
+	tok, err := t.core.IssueTokensForUser(ctx, userID, tenant.New(t.tenantID), time.Now().Unix(), t.core.DefaultACR())
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}

@@ -71,7 +71,7 @@ func WithEnterTenantTTL(d time.Duration) Option {
 
 // EnterTenant mints an access token that lets a user act inside
 // target, a tenant other than the one the user is stored in. It is the
-// only supported cross-tenant mint: IssueTokensForUserInTenant refuses
+// only supported cross-tenant mint: IssueTokensForUser refuses
 // every tenant but the user's own, and stays that way.
 //
 // session is the VERIFIED claims of the access token the user is
@@ -100,8 +100,8 @@ func WithEnterTenantTTL(d time.Duration) Option {
 //   - ErrNoMembershipStore, ErrNoTokenService — the Core is not wired
 //     for this. Programmer errors.
 //   - ErrTenantRequired — target is the zero value.
-//   - ErrInvalidInput — session is nil, or has no subject, auth_time or
-//     acr. A caller bug, decided from the arguments alone.
+//   - ErrAuthContextRequired — session is nil, or has no subject,
+//     auth_time or acr. A caller bug, decided from the arguments alone.
 //   - ErrNotFound — everything else that is a "no": the session is an
 //     entered one, the user does not exist, the session's tenant is not
 //     the user's, the single tenant is on either side, target is the
@@ -131,7 +131,7 @@ func (c *Core) EnterTenant(ctx context.Context, session *crypto.AccessClaims, ta
 		return Tokens{}, err
 	}
 	if session == nil || session.Subject == "" || session.AuthTime <= 0 || session.ACR == "" {
-		return Tokens{}, fmt.Errorf("%w: entering a tenant needs the claims of the current session", ErrInvalidInput)
+		return Tokens{}, fmt.Errorf("%w: entering a tenant needs the claims of the current session", ErrAuthContextRequired)
 	}
 	userID := session.Subject
 

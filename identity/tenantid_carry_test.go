@@ -324,7 +324,7 @@ func TestMemStore_CreateUser_PersistsTenant(t *testing.T) {
 // to hand-seed a session row to observe the carry at all. These pin the
 // entry point that closes that gap, and the deny that keeps it honest.
 
-// TestIssueTokensForUserInTenant_DeniesUnsetTenant is the fence. An
+// TestIssueTokensForUser_DeniesUnsetTenant is the fence. An
 // unset tenant must NOT fall back to Single: a caller reaching for this
 // method is asserting it has a tenant, so an unset one is a wiring bug,
 // and minting a Single-scoped session for it would hand back a token
@@ -332,7 +332,7 @@ func TestMemStore_CreateUser_PersistsTenant(t *testing.T) {
 //
 // Mutation check: replace the tenantGate call with a Single fallback and
 // this fails.
-func TestIssueTokensForUserInTenant_DeniesUnsetTenant(t *testing.T) {
+func TestIssueTokensForUser_DeniesUnsetTenant(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
 
@@ -346,7 +346,7 @@ func TestIssueTokensForUserInTenant_DeniesUnsetTenant(t *testing.T) {
 	before := len(store.sessions)
 
 	var unset tenant.ID // the zero value -- "I forgot", not "single"
-	if _, err := c.IssueTokensForUserInTenant(ctx, user.ID, unset, 0, ""); !errors.Is(err, ErrTenantRequired) {
+	if _, err := c.IssueTokensForUser(ctx, user.ID, unset, time.Now().Unix(), testACR); !errors.Is(err, ErrTenantRequired) {
 		t.Fatalf("err = %v, want ErrTenantRequired", err)
 	}
 
@@ -357,12 +357,12 @@ func TestIssueTokensForUserInTenant_DeniesUnsetTenant(t *testing.T) {
 	}
 }
 
-// TestIssueTokensForUserInTenant_CarriesTenantIntoJWTAndSession pins the
+// TestIssueTokensForUser_CarriesTenantIntoJWTAndSession pins the
 // two places the tenant must land, and then that rotation preserves it.
 // Losing it in either place is silent: the token still verifies, the
 // refresh still works, and the session has quietly widened to the
 // single-tenant shape.
-func TestIssueTokensForUserInTenant_CarriesTenantIntoJWTAndSession(t *testing.T) {
+func TestIssueTokensForUser_CarriesTenantIntoJWTAndSession(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
 
@@ -388,9 +388,9 @@ func TestIssueTokensForUserInTenant_CarriesTenantIntoJWTAndSession(t *testing.T)
 	}
 	before := acmeSessionsFor()
 
-	tokens, err := c.IssueTokensForUserInTenant(ctx, user.ID, acme, 0, "")
+	tokens, err := c.IssueTokensForUser(ctx, user.ID, acme, time.Now().Unix(), testACR)
 	if err != nil {
-		t.Fatalf("IssueTokensForUserInTenant: %v", err)
+		t.Fatalf("IssueTokensForUser: %v", err)
 	}
 
 	// 1. the access JWT's tid claim -- verifying against the WRONG
@@ -418,66 +418,57 @@ func TestIssueTokensForUserInTenant_CarriesTenantIntoJWTAndSession(t *testing.T)
 	}
 }
 
-// TestIssueTokensForUserInTenant_SingleMatchesTheShim pins the
-// compatibility claim in the method's doc: passing Single explicitly is
-// the same session the pre-v0.5.0 shim produces. If these ever diverge,
-// a single-tenant deployment migrating onto the new entry point would
-// change behaviour while reading as a no-op.
-func TestIssueTokensForUserInTenant_SingleMatchesTheShim(t *testing.T) {
+// The caller says how and when the user authenticated. There is no
+// fallback: a non-positive auth_time or an empty acr is refused, because
+// a made-up "now" would be a fresh step-up for free. It is a caller bug,
+// not a bad request: ErrAuthContextRequired, which is not ErrInvalidInput.
+func TestIssueTokensForUser_RequiresAuthTimeAndACR(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
-
-	user, _, err := c.Register(ctx, tenant.Single, "single@acme.com", "correct-horse")
+	user, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	before := sessionsFor(store, user.ID)
 
-	emptyBefore := 0
-	for _, s := range store.sessions {
-		if s.UserID == user.ID && s.TenantID == "" {
-			emptyBefore++
+	if errors.Is(ErrAuthContextRequired, ErrInvalidInput) {
+		t.Fatal("ErrAuthContextRequired must not read as a validation error")
+	}
+	for name, args := range map[string]struct {
+		authTime int64
+		acr      string
+	}{
+		"auth_time 0":        {0, testACR},
+		"auth_time negative": {-1, testACR},
+		"acr empty":          {time.Now().Unix(), ""},
+		"both missing":       {0, ""},
+	} {
+		tok, err := c.IssueTokensForUser(ctx, user.ID, tenant.Single, args.authTime, args.acr)
+		if !errors.Is(err, ErrAuthContextRequired) || tok.Access != "" {
+			t.Errorf("%s: tokens=%q err=%v, want no tokens and ErrAuthContextRequired", name, tok.Access, err)
 		}
 	}
+	if after := sessionsFor(store, user.ID); after != before {
+		t.Errorf("sessions %d -> %d: a refused mint wrote a session", before, after)
+	}
 
-	viaShim, err := c.IssueTokensForUserWithACR(ctx, user.ID, 0, "")
+	// With both, the values are the ones stamped, not "now" and not the
+	// default ACR.
+	authTime := time.Now().Add(-time.Hour).Unix()
+	tok, err := c.IssueTokensForUser(ctx, user.ID, tenant.Single, authTime, "urn:test:auth:mfa")
 	if err != nil {
-		t.Fatalf("shim mint: %v", err)
+		t.Fatalf("IssueTokensForUser: %v", err)
 	}
-	viaTenant, err := c.IssueTokensForUserInTenant(ctx, user.ID, tenant.Single, 0, "")
+	claims, err := c.jwt.ParseAccess(tok.Access)
 	if err != nil {
-		t.Fatalf("tenant mint: %v", err)
+		t.Fatalf("ParseAccess: %v", err)
 	}
-
-	for _, tok := range []string{viaShim.Access, viaTenant.Access} {
-		claims, err := c.jwt.ParseAccess(tok)
-		if err != nil {
-			t.Fatalf("ParseAccess: %v", err)
-		}
-		if claims.TenantID != "" {
-			t.Errorf("tid = %q, want empty for Single", claims.TenantID)
-		}
-	}
-	var emptyAfter int
-	for _, s := range store.sessions {
-		if s.UserID == user.ID && s.TenantID == "" {
-			emptyAfter++
-		}
-	}
-	if got := emptyAfter - emptyBefore; got != 2 {
-		t.Errorf("empty-tenant sessions added by the two mints = %d, want 2 (one per path)", got)
+	if claims.AuthTime != authTime || claims.ACR != "urn:test:auth:mfa" {
+		t.Errorf("auth_time=%d acr=%q, want the caller's %d / urn:test:auth:mfa", claims.AuthTime, claims.ACR, authTime)
 	}
 }
 
-// --- TD-10: the tenant-aware mint checks the user's STORED tenant ----
-//
-// The entry point above denied an unset tenant and nothing else: it
-// minted for any user in any tenant, so the rights check lived entirely
-// with the caller. The TOTP second leg is the caller that could not make
-// it — it holds a bare user id — and an adapter that minted with the
-// ROUTED tenant handed a globex user a session with tid=acme. These pin
-// the check that moved into the Core.
-
-// sessionsFor counts the refresh sessions persisted for one user.
+// sessionsFor counts the refresh sessions a user holds, revoked or not.
 func sessionsFor(store *MemStore, userID string) int {
 	var n int
 	for _, s := range store.sessions {
@@ -488,7 +479,7 @@ func sessionsFor(store *MemStore, userID string) int {
 	return n
 }
 
-// TestIssueTokensForUserInTenant_DeniesMismatchedTenant is the fence.
+// TestIssueTokensForUser_DeniesMismatchedTenant is the fence.
 // Every pairing of a stored tenant with a DIFFERENT requested one is
 // refused, including the two that involve tenant.Single — "" is a tenant
 // like any other, not a wildcard in either direction.
@@ -499,8 +490,8 @@ func sessionsFor(store *MemStore, userID string) int {
 // user ids exist in another tenant.
 //
 // Mutation check: delete the FromStored comparison in
-// IssueTokensForUserInTenant and every case here mints.
-func TestIssueTokensForUserInTenant_DeniesMismatchedTenant(t *testing.T) {
+// IssueTokensForUser and every case here mints.
+func TestIssueTokensForUser_DeniesMismatchedTenant(t *testing.T) {
 	acme, globex := tenant.New("acme"), tenant.New("globex")
 	for _, tc := range []struct {
 		name      string
@@ -522,7 +513,7 @@ func TestIssueTokensForUserInTenant_DeniesMismatchedTenant(t *testing.T) {
 			}
 			before := sessionsFor(store, user.ID)
 
-			tokens, denyErr := c.IssueTokensForUserInTenant(ctx, user.ID, tc.requested, 0, "")
+			tokens, denyErr := c.IssueTokensForUser(ctx, user.ID, tc.requested, time.Now().Unix(), testACR)
 			if !errors.Is(denyErr, ErrNotFound) {
 				t.Fatalf("a user stored in %q minted into %q: err = %v, want ErrNotFound",
 					tc.stored.String(), tc.requested.String(), denyErr)
@@ -541,7 +532,7 @@ func TestIssueTokensForUserInTenant_DeniesMismatchedTenant(t *testing.T) {
 			store.mu.Lock()
 			delete(store.usersByID, user.ID)
 			store.mu.Unlock()
-			_, missErr := c.IssueTokensForUserInTenant(ctx, user.ID, tc.requested, 0, "")
+			_, missErr := c.IssueTokensForUser(ctx, user.ID, tc.requested, time.Now().Unix(), testACR)
 			if !errors.Is(missErr, ErrNotFound) {
 				t.Fatalf("missing user: err = %v, want ErrNotFound", missErr)
 			}
@@ -556,7 +547,7 @@ func TestIssueTokensForUserInTenant_DeniesMismatchedTenant(t *testing.T) {
 	}
 }
 
-// TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant
+// TestIssueTokensForUser_PendingTokenCannotMintIntoAnotherTenant
 // walks TD-10 end to end, the way the proof that found it did: a globex
 // user clears the password step, and the pending token is replayed at
 // acme's totp-verify.
@@ -566,11 +557,11 @@ func TestIssueTokensForUserInTenant_DeniesMismatchedTenant(t *testing.T) {
 // bound to globex, so acme's verify refuses it. And an adapter that
 // never got that far — one still on the unbound pair, minting with the
 // ROUTED tenant — is refused by the Core.
-// TestIssueTokensForUserInTenant_DeniesInactiveUser: the user is
+// TestIssueTokensForUser_DeniesInactiveUser: the user is
 // deactivated between the password step and the mint. Login and Refresh
 // both refuse an inactive account; the mint that follows a second factor
 // must not be the one path that still hands out a session.
-func TestIssueTokensForUserInTenant_DeniesInactiveUser(t *testing.T) {
+func TestIssueTokensForUser_DeniesInactiveUser(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
 	acme, globex := tenant.New("acme"), tenant.New("globex")
@@ -582,7 +573,7 @@ func TestIssueTokensForUserInTenant_DeniesInactiveUser(t *testing.T) {
 	store.SetActive(user.ID, false)
 	before := sessionsFor(store, user.ID)
 
-	tokens, err := c.IssueTokensForUserInTenant(ctx, user.ID, acme, 0, "")
+	tokens, err := c.IssueTokensForUser(ctx, user.ID, acme, time.Now().Unix(), testACR)
 	if !errors.Is(err, ErrUserInactive) {
 		t.Fatalf("mint for a deactivated user: err = %v, want ErrUserInactive", err)
 	}
@@ -595,7 +586,7 @@ func TestIssueTokensForUserInTenant_DeniesInactiveUser(t *testing.T) {
 
 	// The tenant is checked FIRST. From another tenant the answer stays
 	// not-found, so "inactive" is never disclosed across the boundary.
-	if _, err := c.IssueTokensForUserInTenant(ctx, user.ID, globex, 0, ""); !errors.Is(err, ErrNotFound) {
+	if _, err := c.IssueTokensForUser(ctx, user.ID, globex, time.Now().Unix(), testACR); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("inactive user addressed from another tenant: err = %v, want ErrNotFound "+
 			"(an ErrUserInactive here tells globex that the user exists in acme)", err)
 	}
@@ -603,12 +594,12 @@ func TestIssueTokensForUserInTenant_DeniesInactiveUser(t *testing.T) {
 	// Reactivated, the same call mints: the refusal was the flag, not
 	// something the test set up wrong.
 	store.SetActive(user.ID, true)
-	if _, err := c.IssueTokensForUserInTenant(ctx, user.ID, acme, 0, ""); err != nil {
+	if _, err := c.IssueTokensForUser(ctx, user.ID, acme, time.Now().Unix(), testACR); err != nil {
 		t.Fatalf("mint after reactivation: %v", err)
 	}
 }
 
-func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *testing.T) {
+func TestIssueTokensForUser_PendingTokenCannotMintIntoAnotherTenant(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
 	acme, globex := tenant.New("acme"), tenant.New("globex")
@@ -638,7 +629,7 @@ func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *t
 		t.Fatalf("VerifyTOTPPending: %v", err)
 	}
 	before := sessionsFor(store, user.ID)
-	tokens, err := c.IssueTokensForUserInTenant(ctx, uid, acme, 0, "")
+	tokens, err := c.IssueTokensForUser(ctx, uid, acme, time.Now().Unix(), testACR)
 	if !errors.Is(err, ErrNotFound) {
 		claims, _ := c.jwt.ParseAccess(tokens.Access)
 		t.Fatalf("a user stored in tenant %q received a session with tid=%q (refresh issued=%v): err = %v, want ErrNotFound",
@@ -650,9 +641,9 @@ func TestIssueTokensForUserInTenant_PendingTokenCannotMintIntoAnotherTenant(t *t
 
 	// The honest path: the same verified user id, minted for globex,
 	// carries the user's tenant.
-	tokens, err = c.IssueTokensForUserInTenant(ctx, uid, globex, 0, "")
+	tokens, err = c.IssueTokensForUser(ctx, uid, globex, time.Now().Unix(), testACR)
 	if err != nil {
-		t.Fatalf("IssueTokensForUserInTenant(globex user, globex): %v", err)
+		t.Fatalf("IssueTokensForUser(globex user, globex): %v", err)
 	}
 	claims, err := c.jwt.VerifyAccess(tokens.Access, globex)
 	if err != nil {
@@ -683,11 +674,11 @@ type userLookupFails struct {
 
 func (s *userLookupFails) UserByID(context.Context, string) (User, error) { return User{}, s.err }
 
-// TestIssueTokensForUserInTenant_StoreFailureDoesNotMint: the tenant
+// TestIssueTokensForUser_StoreFailureDoesNotMint: the tenant
 // check rests on a store read, so a read that fails must deny. No error
 // return may be read as allow — and it must not be dressed up as
 // ErrNotFound either, or an outage reads as "no such user".
-func TestIssueTokensForUserInTenant_StoreFailureDoesNotMint(t *testing.T) {
+func TestIssueTokensForUser_StoreFailureDoesNotMint(t *testing.T) {
 	ctx := context.Background()
 	boom := errors.New("store: connection refused")
 	store := &userLookupFails{MemStore: NewMemStore(), err: boom}
@@ -696,7 +687,7 @@ func TestIssueTokensForUserInTenant_StoreFailureDoesNotMint(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	tokens, err := c.IssueTokensForUserInTenant(ctx, "u-1", tenant.New("acme"), 0, "")
+	tokens, err := c.IssueTokensForUser(ctx, "u-1", tenant.New("acme"), time.Now().Unix(), testACR)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the store failure", err)
 	}
@@ -708,39 +699,6 @@ func TestIssueTokensForUserInTenant_StoreFailureDoesNotMint(t *testing.T) {
 	}
 	if n := len(store.sessions); n != 0 {
 		t.Errorf("a failed lookup persisted %d session(s)", n)
-	}
-}
-
-// TestIssueTokensForUserInTenant_SingleIsByteIdenticalToTheShim is
-// standing rule 1 for the new read. For a user stored in the single
-// tenant, passing tenant.Single must still produce the access token the
-// shim produces — the shim was not touched by TD-10 and reads nothing,
-// so it is the fixed point. Both clocks are frozen so the comparison can
-// be on the encoded token rather than on parsed claims.
-func TestIssueTokensForUserInTenant_SingleIsByteIdenticalToTheShim(t *testing.T) {
-	ctx := context.Background()
-	clock := time.Unix(1700000000, 0).UTC()
-	c, _ := testCore(t, WithClock(func() time.Time { return clock }))
-	c.jwt.Testing().SetNow(func() time.Time { return clock })
-
-	user, _, err := c.Register(ctx, tenant.Single, "single@example.com", "correct-horse")
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	viaShim, err := c.IssueTokensForUser(ctx, user.ID)
-	if err != nil {
-		t.Fatalf("shim mint: %v", err)
-	}
-	viaTenant, err := c.IssueTokensForUserInTenant(ctx, user.ID, tenant.Single, 0, "")
-	if err != nil {
-		t.Fatalf("tenant mint: %v", err)
-	}
-	if viaTenant.Access != viaShim.Access {
-		t.Errorf("Single mint drifted from the shim:\n  shim:   %s\n  tenant: %s", viaShim.Access, viaTenant.Access)
-	}
-	if !viaTenant.RefreshExpiresAt.Equal(viaShim.RefreshExpiresAt) {
-		t.Errorf("refresh expiry drifted: shim %v, tenant %v", viaShim.RefreshExpiresAt, viaTenant.RefreshExpiresAt)
 	}
 }
 

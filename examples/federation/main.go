@@ -239,11 +239,10 @@ func federationLoginHook(core *identity.Core, project func(context.Context, *ide
 			}
 		}
 
-		// Mint the login session, threading the IdP's auth_time + acr through
-		// (NOT the local-password defaults IssueTokensForUser would stamp) — so a
-		// later step-up freshness check stays honest about how this session
-		// authenticated. refreshTTL > 0 => a refresh token + cookie.
-		tokens, err := core.IssueTokensForUserWithACR(ctx, user.ID, v.Claims.AuthTime(time.Now), v.Claims.ACR(crypto.ACRIncommonSilver))
+		// Mint the login session, threading the IdP's auth_time + acr through,
+		// so a later step-up freshness check stays honest about how this
+		// session authenticated. refreshTTL > 0 => a refresh token + cookie.
+		tokens, err := core.IssueTokensForUser(ctx, user.ID, tenant.Single, v.Claims.AuthTime(time.Now), v.Claims.ACR(crypto.ACRIncommonSilver))
 		if err != nil {
 			return tamperespresso.FederationOutcome{}, mapFederationError(err)
 		}

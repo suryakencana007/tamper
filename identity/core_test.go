@@ -249,9 +249,9 @@ func TestRefresh(t *testing.T) {
 		// A federated step-up session with explicit claims.
 		const silver = "urn:mace:incommon:iap:silver"
 		authTime := time.Now().Add(-2 * time.Hour).Unix()
-		tokens, err := c.IssueTokensForUserWithACR(ctx, user.ID, authTime, silver)
+		tokens, err := c.IssueTokensForUser(ctx, user.ID, tenant.Single, authTime, silver)
 		if err != nil {
-			t.Fatalf("IssueTokensForUserWithACR: %v", err)
+			t.Fatalf("IssueTokensForUser: %v", err)
 		}
 
 		_, rotated, err := c.Refresh(ctx, tokens.Refresh)
@@ -275,29 +275,38 @@ func TestRefresh(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy row (zero auth_time) falls back to now + default ACR once", func(t *testing.T) {
-		c, store := testCore(t)
-		user, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
-		if err != nil {
-			t.Fatalf("Register: %v", err)
-		}
-		plaintext, _ := crypto.NewRefreshToken()
-		hash, _ := crypto.HashRefreshToken(plaintext)
-		_ = store.CreateRefreshSession(ctx, RefreshSession{
-			ID: "legacy", UserID: user.ID, TokenHash: hash,
-			IssuedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
-			// AuthTime zero, ACR empty — the pre-carry-forward shape.
-		})
-		_, rotated, err := c.Refresh(ctx, plaintext)
-		if err != nil {
-			t.Fatalf("Refresh: %v", err)
-		}
-		claims, err := testJWT().VerifyAccess(rotated.Access, tenant.Single)
-		if err != nil {
-			t.Fatalf("VerifyAccess: %v", err)
-		}
-		if claims.ACR != testACR || claims.AuthTime == 0 {
-			t.Fatalf("legacy shim wrong: acr=%q auth_time=%d", claims.ACR, claims.AuthTime)
+	t.Run("a row without auth_time or ACR is an invalid session", func(t *testing.T) {
+		// This package never writes such a row. Rotating one would mean
+		// deciding what the missing value means, and a made-up auth_time
+		// is a fresh step-up for free. The row is refused and revoked.
+		for name, mod := range map[string]func(*RefreshSession){
+			"no auth_time":    func(r *RefreshSession) { r.AuthTime = time.Time{} },
+			"epoch auth_time": func(r *RefreshSession) { r.AuthTime = time.Unix(0, 0) }, // a NULL scanned as 0
+			"no ACR":          func(r *RefreshSession) { r.ACR = "" },
+		} {
+			t.Run(name, func(t *testing.T) {
+				c, store := testCore(t)
+				user, _, err := c.Register(ctx, tenant.Single, "alice@example.com", "correct-horse")
+				if err != nil {
+					t.Fatalf("Register: %v", err)
+				}
+				plaintext, _ := crypto.NewRefreshToken()
+				hash, _ := crypto.HashRefreshToken(plaintext)
+				row := RefreshSession{
+					ID: "broken", UserID: user.ID, TokenHash: hash,
+					IssuedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+					AuthTime: time.Now(), ACR: testACR,
+				}
+				mod(&row)
+				_ = store.CreateRefreshSession(ctx, row)
+
+				if _, _, err := c.Refresh(ctx, plaintext); !errors.Is(err, ErrInvalidSession) {
+					t.Fatalf("Refresh: err = %v, want ErrInvalidSession", err)
+				}
+				if got, _ := store.SessionByHash(hash); !got.Revoked() {
+					t.Error("the refused row was not revoked")
+				}
+			})
 		}
 	})
 
@@ -373,7 +382,7 @@ func TestRevokeAllSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	second, err := c.IssueTokensForUser(ctx, user.ID)
+	second, err := c.IssueTokensForUser(ctx, user.ID, tenant.Single, time.Now().Unix(), testACR)
 	if err != nil {
 		t.Fatalf("IssueTokensForUser: %v", err)
 	}
@@ -399,7 +408,7 @@ func TestTokenlessCore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New with nil jwt must construct (crypto-ops instances): %v", err)
 	}
-	if _, err := c.IssueTokensForUser(context.Background(), "u1"); !errors.Is(err, ErrNoTokenService) {
+	if _, err := c.IssueTokensForUser(context.Background(), "u1", tenant.Single, time.Now().Unix(), testACR); !errors.Is(err, ErrNoTokenService) {
 		t.Fatalf("err = %v, want ErrNoTokenService", err)
 	}
 }

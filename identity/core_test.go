@@ -280,8 +280,9 @@ func TestRefresh(t *testing.T) {
 		// deciding what the missing value means, and a made-up auth_time
 		// is a fresh step-up for free. The row is refused and revoked.
 		for name, mod := range map[string]func(*RefreshSession){
-			"no auth_time": func(r *RefreshSession) { r.AuthTime = time.Time{} },
-			"no ACR":       func(r *RefreshSession) { r.ACR = "" },
+			"no auth_time":    func(r *RefreshSession) { r.AuthTime = time.Time{} },
+			"epoch auth_time": func(r *RefreshSession) { r.AuthTime = time.Unix(0, 0) }, // a NULL scanned as 0
+			"no ACR":          func(r *RefreshSession) { r.ACR = "" },
 		} {
 			t.Run(name, func(t *testing.T) {
 				c, store := testCore(t)

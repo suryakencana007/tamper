@@ -420,7 +420,8 @@ func TestIssueTokensForUser_CarriesTenantIntoJWTAndSession(t *testing.T) {
 
 // The caller says how and when the user authenticated. There is no
 // fallback: a non-positive auth_time or an empty acr is refused, because
-// a made-up "now" would be a fresh step-up for free.
+// a made-up "now" would be a fresh step-up for free. It is a caller bug,
+// not a bad request: ErrAuthContextRequired, which is not ErrInvalidInput.
 func TestIssueTokensForUser_RequiresAuthTimeAndACR(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
@@ -430,6 +431,9 @@ func TestIssueTokensForUser_RequiresAuthTimeAndACR(t *testing.T) {
 	}
 	before := sessionsFor(store, user.ID)
 
+	if errors.Is(ErrAuthContextRequired, ErrInvalidInput) {
+		t.Fatal("ErrAuthContextRequired must not read as a validation error")
+	}
 	for name, args := range map[string]struct {
 		authTime int64
 		acr      string
@@ -440,8 +444,8 @@ func TestIssueTokensForUser_RequiresAuthTimeAndACR(t *testing.T) {
 		"both missing":       {0, ""},
 	} {
 		tok, err := c.IssueTokensForUser(ctx, user.ID, tenant.Single, args.authTime, args.acr)
-		if !errors.Is(err, ErrInvalidInput) || tok.Access != "" {
-			t.Errorf("%s: tokens=%q err=%v, want no tokens and ErrInvalidInput", name, tok.Access, err)
+		if !errors.Is(err, ErrAuthContextRequired) || tok.Access != "" {
+			t.Errorf("%s: tokens=%q err=%v, want no tokens and ErrAuthContextRequired", name, tok.Access, err)
 		}
 	}
 	if after := sessionsFor(store, user.ID); after != before {

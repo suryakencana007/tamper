@@ -40,8 +40,8 @@ type User struct {
 	// the same shape ACR already has (sketch §4.1).
 	//
 	// The core carries this field and, with ONE exception, never
-	// branches on it. The exception is IssueTokensForUserInTenant
-	// (TD-10), which refuses to mint unless the tenant on the row
+	// branches on it. The exception is IssueTokensForUser (TD-10),
+	// which refuses to mint unless the tenant on the row
 	// Store.UserByID returns equals the tenant it was asked for. So a
 	// Store MUST hand this field back on every read of the user, by id
 	// as much as by email: a by-id query that leaves it out returns ""

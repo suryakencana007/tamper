@@ -194,12 +194,13 @@ func (c coreIdentity) IssueTokensForUser(ctx context.Context, userID string) (ta
 	// The port returns the user, so the row is loaded here; the Core
 	// loads it again for its own check. This is the TOTP second leg: the
 	// user authenticated with a password and a code just now, so the
-	// auth_time is now and the ACR is the local-password one.
+	// auth_time is now and the ACR is the one the Core stamps on a
+	// password login, so the two local logins agree.
 	u, err := c.store.UserByID(ctx, userID)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
-	t, err := c.core.IssueTokensForUser(ctx, userID, tenant.Single, time.Now().Unix(), crypto.ACRLocalPassword)
+	t, err := c.core.IssueTokensForUser(ctx, userID, tenant.Single, time.Now().Unix(), c.core.DefaultACR())
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}

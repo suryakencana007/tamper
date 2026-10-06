@@ -198,10 +198,10 @@ func TestEnterTenant_Refusals(t *testing.T) {
 		want    error
 	}{
 		{"unset target", sess(admin.ID, tPlatform, now, testACR), tenant.ID{}, ErrTenantRequired},
-		{"no session", nil, tAcme, ErrInvalidInput},
-		{"no subject", noSubject, tAcme, ErrInvalidInput},
-		{"no auth_time", sess(admin.ID, tPlatform, 0, testACR), tAcme, ErrInvalidInput},
-		{"no acr", sess(admin.ID, tPlatform, now, ""), tAcme, ErrInvalidInput},
+		{"no session", nil, tAcme, ErrAuthContextRequired},
+		{"no subject", noSubject, tAcme, ErrAuthContextRequired},
+		{"no auth_time", sess(admin.ID, tPlatform, 0, testACR), tAcme, ErrAuthContextRequired},
+		{"no acr", sess(admin.ID, tPlatform, now, ""), tAcme, ErrAuthContextRequired},
 		{"the user's own tenant", sess(admin.ID, tPlatform, now, testACR), tPlatform, ErrNotFound},
 		{"the single tenant as target", sess(admin.ID, tPlatform, now, testACR), tenant.Single, ErrNotFound},
 		{"a user stored in the single tenant", sess(single.ID, tenant.Single, now, testACR), tAcme, ErrNotFound},

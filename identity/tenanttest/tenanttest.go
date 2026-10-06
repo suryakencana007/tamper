@@ -253,7 +253,7 @@ func userByIDKeepsTenant(t harnessT, s identity.Store) {
 	// with RefreshSessionByHash below, the failure is not "A reads B's
 	// row" — it is that the row comes back WITHOUT its tenant. The Core
 	// compares this field before it mints a tenant-bound session
-	// (IssueTokensForUserInTenant), and an adapter compares it before it
+	// (IssueTokensForUser), and an adapter compares it before it
 	// answers for a user at all. A store that drops it returns "", which
 	// reads as the single tenant: the Core's check then refuses every
 	// real tenant, and a caller that treats "" as "no tenant to check"

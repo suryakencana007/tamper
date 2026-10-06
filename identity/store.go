@@ -38,7 +38,7 @@ type Store interface {
 	// themselves.
 	//
 	// That comparison is why the returned row MUST carry its TenantID.
-	// Core.IssueTokensForUserInTenant refuses to mint unless the stored
+	// Core.IssueTokensForUser refuses to mint unless the stored
 	// tenant equals the one it was asked for, so a query that does not
 	// select the tenant column — it comes back "" — makes every mint for
 	// a real tenant fail closed. The leak suite asserts the round trip.

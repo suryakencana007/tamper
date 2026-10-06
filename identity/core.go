@@ -323,25 +323,20 @@ func (c *Core) Login(ctx context.Context, tenantID tenant.ID, email, password st
 // not-found answer.
 //
 // authTime and acr say how and when the user authenticated. Both are
-// required: a non-positive authTime or an empty acr is [ErrInvalidInput].
-// There is no fallback to "now" or to the default ACR; the caller knows
-// what it did, and this method must not decide what a missing value
-// means. For a second factor that just succeeded, pass the time it
-// succeeded and the ACR your deployment gives that login.
+// required: a non-positive authTime or an empty acr is
+// [ErrAuthContextRequired], a caller bug. There is no fallback to "now"
+// or to the default ACR; the caller knows what it did, and this method
+// must not decide what a missing value means. For a second factor that
+// just succeeded, pass the time it succeeded and the ACR your deployment
+// gives that login — [Core.DefaultACR] is the one Login stamps.
 //
 // Nothing else about the user is consulted — not the enrollment state,
 // not the credentials.
 func (c *Core) IssueTokensForUser(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
-	// Wiring first, like EnterTenant: a token-less Core says so before it
-	// reads anything.
-	if c.jwt == nil {
-		return Tokens{}, ErrNoTokenService
-	}
-	if err := c.tenantGate(tenantID); err != nil {
+	// Wiring first, before anything is read: a token-less Core and an
+	// unset tenant say so whatever else is true.
+	if err := c.mintGate(tenantID, authTime, acr); err != nil {
 		return Tokens{}, err
-	}
-	if authTime <= 0 || acr == "" {
-		return Tokens{}, fmt.Errorf("%w: minting a session needs the auth_time and acr of the authentication", ErrInvalidInput)
 	}
 	user, err := c.store.UserByID(ctx, userID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -420,8 +415,10 @@ func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, 
 	// Every row this package writes carries both. One that lacks either
 	// cannot be rotated without deciding what the missing value means,
 	// and rotation must not decide that: a made-up auth_time is a fresh
-	// step-up for free.
-	if session.AuthTime.IsZero() || session.ACR == "" {
+	// step-up for free. The predicate is the mint's own, auth_time > 0:
+	// a store that scans a NULL as the Unix epoch is caught here, not
+	// one step later as a signing failure after the row was revoked.
+	if session.AuthTime.Unix() <= 0 || session.ACR == "" {
 		_ = c.store.RevokeRefreshSession(ctx, session.ID, now)
 		return User{}, Tokens{}, ErrInvalidSession
 	}
@@ -520,6 +517,29 @@ func (c *Core) RevokeAllSessionsForTenant(ctx context.Context, tenantID tenant.I
 	return nil
 }
 
+// mintGate is everything a mint refuses before it reads or writes: no
+// token service, an unset tenant, and no record of how the user
+// authenticated. One function, so the public mint and the internal one
+// cannot disagree about it.
+func (c *Core) mintGate(tenantID tenant.ID, authTime int64, acr string) error {
+	if c.jwt == nil {
+		return ErrNoTokenService
+	}
+	if err := c.tenantGate(tenantID); err != nil {
+		return err
+	}
+	if authTime <= 0 || acr == "" {
+		return ErrAuthContextRequired
+	}
+	return nil
+}
+
+// DefaultACR returns the ACR this Core stamps on the sessions it
+// authenticates itself (Register, Login). An adapter that mints after a
+// second factor passes it, or a stronger one, to IssueTokensForUser, so
+// that the two local logins agree.
+func (c *Core) DefaultACR() string { return c.defaultACR }
+
 // issueTokens mints an access JWT and (when refresh is enabled) a
 // persisted refresh session. Every caller supplies a real authTime and
 // acr; crypto refuses to mint without them, and nothing here fills one
@@ -529,13 +549,10 @@ func (c *Core) RevokeAllSessionsForTenant(ctx context.Context, tenantID tenant.I
 // defaulted: substituting anything for it here would invent a tenant
 // the caller did not name.
 func (c *Core) issueTokens(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
-	if c.jwt == nil {
-		return Tokens{}, ErrNoTokenService
-	}
-	// Every caller has already resolved the tenant. This is here so that
-	// one that has not gets identity's own ErrTenantRequired, not the
-	// crypto error of the same name wrapped as a signing failure.
-	if err := c.tenantGate(tenantID); err != nil {
+	// Every caller has already passed this. It is here so that one that
+	// has not gets identity's own errors, not crypto's wrapped as a
+	// signing failure.
+	if err := c.mintGate(tenantID, authTime, acr); err != nil {
 		return Tokens{}, err
 	}
 	access, err := c.jwt.IssueAccess(userID, tenantID, authTime, acr)

@@ -136,8 +136,8 @@ func (t tenantIdentity) IssueTokensForUser(ctx context.Context, userID string) (
 		return tamperespresso.AuthResult{}, identity.ErrNotFound
 	}
 	// The user cleared a password and a code just now: auth_time is now,
-	// and the ACR is the local-password one.
-	tok, err := t.core.IssueTokensForUser(ctx, userID, tenant.New(t.tenantID), time.Now().Unix(), crypto.ACRLocalPassword)
+	// and the ACR is the one the Core stamps on a password login.
+	tok, err := t.core.IssueTokensForUser(ctx, userID, tenant.New(t.tenantID), time.Now().Unix(), t.core.DefaultACR())
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}

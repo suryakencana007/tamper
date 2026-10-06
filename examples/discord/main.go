@@ -249,7 +249,12 @@ func (a *app) signIn(ctx context.Context, providerID string, claims *oidc.Claims
 		}
 	}
 
-	tokens, err := a.core.IssueTokensForUser(ctx, user.ID, tenant.Single, time.Now().Unix(), crypto.ACRLocalPassword)
+	// The IdP's auth_time and acr, as a federated callback must: this
+	// user presented no password here, and a step-up gate keyed on the
+	// local-password ACR must not take a Discord session for one. Discord
+	// is plain OAuth2 and says neither, so the claims fall back to now
+	// and the silver default the OIDC example uses.
+	tokens, err := a.core.IssueTokensForUser(ctx, user.ID, tenant.Single, claims.AuthTime(time.Now), claims.ACR(crypto.ACRIncommonSilver))
 	if err != nil {
 		return callbackResult{}, mapIdentityError(err)
 	}

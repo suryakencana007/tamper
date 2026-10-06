@@ -75,12 +75,18 @@ redacted. Everything that existed for older rows is removed.
   the row, refuses a tenant that is not the user's with `ErrNotFound`, and
   refuses an inactive user.
 - **`authTime` and `acr` are required.** A non-positive `authTime` or an
-  empty `acr` is `ErrInvalidInput`. The method used to fill in "now" and the
-  default ACR. A TOTP second leg passes the time the code was verified and
-  the ACR the deployment gives that login (for example
-  `crypto.ACRLocalPassword`); a federated callback passes the IdP's.
-- **`Core.Refresh` refuses a session row with no `auth_time` or no `acr`**
-  with `ErrInvalidSession`, and revokes it. It used to rotate such a row
+  empty `acr` is the new `ErrAuthContextRequired`: a caller bug, surfaced
+  like `ErrNoTokenService`, and not `ErrInvalidInput` (which adapters map
+  to a 400). `Core.EnterTenant` returns it for the same case; it returned
+  `ErrInvalidInput`. The method used to fill in "now" and the default ACR.
+  A TOTP second leg passes the time the code was verified and the ACR the
+  deployment gives that login — `Core.DefaultACR()`, new, is the one `Login`
+  stamps, so the two local logins agree; a federated callback passes the
+  IdP's.
+- **`Core.Refresh` refuses a session row whose `auth_time` is not positive
+  or whose `acr` is empty** with `ErrInvalidSession`, and revokes it. The
+  predicate is the mint's own, so a store that scans a `NULL` `auth_time` as
+  the Unix epoch is caught here and not as a signing failure. It used to rotate such a row
   with "now" and the default ACR. This package has always written both
   fields; a row without them was written by something else.
 - `WithDefaultACR` no longer describes a "legacy-row fallback"; it is the

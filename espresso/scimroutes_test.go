@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	scim "github.com/suryakencana007/tamper/scim"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // stubUserStore is a no-op scim.UserStore for the discovery + validation
@@ -17,47 +18,49 @@ import (
 // the real Barista adapter).
 type stubUserStore struct{}
 
-func (stubUserStore) Create(context.Context, scim.UserWrite, scim.WriteMeta) (scim.UserRecord, error) {
+func (stubUserStore) Create(context.Context, tenant.ID, scim.UserWrite, scim.WriteMeta) (scim.UserRecord, error) {
 	return scim.UserRecord{}, nil
 }
-func (stubUserStore) Get(context.Context, string) (scim.UserRecord, error) {
+func (stubUserStore) Get(context.Context, tenant.ID, string) (scim.UserRecord, error) {
 	return scim.UserRecord{}, nil
 }
-func (stubUserStore) Replace(context.Context, string, scim.UserWrite, scim.WriteMeta) (scim.UserRecord, error) {
+func (stubUserStore) Replace(context.Context, tenant.ID, string, scim.UserWrite, scim.WriteMeta) (scim.UserRecord, error) {
 	return scim.UserRecord{}, nil
 }
-func (stubUserStore) Delete(context.Context, string, scim.WriteMeta) error { return nil }
-func (stubUserStore) SavePatch(context.Context, string, scim.UserWrite, []scim.Operation) (scim.UserRecord, error) {
+func (stubUserStore) Delete(context.Context, tenant.ID, string, scim.WriteMeta) error { return nil }
+func (stubUserStore) SavePatch(context.Context, tenant.ID, string, scim.UserWrite, []scim.Operation) (scim.UserRecord, error) {
 	return scim.UserRecord{}, nil
 }
 func (stubUserStore) List(context.Context, int, int) (scim.UserPage, error) {
 	return scim.UserPage{}, nil
 }
-func (stubUserStore) ListFiltered(context.Context, int, int, string) (scim.UserPage, error) {
+func (stubUserStore) ListFiltered(context.Context, tenant.ID, int, int, string) (scim.UserPage, error) {
 	return scim.UserPage{}, nil
 }
 
 // stubGroupStore is the GroupStore twin of stubUserStore.
 type stubGroupStore struct{}
 
-func (stubGroupStore) Create(context.Context, scim.GroupWrite, scim.GroupWriteMeta) (scim.GroupRecord, error) {
+func (stubGroupStore) Create(context.Context, tenant.ID, scim.GroupWrite, scim.GroupWriteMeta) (scim.GroupRecord, error) {
 	return scim.GroupRecord{}, nil
 }
-func (stubGroupStore) Get(context.Context, string) (scim.GroupRecord, error) {
+func (stubGroupStore) Get(context.Context, tenant.ID, string) (scim.GroupRecord, error) {
 	return scim.GroupRecord{}, nil
 }
-func (stubGroupStore) Replace(context.Context, string, scim.GroupWrite, scim.GroupWriteMeta) (scim.GroupRecord, error) {
+func (stubGroupStore) Replace(context.Context, tenant.ID, string, scim.GroupWrite, scim.GroupWriteMeta) (scim.GroupRecord, error) {
 	return scim.GroupRecord{}, nil
 }
-func (stubGroupStore) Delete(context.Context, string, scim.GroupWriteMeta) error { return nil }
-func (stubGroupStore) ValidateMembers(context.Context, []scim.MemberRef) error   { return nil }
-func (stubGroupStore) SavePatch(context.Context, string, scim.GroupWrite, []scim.Operation) (scim.GroupRecord, error) {
+func (stubGroupStore) Delete(context.Context, tenant.ID, string, scim.GroupWriteMeta) error {
+	return nil
+}
+func (stubGroupStore) ValidateMembers(context.Context, tenant.ID, []scim.MemberRef) error { return nil }
+func (stubGroupStore) SavePatch(context.Context, tenant.ID, string, scim.GroupWrite, []scim.Operation) (scim.GroupRecord, error) {
 	return scim.GroupRecord{}, nil
 }
 func (stubGroupStore) List(context.Context, int, int) (scim.GroupPage, error) {
 	return scim.GroupPage{}, nil
 }
-func (stubGroupStore) ListFiltered(context.Context, int, int, string) (scim.GroupPage, error) {
+func (stubGroupStore) ListFiltered(context.Context, tenant.ID, int, int, string) (scim.GroupPage, error) {
 	return scim.GroupPage{}, nil
 }
 
@@ -75,6 +78,14 @@ func testSCIMRoutes(t *testing.T) *SCIMRoutes {
 		t.Fatalf("NewSCIMRoutes: %v", err)
 	}
 	return rt
+}
+
+// asSingleTenant gives a request the validated principal of a
+// single-tenant deployment. Every SCIM resource handler names the
+// tenant from the principal, so one must be there.
+func asSingleTenant(req *http.Request) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), principalKey{},
+		Principal{ID: "sa-1", TenantID: "", Name: "provisioner"}))
 }
 
 func TestNewSCIMRoutes_Validation(t *testing.T) {
@@ -220,7 +231,7 @@ func TestSCIMRoutes_BodyLimitRejectsOversizePayload(t *testing.T) {
 			// Well-formed JSON, just far over the cap — the point is that
 			// size alone is rejected, not that the payload is malformed.
 			huge := `{"userName":"` + strings.Repeat("a", 4096) + `"}`
-			req := httptest.NewRequest(c.method, c.target, strings.NewReader(huge))
+			req := asSingleTenant(httptest.NewRequest(c.method, c.target, strings.NewReader(huge)))
 			req.Header.Set("Content-Type", "application/scim+json")
 			rec := httptest.NewRecorder()
 
@@ -245,7 +256,7 @@ func TestSCIMRoutes_BodyLimitKeeps400ForMalformedJSON(t *testing.T) {
 	// under-limit body that is simply broken stays a 400 invalidSyntax,
 	// exactly as before the cap existed.
 	rt := scimRoutesWithLimit(t, 1<<20)
-	req := httptest.NewRequest(http.MethodPost, "/scim/v2/Users", strings.NewReader(`{"userName":`))
+	req := asSingleTenant(httptest.NewRequest(http.MethodPost, "/scim/v2/Users", strings.NewReader(`{"userName":`)))
 	rec := httptest.NewRecorder()
 
 	rt.UsersCreate(rec, req)

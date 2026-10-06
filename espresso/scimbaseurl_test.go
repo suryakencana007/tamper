@@ -22,7 +22,6 @@ func perTenantSCIM(t *testing.T) *SCIMRoutes {
 		MaxResults:        100,
 		BulkMaxOperations: 50,
 		MaxPayloadBytes:   1 << 20,
-		Tenancy:           true,
 		BaseURLForTenant: func(tenantID string) string {
 			switch tenantID {
 			case tenantA:
@@ -155,10 +154,10 @@ func TestSCIMBaseURL_SingleTenantIsByteIdentical(t *testing.T) {
 		{"UsersGet", "/scim/v2/Users/u-1", before.UsersGet, after.UsersGet},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r1 := httptest.NewRecorder()
-			tc.h1(r1, httptest.NewRequest(http.MethodGet, tc.path, nil))
-			r2 := httptest.NewRecorder()
-			tc.h2(r2, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			// A single-tenant principal: every store call names the
+			// tenant, and here it is tenant.Single.
+			r1 := asTenant(tc.h1, "", http.MethodGet, tc.path, "")
+			r2 := asTenant(tc.h2, "", http.MethodGet, tc.path, "")
 
 			if r1.Code != r2.Code {
 				t.Fatalf("status differs: %d vs %d", r1.Code, r2.Code)

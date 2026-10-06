@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/suryakencana007/tamper/audit"
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
+	"github.com/suryakencana007/tamper/scim"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // This test IS the IdP: it drives the SCIM server exactly as Okta / Entra
@@ -344,5 +347,59 @@ func TestSCIM_ThrottleRunsInsideTheAuthGate(t *testing.T) {
 		t.Error("an unauthenticated flood consumed the authenticated connector's " +
 			"budget; the limiter is mounted outside the service-account gate, so " +
 			"every caller shares one bucket")
+	}
+}
+
+// The store files everything under the single tenant and refuses any
+// other with the miss a missing id gets. Driven directly: the example
+// issues no tenant-bound credential, so no request reaches the store
+// with another tenant, and this is what would hold if one did.
+func TestSCIM_StoreRefusesAnotherTenant(t *testing.T) {
+	ctx := context.Background()
+	users := newUserStore(audit.NewNoopLogger())
+	groups := newGroupStore(audit.NewNoopLogger(), users)
+	acme := tenant.New("acme")
+
+	rec, err := users.Create(ctx, tenant.Single, scim.UserWrite{UserName: "a@example.test"}, scim.WriteMeta{})
+	if err != nil {
+		t.Fatalf("Create in the single tenant: %v", err)
+	}
+	_, missErr := users.Get(ctx, tenant.Single, "no-such-id")
+
+	for name, call := range map[string]func() error{
+		"users.Get": func() error { _, err := users.Get(ctx, acme, rec.ID); return err },
+		"users.Create": func() error {
+			_, err := users.Create(ctx, acme, scim.UserWrite{UserName: "b@example.test"}, scim.WriteMeta{})
+			return err
+		},
+		"users.Replace": func() error {
+			_, err := users.Replace(ctx, acme, rec.ID, scim.UserWrite{UserName: "c@example.test"}, scim.WriteMeta{})
+			return err
+		},
+		"users.Delete":       func() error { return users.Delete(ctx, acme, rec.ID, scim.WriteMeta{}) },
+		"users.SavePatch":    func() error { _, err := users.SavePatch(ctx, acme, rec.ID, scim.UserWrite{}, nil); return err },
+		"users.ListFiltered": func() error { _, err := users.ListFiltered(ctx, acme, 1, 10, ""); return err },
+		"groups.Create": func() error {
+			_, err := groups.Create(ctx, acme, scim.GroupWrite{DisplayName: "g"}, scim.GroupWriteMeta{})
+			return err
+		},
+		"groups.Get":             func() error { _, err := groups.Get(ctx, acme, "any"); return err },
+		"groups.ValidateMembers": func() error { return groups.ValidateMembers(ctx, acme, []scim.MemberRef{{Value: rec.ID}}) },
+		"groups.ListFiltered":    func() error { _, err := groups.ListFiltered(ctx, acme, 1, 10, ""); return err },
+	} {
+		err := call()
+		if !errors.Is(err, scim.ErrNotFound) {
+			t.Errorf("%s for tenant acme: err = %v, want ErrNotFound", name, err)
+		}
+	}
+	if !errors.Is(missErr, scim.ErrNotFound) {
+		t.Fatalf("fixture: a missing id is %v", missErr)
+	}
+	// Nothing was written for acme, and the single tenant's row is intact.
+	if users.Count() != 1 {
+		t.Errorf("user rows = %d, want 1: a refused write stored something", users.Count())
+	}
+	if got, err := users.Get(ctx, tenant.Single, rec.ID); err != nil || got.ID != rec.ID {
+		t.Errorf("the single tenant's row: %v, %v", got, err)
 	}
 }

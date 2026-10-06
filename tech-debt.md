@@ -848,7 +848,7 @@ change is made.
 | `crypto` | **Done in #57.** `Issue`, `Verify`, and the tenant-less `IssueTOTPPending` / `VerifyTOTPPending` are removed. A token with no `purpose`, no `auth_time` or no `acr` is refused. |
 | `identity` | **Done in #58.** `IssueTokensForUser` and `…WithACR` are removed; `…InTenant` is now `IssueTokensForUser(user, tenant, authTime, acr)`. The fallbacks to "now" and the default ACR, and the rotation of a session row with no `auth_time`, are gone. |
 | `espresso.IdentityService` (port) | **Done in #59.** Every method takes the routed tenant, resolved by the required `AuthRoutesConfig.Tenant`. The TOTP second leg is tied to a tenant by the port. |
-| `espresso` SCIM | `SCIMConfig.TenantBoundStores` and the unscoped store path. |
+| `espresso` SCIM | **Done in #61.** The unscoped store form, `SCIMConfig.Tenancy`, `TenantBoundStores` and the guard are removed; every `scim.UserStore` / `scim.GroupStore` method takes the tenant. |
 | `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
 | `espresso` | **Done in #60.** The resolvers of `RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` return `(tenant.ID, bool)`, like `DecisionGate.Tenant`; a tenant that does not resolve is refused, never read as the single tenant. `TenantFromServiceAccount` returns the same shape. |
 | `identity` Core methods keyed by a bare user id | `Refresh`, `Logout`, `VerifyTOTP`, `VerifyRecoveryCode`, `EnrollTOTP`, `DisableTOTP` take no tenant. Since #59 the port hands the adapter the tenant, but the adapter has to check the user's stored tenant itself before each of these, and an adapter that forgets compiles. Giving these methods a `tenant.ID`, as `IssueTokensForUser` has, would put the check in the library once. Found in review of #59; a candidate for a further step. |
@@ -869,8 +869,8 @@ ways guessed a tenant, and three reviews could not make the guess safe.
 3. `espresso.IdentityService` and `AuthRoutes`: every method takes the
    tenant, so the TOTP second leg is bound to a tenant by the library.
    **Done, #59.**
-4. SCIM: the scoped path only. The gate resolvers, the other half of this
-   step, are **done in #60**; SCIM is its own change.
+4. SCIM: the scoped path only. The gate resolvers are **done in #60**; SCIM
+   is **done in #61**.
 5. The examples and docs follow in each change. History comments are cleaned
    in a last, docs-only change.
 

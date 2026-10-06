@@ -66,6 +66,24 @@ redacted. Everything that existed for older rows is removed.
 - `CanonicalPayloadV2ForDebug`
 - `VerifyBootResult.Segments`
 
+### ⚠️ Breaking — the SCIM store ports take the tenant (#61, TD-28)
+
+- **Every `scim.UserStore` and `scim.GroupStore` method takes a `tenant.ID`**
+  after `ctx`: the tenant whose directory this is, read from the validated
+  service-account principal. `scim.TenantScopedUserStore` and
+  `scim.TenantScopedGroupStore`, the optional `…InTenant` forms, are removed;
+  the base ports are those methods under their plain names.
+- **`List` is removed from both ports.** The transport has always called
+  `ListFiltered` with the client's filter, `""` when absent.
+- **`SCIMConfig.Tenancy` and `SCIMConfig.TenantBoundStores` are removed**,
+  with the guard that refused a tenant-bound credential on an unscoped store.
+  There is one path, and it is scoped.
+- A single-tenant deployment is handed `tenant.Single` on every call. Its
+  store refuses any other tenant with `scim.ErrNotFound`; the example shows
+  the shape.
+- A SCIM resource handler now needs the principal on every request (it
+  always did behind `RequireServiceAccount`); mounted outside it, it panics.
+
 ### ⚠️ Breaking — the tenant gates' resolvers say whether they found a tenant (#60, TD-28)
 
 - **`RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` take
@@ -240,15 +258,11 @@ no home tenant. Backfill that column before the upgrade.
   pending token minted for another tenant. See the `crypto` breaking entry
   above for the signatures.
 
-- **A tenant-bound credential on an unscoped SCIM surface is refused** (#39,
-  TD-15). With `SCIMConfig.Tenancy` off, a request whose validated principal
-  carries a non-empty `TenantID` now gets a 500 `CONFIG_ERROR` before any
-  store method runs. Before, it was served from the unscoped store, so tenant
-  A's service account could read and change tenant B's directory. A principal
-  with an empty `TenantID` is unchanged. If your validator returns a tenant,
-  set `SCIMConfig.Tenancy: true`. If your unscoped stores are already confined
-  to one tenant by other means, set `SCIMConfig.TenantBoundStores` instead
-  (see Added).
+- **A tenant-bound credential never reaches an unscoped SCIM store** (#39,
+  TD-15; final shape in #61). #39 refused such a request with a 500 while
+  `SCIMConfig.Tenancy` was off. #61 removed the unscoped store form, the
+  flag and the refusal: every store method takes the tenant on the validated
+  principal. See the `scim` breaking entry above.
 
 - **Rows written by `espresso.Auditor` now carry the tenant** (#43, TD-08).
   `Event.TenantID` is the tenant pinned by `RequireTenant` or `PinTenant`.
@@ -328,14 +342,6 @@ no home tenant. Backfill that column before the upgrade.
 
 - **`authz/tenanttest`** (#56, TD-03). Leak suites for `BindingStore` and
   `PermissionStore`, the `authz` sibling of `identity/tenanttest`.
-
-- **`espresso.SCIMConfig.TenantBoundStores`** (#39, TD-15). The opt-out for
-  the SCIM refusal above. Set it when the unscoped stores given to
-  `NewSCIMRoutes` are already confined to one tenant: one `SCIMRoutes` per
-  tenant over a tenant-bound store, or stores that scope themselves from the
-  principal. Tamper cannot verify this. Setting it on a store shared by
-  several tenants re-opens the leak. `Tenancy` and `TenantBoundStores`
-  together are rejected by `NewSCIMRoutes`.
 
 - **A TOTP-pending token carries a `tid` claim** (#40, TD-10). Verification
   pins it the same way `VerifyAccess` pins an access token, so a pending

@@ -142,7 +142,7 @@ pass them.
 | `RequireAuth`, `RequireAuthWS` | Bearer JWT → user id, claims, and audit actor in the context. |
 | `RequireTenantAllowEntered`, `EnteredFromContext` | `RequireTenant` for a route that platform admins may use: it also accepts a token entered into the routed tenant. `RequireTenant` itself refuses one. |
 | `PinTenant(resolve)` | Pins the tenant on a route **before** login. |
-| `RequireTenant(resolve)` | Checks that the token `tid` equals the route tenant. Anything else is a 401. |
+| `RequireTenant(resolve)`, `PinTenant(resolve)`, `FixedRequestTenant` | `resolve` is `func(*http.Request) (tenant.ID, bool)`. `RequireTenant` checks that the token `tid` equals the resolved tenant; anything else, a tenant that did not resolve included, is a 401. `PinTenant` pins a tenant before login and answers 404 when none resolves. An empty answer is never the single tenant; `FixedRequestTenant(tenant.Single)` says it. |
 | `RequireEntitlement(store, capability, resolve)` | Gate for paid features. |
 | `RequireFreshAuth(maxAge, acrValues)` | Step-up: requires a recent authentication and an accepted ACR. |
 | `RequireDecision(DecisionGate)` | PDP gate: visibility check (404), then tier check (403). The gate has its own `Tenant` resolver (required) and an `AllowEntered` flag; the token must be for that tenant. |
@@ -432,9 +432,10 @@ Three things to know:
   The store implementation is the one that calls `scim.Parse`,
   `scim.Translate`, and `scim.Apply`.
 
-The entitlement resolver needs a small wrapper. `RequireEntitlement` wants
-`func(*http.Request) (tenant.ID, bool)`, but `TenantFromServiceAccount` returns
-`(string, bool)`. No code in the repository wires these two together yet.
+`TenantFromServiceAccount` returns `(tenant.ID, bool)` (#60), the shape
+`RequireEntitlement` and the gates take; the principal's `TenantID` is a
+stored fact, so `""` is the single tenant. No code in the repository wires
+the two together yet.
 
 ### 4.10 Audit
 

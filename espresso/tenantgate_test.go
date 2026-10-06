@@ -40,7 +40,7 @@ func gated(j *crypto.JWTService, routeTenant string, ran *bool, seen *tenant.ID,
 		*seen, *seenOK = TenantFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	})
-	return RequireAuth(j)(RequireTenant(func(*http.Request) string { return routeTenant })(inner))
+	return RequireAuth(j)(RequireTenant(routeTo(routeTenant))(inner))
 }
 
 func callWith(t *testing.T, h http.Handler, bearer string) (int, string) {
@@ -138,7 +138,7 @@ func TestRequireTenant_DenyBodyIsByteIdenticalToInvalidToken(t *testing.T) {
 // must deny rather than pass.
 func TestRequireTenant_DeniesWithoutRequireAuth(t *testing.T) {
 	ran := false
-	h := RequireTenant(func(*http.Request) string { return "acme" })(
+	h := RequireTenant(routeTo("acme"))(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			ran = true
 			w.WriteHeader(http.StatusOK)

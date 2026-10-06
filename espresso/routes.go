@@ -218,10 +218,15 @@ func TenantFromRoutedContext(r *http.Request) (tenant.ID, bool) {
 }
 
 // TenantFromServiceAccount resolves the tenant on the validated SCIM
-// principal — the resolver to use behind RequireServiceAccount.
-func TenantFromServiceAccount(r *http.Request) (string, bool) {
+// principal — the resolver to use behind RequireServiceAccount. The
+// principal's TenantID is a stored fact set by the validator, so "" is
+// the single tenant.
+func TenantFromServiceAccount(r *http.Request) (tenant.ID, bool) {
 	p, ok := GetPrincipal(r.Context())
-	return p.TenantID, ok
+	if !ok {
+		return tenant.ID{}, false
+	}
+	return tenant.FromStored(p.TenantID), true
 }
 
 type entitlementConfig struct {

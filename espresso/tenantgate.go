@@ -42,6 +42,8 @@ import (
 	"context"
 	"net/http"
 
+	espressofw "github.com/suryakencana007/espresso/v2"
+
 	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/tenant"
 )
@@ -81,10 +83,13 @@ func tokenFitsTenant(claims *crypto.AccessClaims, routed string, guests bool) bo
 // exactly. On success the tenant is stashed for TenantFromContext.
 //
 // resolve extracts the tenant from the request — a path segment, a
-// subdomain, whatever the app's routing says. It runs BEFORE the
-// comparison and its answer is never taken from the token: a tenant
-// read out of the credential being checked would be checking the token
-// against itself.
+// subdomain, whatever the app's routing says — and whether it found
+// one. It runs BEFORE the comparison and its answer is never taken from
+// the token: a tenant read out of the credential being checked would be
+// checking the token against itself. A tenant that does not resolve
+// (false, or the zero ID) denies: an empty path segment is not the
+// single tenant, it is no tenant. The single tenant is said, as
+// tenant.Single; [FixedRequestTenant] says it for a whole surface.
 //
 // The deny is a 401 with the byte-identical body RequireAuth writes for
 // an expired or malformed token. A wrong-tenant request and an
@@ -96,10 +101,11 @@ func tokenFitsTenant(claims *crypto.AccessClaims, routed string, guests bool) bo
 //
 //   - no claims in context (RequireAuth did not run) — programmer error,
 //     and the one shape that would otherwise pass anything;
-//   - token `tid` empty, route tenant non-empty — tenancy is on and the
-//     token predates it or was minted without one;
-//   - token `tid` non-empty, route tenant empty — a tenant token on an
-//     untenanted route;
+//   - the route's tenant did not resolve;
+//   - token `tid` empty, route tenant named — a single-tenant token on a
+//     tenant's route;
+//   - token `tid` non-empty, route tenant tenant.Single — a tenant token
+//     on a single-tenant route;
 //   - any mismatch between the two;
 //   - an ENTERED token (identity.Core.EnterTenant), even when its `tid`
 //     matches. See below.
@@ -116,7 +122,7 @@ func tokenFitsTenant(claims *crypto.AccessClaims, routed string, guests bool) bo
 // the same posture crypto.NewJWTService takes on an empty secret:
 // tenancy misconfiguration fails at construction, never as a per-request
 // denial that looks like ordinary traffic (§6.4).
-func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.Handler {
+func RequireTenant(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler {
 	return requireTenant(resolve, false)
 }
 
@@ -136,7 +142,7 @@ func RequireTenant(resolve func(*http.Request) string) func(http.Handler) http.H
 //     asks with the guest's home tenant on the subject, so the guest
 //     gets only what this tenant granted them. A handler that decides
 //     by itself reads [EnteredFromContext].
-func RequireTenantAllowEntered(resolve func(*http.Request) string) func(http.Handler) http.Handler {
+func RequireTenantAllowEntered(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler {
 	return requireTenant(resolve, true)
 }
 
@@ -151,7 +157,23 @@ func EnteredFromContext(ctx context.Context) (home tenant.ID, entered bool) {
 	return tenant.New(claims.HomeTenantID), true
 }
 
-func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(http.Handler) http.Handler {
+// FixedRequestTenant returns a resolver that reports one tenant for
+// every request: a surface mounted for exactly one tenant, or the
+// single-tenant application's (tenant.Single). It is [FixedTenant] for
+// the gates, which resolve from the request rather than the context.
+//
+// Panics on an unset id, for the reason FixedTenant does: a gate fixed
+// to no tenant would refuse every request, and that fails where the
+// gate is built.
+func FixedRequestTenant(id tenant.ID) func(*http.Request) (tenant.ID, bool) {
+	if !id.Valid() {
+		panic("tamper/espresso: FixedRequestTenant requires a set tenant.ID — " +
+			"a gate fixed to no tenant would refuse every request; the single tenant is tenant.Single")
+	}
+	return func(*http.Request) (tenant.ID, bool) { return id, true }
+}
+
+func requireTenant(resolve func(*http.Request) (tenant.ID, bool), allowEntered bool) func(http.Handler) http.Handler {
 	if resolve == nil {
 		panic("tamper/espresso: RequireTenant requires a resolve function — " +
 			"a nil resolver would be a tenant gate that pins nothing")
@@ -159,16 +181,17 @@ func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(h
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// No claims means RequireAuth did not run: there is nothing
-			// to pin against. A wrong tenant, and a guest on a route that
-			// did not invite guests, get the same refusal, so the
-			// response never says the token is good somewhere else.
+			// to pin against. A tenant that did not resolve, a wrong
+			// tenant, and a guest on a route that did not invite guests,
+			// get the same refusal, so the response never says the token
+			// is good somewhere else.
 			claims, _ := AccessClaimsFromContext(r.Context())
-			routed := resolve(r)
-			if !tokenFitsTenant(claims, routed, allowEntered) {
+			routed, ok := resolve(r)
+			if !ok || !routed.Valid() || !tokenFitsTenant(claims, routed.String(), allowEntered) {
 				writeUnauthenticated(w, "invalid token")
 				return
 			}
-			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, routed)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -189,19 +212,25 @@ func requireTenant(resolve func(*http.Request) string, allowEntered bool) func(h
 // Using PinTenant on an authenticated route would skip the cross-check, so
 // the two are deliberately separate names rather than one flag.
 //
-// resolve returns the application's routed tenant. An empty string means
-// the single-tenant deployment and pins tenant.Single — the same
-// FromStored rule RequireTenant applies, because a route's own
-// configuration is trusted input in a way a token claim is not.
-func PinTenant(resolve func(*http.Request) string) func(http.Handler) http.Handler {
+// resolve returns the application's routed tenant and whether it found
+// one. A tenant that does not resolve (false, or the zero ID) is
+// answered 404 and the handler is not reached: a public route of a
+// tenant that does not exist is a miss, like any other wrong path, and
+// says nothing more. It is never read as the single tenant; a
+// single-tenant application says so with FixedRequestTenant(tenant.Single).
+func PinTenant(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler {
 	if resolve == nil {
 		panic("tamper/espresso: PinTenant requires a resolve function — " +
 			"a nil resolver would be a tenant gate that pins nothing")
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			routed := resolve(r)
-			ctx := context.WithValue(r.Context(), tenantCtxKey{}, tenant.FromStored(routed))
+			routed, ok := resolve(r)
+			if !ok || !routed.Valid() {
+				_ = espressofw.ErrNotFound("not found").WithCode("NOT_FOUND").WriteResponse(w)
+				return
+			}
+			ctx := context.WithValue(r.Context(), tenantCtxKey{}, routed)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

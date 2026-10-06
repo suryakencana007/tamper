@@ -562,6 +562,17 @@ func TestAdapterRefusesAnotherTenantsUserWithoutTheGate(t *testing.T) {
 	if err := svc.Logout(ctx, acme, reg.Tokens.Refresh); err != nil {
 		t.Errorf("Logout of a globex session in acme: %v, want nil (idempotent)", err)
 	}
+	// A store failure is a store failure, not an invalid session: an
+	// outage must not sign the user out.
+	boom := errors.New("store is down")
+	store.failSessionReads(boom)
+	if _, err := svc.Refresh(ctx, globex, reg.Tokens.Refresh); !errors.Is(err, boom) || errors.Is(err, identity.ErrInvalidSession) {
+		t.Errorf("Refresh during a store failure: err = %v, want the store's error, not ErrInvalidSession", err)
+	}
+	if err := svc.Logout(ctx, globex, reg.Tokens.Refresh); !errors.Is(err, boom) {
+		t.Errorf("Logout during a store failure: err = %v, want the store's error", err)
+	}
+	store.failSessionReads(nil)
 	if _, err := svc.Refresh(ctx, globex, reg.Tokens.Refresh); err != nil {
 		t.Errorf("the globex session was touched by acme's logout: %v", err)
 	}

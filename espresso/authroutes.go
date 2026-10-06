@@ -113,8 +113,13 @@ type AuthRoutesConfig struct {
 	MountPrefix string
 	// Tenant resolves the tenant a request is routed to, from the
 	// request context. Required. Every IdentityService call is made with
-	// its answer, and a request on which it resolves nothing is answered
-	// 404: a route of no tenant has no users.
+	// its answer. A request on which it resolves nothing is refused with
+	// the 401 RequireTenant and RequireDecision write for a tenant that
+	// did not resolve — the same envelope, so the answer does not tell a
+	// client whether a tenant gate is mounted on the route — and the
+	// port is not reached. Refresh and Logout clear the refresh cookie
+	// on that path as they do on every other refusal, so a client does
+	// not keep replaying it.
 	//
 	// Behind PinTenant or RequireTenant, pass TenantFromContext. A
 	// single-tenant application passes FixedTenant(tenant.Single). The
@@ -193,14 +198,25 @@ func NewAuthRoutes(svc IdentityService, cfg AuthRoutesConfig) (*AuthRoutes, erro
 // FixedTenant returns a resolver that reports one tenant for every
 // request: the single-tenant application's AuthRoutesConfig.Tenant, or
 // a surface mounted for exactly one tenant.
+//
+// Panics on an unset id. A surface fixed to no tenant would refuse
+// every request, and that is a tenancy misconfiguration, which fails
+// where the surface is built and not as traffic that looks ordinary —
+// the posture RequireTenant takes on a nil resolver. A single-tenant
+// application passes tenant.Single, which is set.
 func FixedTenant(id tenant.ID) func(context.Context) (tenant.ID, bool) {
-	return func(context.Context) (tenant.ID, bool) { return id, id.Valid() }
+	if !id.Valid() {
+		panic("tamper/espresso: FixedTenant requires a set tenant.ID — " +
+			"a surface fixed to no tenant would refuse every request; the single tenant is tenant.Single")
+	}
+	return func(context.Context) (tenant.ID, bool) { return id, true }
 }
 
-// errNoTenant is the answer on a route whose tenant did not resolve. A
-// route of no tenant has no users, and the response must not say more
-// than a wrong path says.
-var errNoTenant = espressofw.ErrNotFound("not found").WithCode("NOT_FOUND")
+// errNoTenant is the answer on a route whose tenant did not resolve:
+// the envelope writeUnauthenticated gives a token that does not fit
+// its tenant, so this surface and the tenant gates answer the missing
+// tenant alike.
+var errNoTenant = espressofw.ErrUnauthorized("invalid token").WithCode("UNAUTHENTICATED")
 
 // tenant resolves the request's tenant or returns the 404.
 func (a *AuthRoutes) tenant(ctx context.Context) (tenant.ID, error) {
@@ -344,13 +360,23 @@ func (a *AuthRoutes) VerifyTOTP(ctx context.Context, req *espressofw.JSON[TOTPVe
 		return espressofw.JSON[AuthRes]{},
 			espressofw.ErrUnauthorized("session expired").WithCode("UNAUTHENTICATED")
 	}
+	// The adapter answers a user who is not stored in this tenant with
+	// ErrNotFound, the same error as a user that is gone: there is no
+	// session to complete, which is what a dead pending token is told.
+	// The generic mapping would render it as a 500.
+	notHere := func(err error) error {
+		if errors.Is(err, identity.ErrNotFound) {
+			return espressofw.ErrUnauthorized("session expired").WithCode("UNAUTHENTICATED")
+		}
+		return mapTOTPWireError(err, a.cfg.ValidationMessage)
+	}
 	if len(req.Data.Code) == 6 {
 		if err := a.svc.VerifyTOTP(ctx, tid, userID, req.Data.Code); err != nil {
-			return espressofw.JSON[AuthRes]{}, mapTOTPWireError(err, a.cfg.ValidationMessage)
+			return espressofw.JSON[AuthRes]{}, notHere(err)
 		}
 	} else {
 		if err := a.svc.VerifyRecoveryCode(ctx, tid, userID, req.Data.Code); err != nil {
-			return espressofw.JSON[AuthRes]{}, mapTOTPWireError(err, a.cfg.ValidationMessage)
+			return espressofw.JSON[AuthRes]{}, notHere(err)
 		}
 	}
 	res, err := a.svc.IssueTokensForUser(ctx, tid, userID)
@@ -381,6 +407,11 @@ func (a *AuthRoutes) EnrollTOTP(ctx context.Context) (espressofw.JSON[TOTPEnroll
 	userID := MustGetUserID(ctx)
 	enr, err := a.svc.EnrollTOTP(ctx, tid, userID)
 	if err != nil {
+		// A user not stored in this tenant reads as a user that is gone,
+		// as Me says it: the token does not authenticate anyone here.
+		if errors.Is(err, identity.ErrNotFound) {
+			return espressofw.JSON[TOTPEnrollRes]{}, errNoTenant
+		}
 		return espressofw.JSON[TOTPEnrollRes]{}, mapAuthWireError(err, a.cfg.ValidationMessage)
 	}
 	return espressofw.JSON[TOTPEnrollRes]{
@@ -405,6 +436,9 @@ func (a *AuthRoutes) DisableTOTP(ctx context.Context, req *espressofw.JSON[TOTPD
 	}
 	userID := MustGetUserID(ctx)
 	if err := a.svc.DisableTOTP(ctx, tid, userID, req.Data.Code); err != nil {
+		if errors.Is(err, identity.ErrNotFound) {
+			return 0, errNoTenant
+		}
 		return 0, mapTOTPWireError(err, a.cfg.ValidationMessage)
 	}
 	return espressofw.Status(http.StatusNoContent), nil
@@ -468,7 +502,14 @@ func (a *AuthRoutes) EnrollSession(ctx context.Context, req *espressofw.JSON[TOT
 func (a *AuthRoutes) Refresh(ctx context.Context) (espressofw.JSON[AuthRes], error) {
 	tid, err := a.tenant(ctx)
 	if err != nil {
-		return espressofw.JSON[AuthRes]{}, err
+		// The cookies-on-error shape, as for an inactive user: the typed
+		// error path cannot carry Set-Cookie, and a cookie that is not
+		// cleared is replayed by the client on every refresh.
+		return espressofw.JSON[AuthRes]{
+			StatusCode: http.StatusUnauthorized,
+			Cookies:    []*http.Cookie{a.clearRefreshCookie()},
+			Data:       AuthRes{User: a.cfg.ProjectUser(ctx, nil)},
+		}, nil
 	}
 	tok, ok := NamedCookieValue(ctx, refreshCookieSlotName)
 	if !ok {
@@ -497,12 +538,13 @@ func (a *AuthRoutes) Refresh(ctx context.Context) (espressofw.JSON[AuthRes], err
 // Logout handles POST {prefix}/logout: best-effort revocation +
 // unconditional clear-cookie, idempotent 204.
 func (a *AuthRoutes) Logout(ctx context.Context) (espressofw.JSON[struct{}], error) {
-	tid, err := a.tenant(ctx)
-	if err != nil {
-		return espressofw.JSON[struct{}]{}, err
-	}
-	if tok, ok := NamedCookieValue(ctx, refreshCookieSlotName); ok {
-		_ = a.svc.Logout(ctx, tid, tok)
+	// Idempotent and unconditional: the cookie is cleared whatever else
+	// is true. With no tenant there is nothing to revoke, and the port
+	// is not asked.
+	if tid, err := a.tenant(ctx); err == nil {
+		if tok, ok := NamedCookieValue(ctx, refreshCookieSlotName); ok {
+			_ = a.svc.Logout(ctx, tid, tok)
+		}
 	}
 	return espressofw.JSON[struct{}]{
 		StatusCode: http.StatusNoContent,

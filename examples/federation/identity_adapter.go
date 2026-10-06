@@ -51,15 +51,28 @@ func (c coreIdentity) userIn(ctx context.Context, tenantID tenant.ID, userID str
 	return u, nil
 }
 
-// sessionIn reports whether the refresh token names a live session of
-// tenantID. It reads only; the Core does the rotation or the revoke.
-func (c coreIdentity) sessionIn(ctx context.Context, tenantID tenant.ID, refreshToken string) bool {
+// sessionIn refuses a refresh token that does not name a session of
+// tenantID, with ErrInvalidSession. It reads only; the Core does the
+// rotation or the revoke.
+func (c coreIdentity) sessionIn(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
 	hash, err := crypto.HashRefreshToken(refreshToken)
 	if err != nil {
-		return false
+		return identity.ErrInvalidSession
 	}
 	s, err := c.store.RefreshSessionByHash(ctx, hash)
-	return err == nil && tenant.FromStored(s.TenantID) == tenantID
+	if err != nil {
+		// A missing row is an invalid session. Any other error is the
+		// store's, and it is NOT an invalid session: a transient failure
+		// must not sign the user out.
+		if errors.Is(err, identity.ErrNotFound) {
+			return identity.ErrInvalidSession
+		}
+		return err
+	}
+	if tenant.FromStored(s.TenantID) != tenantID {
+		return identity.ErrInvalidSession
+	}
+	return nil
 }
 
 func (c coreIdentity) Register(ctx context.Context, tenantID tenant.ID, email, password string) (tamperespresso.AuthResult, error) {
@@ -94,8 +107,8 @@ func (c coreIdentity) Me(ctx context.Context, tenantID tenant.ID, userID string)
 func (c coreIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refreshToken string) (tamperespresso.AuthResult, error) {
 	// A token of another tenant is refused as an unknown one, before
 	// anything rotates or is revoked.
-	if !c.sessionIn(ctx, tenantID, refreshToken) {
-		return tamperespresso.AuthResult{}, identity.ErrInvalidSession
+	if err := c.sessionIn(ctx, tenantID, refreshToken); err != nil {
+		return tamperespresso.AuthResult{}, err
 	}
 	u, t, err := c.core.Refresh(ctx, refreshToken)
 	if err != nil {
@@ -107,8 +120,11 @@ func (c coreIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refreshTo
 func (c coreIdentity) Logout(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
 	// Logout is idempotent: a token of another tenant is treated like a
 	// stale one and nothing happens.
-	if !c.sessionIn(ctx, tenantID, refreshToken) {
-		return nil
+	if err := c.sessionIn(ctx, tenantID, refreshToken); err != nil {
+		if errors.Is(err, identity.ErrInvalidSession) {
+			return nil
+		}
+		return err
 	}
 	return c.core.Logout(ctx, refreshToken)
 }

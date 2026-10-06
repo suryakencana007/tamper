@@ -66,17 +66,29 @@ func (p pooledIdentity) userIn(ctx context.Context, tenantID tenant.ID, userID s
 	return u, nil
 }
 
-// sessionIn reports whether the refresh token names a session of
-// tenantID. It uses only public API — hash the presented token, read
-// the row, compare — and reads only; the Core does the rotation or the
-// revoke.
-func (p pooledIdentity) sessionIn(ctx context.Context, tenantID tenant.ID, refreshToken string) bool {
+// sessionIn refuses a refresh token that does not name a session of
+// tenantID, with ErrInvalidSession. It uses only public API — hash the
+// presented token, read the row, compare — and reads only; the Core
+// does the rotation or the revoke.
+func (p pooledIdentity) sessionIn(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
 	hash, err := crypto.HashRefreshToken(refreshToken)
 	if err != nil {
-		return false
+		return identity.ErrInvalidSession
 	}
 	s, err := p.store.RefreshSessionByHash(ctx, hash)
-	return err == nil && tenant.FromStored(s.TenantID) == tenantID
+	if err != nil {
+		// A missing row is an invalid session. Any other error is the
+		// store's, and it is NOT an invalid session: a transient failure
+		// must not sign the user out.
+		if errors.Is(err, identity.ErrNotFound) {
+			return identity.ErrInvalidSession
+		}
+		return err
+	}
+	if tenant.FromStored(s.TenantID) != tenantID {
+		return identity.ErrInvalidSession
+	}
+	return nil
 }
 
 func (p pooledIdentity) Register(ctx context.Context, tenantID tenant.ID, email, password string) (tamperespresso.AuthResult, error) {
@@ -116,8 +128,8 @@ func (p pooledIdentity) Me(ctx context.Context, tenantID tenant.ID, userID strin
 // an acme refresh token would rotate happily on a globex route. A
 // wrong-tenant token and an unknown one look the same.
 func (p pooledIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refreshToken string) (tamperespresso.AuthResult, error) {
-	if !p.sessionIn(ctx, tenantID, refreshToken) {
-		return tamperespresso.AuthResult{}, identity.ErrInvalidSession
+	if err := p.sessionIn(ctx, tenantID, refreshToken); err != nil {
+		return tamperespresso.AuthResult{}, err
 	}
 	u, tok, err := p.core.Refresh(ctx, refreshToken)
 	if err != nil {
@@ -129,8 +141,11 @@ func (p pooledIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refresh
 // Logout is idempotent: a token of another tenant is treated like a
 // stale one, and nothing happens.
 func (p pooledIdentity) Logout(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
-	if !p.sessionIn(ctx, tenantID, refreshToken) {
-		return nil
+	if err := p.sessionIn(ctx, tenantID, refreshToken); err != nil {
+		if errors.Is(err, identity.ErrInvalidSession) {
+			return nil
+		}
+		return err
 	}
 	return p.core.Logout(ctx, refreshToken)
 }

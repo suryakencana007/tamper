@@ -57,6 +57,10 @@ func (r *tenantRecorder) VerifyTOTP(_ context.Context, id tenant.ID, _, _ string
 	r.note(id)
 	return nil
 }
+func (r *tenantRecorder) VerifyRecoveryCode(_ context.Context, id tenant.ID, _, _ string) error {
+	r.note(id)
+	return nil
+}
 func (r *tenantRecorder) IssueTokensForUser(_ context.Context, id tenant.ID, _ string) (AuthResult, error) {
 	r.note(id)
 	return AuthResult{User: &identity.User{ID: "u-1"}}, nil
@@ -104,8 +108,12 @@ func everyHandler(a *AuthRoutes) map[string]func(ctx context.Context) error {
 			return err
 		},
 		"Me": func(ctx context.Context) error { _, err := a.Me(withUser(ctx)); return err },
-		"VerifyTOTP": func(ctx context.Context) error {
+		"VerifyTOTP (code)": func(ctx context.Context) error {
 			_, err := a.VerifyTOTP(ctx, &espressofw.JSON[TOTPVerifyReq]{Data: TOTPVerifyReq{SessionToken: "pending", Code: "123456"}})
+			return err
+		},
+		"VerifyTOTP (recovery code)": func(ctx context.Context) error {
+			_, err := a.VerifyTOTP(ctx, &espressofw.JSON[TOTPVerifyReq]{Data: TOTPVerifyReq{SessionToken: "pending", Code: "abcd-efgh"}})
 			return err
 		},
 		"EnrollTOTP": func(ctx context.Context) error { _, err := a.EnrollTOTP(withUser(ctx)); return err },
@@ -144,23 +152,41 @@ func TestAuthRoutes_EveryPortCallCarriesTheRoutedTenant(t *testing.T) {
 	}
 }
 
-// A route whose tenant does not resolve has no users. Every handler
-// answers 404 and the port is never reached — no login, no mint, no
-// revoke in a scope that does not exist.
-func TestAuthRoutes_UnresolvedTenantIs404(t *testing.T) {
+// A route whose tenant does not resolve has no users. The port is never
+// reached — no login, no mint, no revoke in a scope that does not exist
+// — and the refusal is the 401 the tenant gates write for a tenant that
+// did not resolve, so the answer does not say whether a gate is mounted.
+// Refresh and Logout clear the cookie on that path, as on every other
+// refusal, so a client does not keep replaying it.
+func TestAuthRoutes_UnresolvedTenantIsRefusedLikeTheGates(t *testing.T) {
+	ref := espressofw.ErrUnauthorized("invalid token").WithCode("UNAUTHENTICATED")
 	for how, resolve := range map[string]func(context.Context) (tenant.ID, bool){
-		"not resolved":               func(context.Context) (tenant.ID, bool) { return tenant.ID{}, false },
-		"resolved to the zero ID":    func(context.Context) (tenant.ID, bool) { return tenant.ID{}, true },
-		"FixedTenant of the zero ID": FixedTenant(tenant.ID{}),
+		"not resolved":            func(context.Context) (tenant.ID, bool) { return tenant.ID{}, false },
+		"resolved to the zero ID": func(context.Context) (tenant.ID, bool) { return tenant.ID{}, true },
 	} {
 		for name := range everyHandler(nil) {
 			t.Run(how+"/"+name, func(t *testing.T) {
 				rec := &tenantRecorder{}
 				a := routesFor(t, rec, resolve)
-				err := everyHandler(a)[name](context.Background())
-				var e *espressofw.Error
-				if !errors.As(err, &e) || e.StatusCode != http.StatusNotFound {
-					t.Fatalf("%s: err = %v, want a 404", name, err)
+				handlers := everyHandler(a)
+				ctx := context.WithValue(context.Background(), namedCookieKey(refreshCookieSlotName), "tok")
+				switch name {
+				case "Refresh":
+					res, err := a.Refresh(ctx)
+					if err != nil || res.StatusCode != http.StatusUnauthorized || len(res.Cookies) != 1 || res.Cookies[0].MaxAge != -1 {
+						t.Fatalf("Refresh with no tenant: %+v err=%v; want a 401 that clears the cookie", res, err)
+					}
+				case "Logout":
+					res, err := a.Logout(ctx)
+					if err != nil || res.StatusCode != http.StatusNoContent || len(res.Cookies) != 1 || res.Cookies[0].MaxAge != -1 {
+						t.Fatalf("Logout with no tenant: %+v err=%v; want a 204 that clears the cookie", res, err)
+					}
+				default:
+					err := handlers[name](context.Background())
+					var e *espressofw.Error
+					if !errors.As(err, &e) || e.StatusCode != ref.StatusCode || e.Code != ref.Code || e.Message != ref.Message {
+						t.Fatalf("%s: err = %v, want the gates' refusal %v", name, err, ref)
+					}
 				}
 				if len(rec.seen) != 0 {
 					t.Errorf("%s reached the port with tenants %v although no tenant resolved", name, rec.seen)
@@ -168,6 +194,65 @@ func TestAuthRoutes_UnresolvedTenantIs404(t *testing.T) {
 			})
 		}
 	}
+}
+
+// A surface fixed to no tenant is refused where it is built.
+func TestFixedTenant_PanicsOnAnUnsetID(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("FixedTenant accepted the zero tenant.ID")
+		}
+	}()
+	FixedTenant(tenant.ID{})
+}
+
+// The adapter's cross-tenant answer on the TOTP verbs is ErrNotFound,
+// and the routes render it as the refusal a dead session gets, not as
+// a server fault.
+func TestAuthRoutes_CrossTenantOnTOTPVerbsIsNotAServerFault(t *testing.T) {
+	svc := &notHereIdentity{}
+	a := routesFor(t, svc, FixedTenant(tenant.New("acme")))
+	withUser := ContextWithUserID(context.Background(), "u-1")
+	for name, call := range map[string]func() error{
+		"VerifyTOTP (code)": func() error {
+			_, err := a.VerifyTOTP(context.Background(), &espressofw.JSON[TOTPVerifyReq]{Data: TOTPVerifyReq{SessionToken: "pending", Code: "123456"}})
+			return err
+		},
+		"VerifyTOTP (recovery code)": func() error {
+			_, err := a.VerifyTOTP(context.Background(), &espressofw.JSON[TOTPVerifyReq]{Data: TOTPVerifyReq{SessionToken: "pending", Code: "abcd-efgh"}})
+			return err
+		},
+		"EnrollTOTP": func() error { _, err := a.EnrollTOTP(withUser); return err },
+		"DisableTOTP": func() error {
+			_, err := a.DisableTOTP(withUser, &espressofw.JSON[TOTPDisableReq]{Data: TOTPDisableReq{Code: "123456"}})
+			return err
+		},
+	} {
+		err := call()
+		var e *espressofw.Error
+		if !errors.As(err, &e) || e.StatusCode != http.StatusUnauthorized || e.Code != "UNAUTHENTICATED" {
+			t.Errorf("%s: err = %v, want a 401 UNAUTHENTICATED", name, err)
+		}
+	}
+}
+
+// notHereIdentity answers every user-keyed verb with "no such user".
+type notHereIdentity struct{ IdentityService }
+
+func (notHereIdentity) VerifyTOTPPending(context.Context, tenant.ID, string) (string, error) {
+	return "u-1", nil
+}
+func (notHereIdentity) VerifyTOTP(context.Context, tenant.ID, string, string) error {
+	return identity.ErrNotFound
+}
+func (notHereIdentity) VerifyRecoveryCode(context.Context, tenant.ID, string, string) error {
+	return identity.ErrNotFound
+}
+func (notHereIdentity) EnrollTOTP(context.Context, tenant.ID, string) (TOTPEnrollment, error) {
+	return TOTPEnrollment{}, identity.ErrNotFound
+}
+func (notHereIdentity) DisableTOTP(context.Context, tenant.ID, string, string) error {
+	return identity.ErrNotFound
 }
 
 // Behind a tenant gate, TenantFromContext is the resolver.

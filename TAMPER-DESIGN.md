@@ -286,7 +286,7 @@ defer tp.Close()
 //    Espresso's Use is positional). Identity is REQUIRED + app-supplied: a thin
 //    adapter over identity.Core (Core has no Me lookup + no session-token TOTP).
 surfaces, err := tamperespresso.Routes(tp, tamperespresso.RouteConfig{
-	Auth:     tamperespresso.AuthRoutesConfig{MountPrefix: "/api/auth", Cookies: ..., ProjectUser: projectUser},
+	Auth:     tamperespresso.AuthRoutesConfig{MountPrefix: "/api/auth", Tenant: tamperespresso.FixedTenant(tenant.Single), Cookies: ..., ProjectUser: projectUser},
 	Identity: myIdentityService,
 })
 r.Post("/api/auth/login", espresso.Doppio(surfaces.Auth.Login))

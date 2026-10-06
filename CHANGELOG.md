@@ -77,8 +77,12 @@ redacted. Everything that existed for older rows is removed.
 - **`AuthRoutesConfig.Tenant` is required**: `func(context.Context)
   (tenant.ID, bool)`. `NewAuthRoutes` refuses a config without it. Behind
   `PinTenant` or `RequireTenant` pass `TenantFromContext`; a single-tenant
-  application passes the new `FixedTenant(tenant.Single)`. A request on which
-  it resolves nothing is answered 404, and the port is not reached.
+  application passes the new `FixedTenant(tenant.Single)`, which panics on an
+  unset id. A request on which it resolves nothing is refused with the 401
+  the tenant gates write for a tenant that did not resolve, and the port is
+  not reached; `Refresh` and `Logout` clear the refresh cookie on that path.
+- The TOTP routes render the adapter's cross-tenant `ErrNotFound` as the
+  401 a dead session gets, not as a 500.
 - `IssueTOTPPending` and `VerifyTOTPPending` on the port take a `ctx` as
   well.
 - A pooled deployment no longer needs one adapter per tenant;

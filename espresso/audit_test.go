@@ -57,9 +57,10 @@ func (l *recordingLogger) one(t *testing.T) audit.Event {
 // noContent is the mutation handler: any 2xx makes the Auditor emit.
 func noContent(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
 
-// routeTo returns a resolver that reports a fixed routed tenant.
-func routeTo(tenantID string) func(*http.Request) string {
-	return func(*http.Request) string { return tenantID }
+// routeTo returns a resolver that reports a fixed routed tenant. "" is
+// the single tenant, said by the test.
+func routeTo(tenantID string) func(*http.Request) (tenant.ID, bool) {
+	return FixedRequestTenant(tenant.FromStored(tenantID))
 }
 
 // serveMutation sends one POST through h and requires the 204 that makes
@@ -310,7 +311,7 @@ func TestAuditor_ServiceAccountPinnedTenantWins(t *testing.T) {
 	validator := ValidatorFunc(func(context.Context, string) (Principal, error) {
 		return Principal{ID: "sa-1", TenantID: tenantB, Name: "provisioner"}, nil
 	})
-	h := PinTenant(func(*http.Request) string { return tenantA })(
+	h := PinTenant(routeTo(tenantA))(
 		RequireServiceAccount(validator)(
 			NewAuditor(rec, nil).Mutation(auditTestAction, auditTestResource, "")(
 				http.HandlerFunc(noContent))))

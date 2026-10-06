@@ -125,7 +125,7 @@ func stepUpDenied(t *testing.T, tid tenant.ID, wrap func(http.Handler) http.Hand
 // TD-20: a step-up denial on a tenant route is scoped to that tenant and
 // records the actor's home tenant, like every other audit row.
 func TestStepUpDenied_CarriesTheTenant(t *testing.T) {
-	inAcme := RequireTenant(func(*http.Request) string { return "acme" })
+	inAcme := RequireTenant(routeTo("acme"))
 	ev := stepUpDenied(t, tenant.New("acme"), inAcme)
 	if ev.TenantID != "acme" {
 		t.Errorf("Event.TenantID = %q, want %q — the denial is missing from the tenant's export", ev.TenantID, "acme")
@@ -151,7 +151,7 @@ func TestStepUpDenied_NoGateNoScope(t *testing.T) {
 // Single-tenant: no tid, the route resolves to "", and the event carries
 // no tenant anywhere.
 func TestStepUpDenied_SingleTenantIsUnchanged(t *testing.T) {
-	single := RequireTenant(func(*http.Request) string { return "" })
+	single := RequireTenant(routeTo(""))
 	ev := stepUpDenied(t, tenant.Single, single)
 	if ev.TenantID != "" || ev.Actor.TenantID != "" {
 		t.Errorf("single-tenant denial grew a tenant: scope %q, actor %q", ev.TenantID, ev.Actor.TenantID)

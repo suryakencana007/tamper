@@ -163,7 +163,7 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 		// The route's tenant comes from the route, never from the token.
 		// A route that has only RequireAuth accepts any tenant's token —
 		// add RequireTenant to every route you mount beside this one.
-		requireTenant := tamperespresso.RequireTenant(func(*http.Request) string { return tenantID })
+		requireTenant := tamperespresso.RequireTenant(tamperespresso.FixedRequestTenant(tenant.New(tenantID)))
 		r.Get(prefix+"/me", surfaces.RequireAuth(requireTenant(espresso.HandlerCtx(auth.Me))))
 		r.Post(prefix+"/refresh", readCookie(espresso.HandlerCtx(auth.Refresh)))
 		r.Post(prefix+"/logout", readCookie(espresso.HandlerCtx(auth.Logout)))
@@ -173,7 +173,7 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 		// AND tokens entered into it. Every route above uses RequireTenant,
 		// which refuses an entered token — they are "my account" routes,
 		// and an entered admin has no account in this tenant.
-		guestsToo := tamperespresso.RequireTenantAllowEntered(func(*http.Request) string { return tenantID })
+		guestsToo := tamperespresso.RequireTenantAllowEntered(tamperespresso.FixedRequestTenant(tenant.New(tenantID)))
 		r.Get("/t/"+tenantID+"/whoami", surfaces.RequireAuth(guestsToo(http.HandlerFunc(whoami))))
 		// One enter route per other tenant, mounted on the HOME tenant and
 		// gated like every other route of it: the caller proves who they

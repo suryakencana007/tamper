@@ -182,7 +182,7 @@ func buildHandler(store identity.Store, jwtSecret, idpIssuer string, appBaseURL 
 	// they resolve a provider, and RequireAuth's token check is cross-checked
 	// against it. Before the flip an unpinned request silently meant "the
 	// single-tenant table"; now that has to be stated.
-	r.Use(tamperespresso.PinTenant(func(*http.Request) string { return "" }))
+	r.Use(tamperespresso.PinTenant(tamperespresso.FixedRequestTenant(tenant.Single)))
 	r.Post("/api/auth/register", espresso.Doppio(auth.Register))
 	r.Post("/api/auth/login", espresso.Doppio(auth.Login))
 	r.Get("/api/auth/me", surfaces.RequireAuth(espresso.HandlerCtx(auth.Me)))

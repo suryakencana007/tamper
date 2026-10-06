@@ -66,6 +66,20 @@ redacted. Everything that existed for older rows is removed.
 - `CanonicalPayloadV2ForDebug`
 - `VerifyBootResult.Segments`
 
+### ⚠️ Breaking — the tenant gates' resolvers say whether they found a tenant (#60, TD-28)
+
+- **`RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` take
+  `func(*http.Request) (tenant.ID, bool)`** instead of
+  `func(*http.Request) string`, the shape `RequireEntitlement` and
+  `DecisionGate.Tenant` already take. An empty string used to become
+  `tenant.Single`, so a route pattern with no tenant segment was served as a
+  single-tenant route. A tenant that does not resolve (`false`, or the zero
+  `tenant.ID`) is now refused: `RequireTenant` with the 401 a wrong-tenant
+  token gets, `PinTenant` with a 404. The single tenant is said:
+  `FixedRequestTenant(tenant.Single)`, new, which panics on an unset id.
+- **`TenantFromServiceAccount` returns `(tenant.ID, bool)`**; the principal's
+  `TenantID` is a stored fact, so `""` is the single tenant.
+
 ### ⚠️ Breaking — the `espresso.IdentityService` port takes the tenant (#59, TD-28)
 
 - **Every `IdentityService` method takes a `tenant.ID`** after `ctx`: the

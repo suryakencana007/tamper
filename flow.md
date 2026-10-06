@@ -157,7 +157,7 @@ pass them.
 ```
 identity.Store            users, refresh sessions, TOTP, identities   (required)
 identity.InvitationStore  invitations                                 (optional)
-espresso.IdentityService  adapter over identity.Core: Me + TOTP pending
+espresso.IdentityService  adapter over identity.Core; every method takes the routed tenant
 tenant.Store              tenant rows
 tenant.DomainStore        verified domains
 tenant.EntitlementStore   plan / purchased features
@@ -199,8 +199,10 @@ there is no option to turn on.
 
 ```
 POST /login
-  └─ PinTenant(route → tenant.ID)
-      └─ AuthRoutes.Login ─> IdentityService.Login (application adapter)
+  └─ AuthRoutes.Login
+      ├─ AuthRoutesConfig.Tenant(ctx) ─> tenant.ID     (required; none ─> 404)
+      │     FixedTenant(...) for one tenant, TenantFromContext behind a gate
+      └─ IdentityService.Login(tenant, email, pw) (application adapter)
           └─ identity.Core.Login(tenant, email, pw)
               ├─ NormaliseEmail
               ├─ allowLogin (throttle, BEFORE the store read)
@@ -232,12 +234,13 @@ directions.
 
 The pending token is bound to a tenant: `crypto` has one pair,
 `IssueTOTPPending(user, tenant)` and `VerifyTOTPPending(token, tenant)`, and
-no form without a tenant (#57). `Core.VerifyTOTP` itself is not
-tenant-scoped, and the `espresso.IdentityService` port still passes no
-tenant to its TOTP methods, so the adapter supplies it. Mint with
-`IssueTokensForUser`, which refuses a tenant that differs from the
-user's stored tenant. Moving the tenant into the port is the next step of
-TD-28.
+no form without a tenant (#57). The `espresso.IdentityService` port hands
+every method the routed tenant (#59), so the second leg is tied to the tenant
+the first leg ran in by the port itself. `Core.VerifyTOTP` and the other
+Core methods keyed by a bare user id are not tenant-scoped; the adapter
+checks the user's stored tenant before calling them, and answers a mismatch
+with the error a missing user gets. Mint with `Core.IssueTokensForUser`,
+which refuses a tenant that differs from the user's stored tenant.
 
 ### 4.4 Refresh and logout
 
@@ -474,7 +477,9 @@ the design documents.
   `tenant.WithTenant` documents why: a tenant read from the context fails open
   when one middleware call is missing. This holds for `identity.Store`,
   `oidc.ProviderStore`, `saml.ProviderStore`, and `tenant.EntitlementStore`.
-  It does **not** hold everywhere: the `authz` ports and
-  `espresso.IdentityService` take no tenant at all, and lookups by id or by
-  token hash (`UserByID`, `RefreshSessionByHash`) are not tenant-scoped.
+  It does **not** hold everywhere: lookups by id or by token hash
+  (`UserByID`, `RefreshSessionByHash`) and the Core methods keyed by a bare
+  user id (`VerifyTOTP`, `EnrollTOTP`, `Refresh`, `Logout`) are not
+  tenant-scoped. The `authz` ports (#56) and `espresso.IdentityService`
+  (#59) take the tenant on every call.
 - **Refresh rotation copies the tenant, `auth_time`, and `acr` unchanged.**

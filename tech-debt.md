@@ -847,11 +847,11 @@ change is made.
 |---|---|
 | `crypto` | **Done in #57.** `Issue`, `Verify`, and the tenant-less `IssueTOTPPending` / `VerifyTOTPPending` are removed. A token with no `purpose`, no `auth_time` or no `acr` is refused. |
 | `identity` | **Done in #58.** `IssueTokensForUser` and `…WithACR` are removed; `…InTenant` is now `IssueTokensForUser(user, tenant, authTime, acr)`. The fallbacks to "now" and the default ACR, and the rotation of a session row with no `auth_time`, are gone. |
-| `espresso.IdentityService` (port) | `IssueTokensForUser(ctx, userID)` and the TOTP-pending methods take no tenant. This is the root of TD-10, which was patched in the adapter, not in the port. |
+| `espresso.IdentityService` (port) | **Done in #59.** Every method takes the routed tenant, resolved by the required `AuthRoutesConfig.Tenant`. The TOTP second leg is tied to a tenant by the port. |
 | `espresso` SCIM | `SCIMConfig.TenantBoundStores` and the unscoped store path. |
 | `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
 | `espresso` | The resolvers of `RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` return a `string`, and `""` becomes `tenant.Single`. A route pattern with no tenant segment is then served as a single-tenant route. `DecisionGate.Tenant` already returns `(tenant.ID, bool)`; these should too. |
-| `identity` throttling | A `Core` built without `WithThrottling` permits unlimited password and second-factor attempts. The doc says this is allowed "because it is the pre-7k-1 behavior". Whether `New` should require a throttle is a product decision, not a shim removal; it was not changed in #58. |
+| `identity` throttling | A `Core` built without `WithThrottling` permits unlimited password and second-factor attempts. **Decided by the repo owner on 2026-10-06: it stays optional, and the docs recommend it.** `New` does not require it. The comment in `identity/throttle.go` that justifies the default as "the pre-7k-1 behavior" is rewritten in the docs-only change. |
 | `identity/legacy_adapter_test.go` | A hand-written `Store` that stands in for a pre-Phase-7 adapter. It is still a useful second implementation of the port; its framing as "the compatibility path" is not. |
 | tests and comments | "byte-identical" tests, and history comments about Barista. A stale line in this file: the slice list still says TD-03 is "Open as #56"; it merged. |
 
@@ -867,6 +867,7 @@ ways guessed a tenant, and three reviews could not make the guess safe.
    tenant. **Done, #58.**
 3. `espresso.IdentityService` and `AuthRoutes`: every method takes the
    tenant, so the TOTP second leg is bound to a tenant by the library.
+   **Done, #59.**
 4. SCIM: the scoped path only.
 5. The examples and docs follow in each change. History comments are cleaned
    in a last, docs-only change.

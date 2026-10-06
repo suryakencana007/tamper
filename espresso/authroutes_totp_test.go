@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/suryakencana007/tamper/tenant"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,16 +23,18 @@ type totpIdentity struct {
 	verified   int // how many times a code was checked
 }
 
-func (f *totpIdentity) VerifyTOTPPending(string) (string, error) { return "u-1", f.pendingErr }
-func (f *totpIdentity) VerifyTOTP(context.Context, string, string) error {
+func (f *totpIdentity) VerifyTOTPPending(context.Context, tenant.ID, string) (string, error) {
+	return "u-1", f.pendingErr
+}
+func (f *totpIdentity) VerifyTOTP(context.Context, tenant.ID, string, string) error {
 	f.verified++
 	return nil
 }
-func (f *totpIdentity) VerifyRecoveryCode(context.Context, string, string) error {
+func (f *totpIdentity) VerifyRecoveryCode(context.Context, tenant.ID, string, string) error {
 	f.verified++
 	return nil
 }
-func (f *totpIdentity) IssueTokensForUser(context.Context, string) (AuthResult, error) {
+func (f *totpIdentity) IssueTokensForUser(context.Context, tenant.ID, string) (AuthResult, error) {
 	if f.mintErr != nil {
 		return AuthResult{}, f.mintErr
 	}

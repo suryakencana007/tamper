@@ -66,6 +66,24 @@ redacted. Everything that existed for older rows is removed.
 - `CanonicalPayloadV2ForDebug`
 - `VerifyBootResult.Segments`
 
+### ⚠️ Breaking — the `espresso.IdentityService` port takes the tenant (#59, TD-28)
+
+- **Every `IdentityService` method takes a `tenant.ID`** after `ctx`: the
+  tenant the request is routed to. An adapter passes it to the `Core`
+  methods that take one, and checks the user's (or the session's) stored
+  tenant before the methods keyed by a bare user id or token, answering a
+  mismatch with `identity.ErrNotFound` (or `ErrInvalidSession`). The
+  examples show the shape.
+- **`AuthRoutesConfig.Tenant` is required**: `func(context.Context)
+  (tenant.ID, bool)`. `NewAuthRoutes` refuses a config without it. Behind
+  `PinTenant` or `RequireTenant` pass `TenantFromContext`; a single-tenant
+  application passes the new `FixedTenant(tenant.Single)`. A request on which
+  it resolves nothing is answered 404, and the port is not reached.
+- `IssueTOTPPending` and `VerifyTOTPPending` on the port take a `ctx` as
+  well.
+- A pooled deployment no longer needs one adapter per tenant;
+  `examples/multitenant` has one adapter for every tenant.
+
 ### ⚠️ Breaking — `identity` has one mint function (#58, TD-28)
 
 - **`Core.IssueTokensForUser` and `Core.IssueTokensForUserWithACR` are

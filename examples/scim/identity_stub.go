@@ -6,6 +6,7 @@ import (
 
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // stubIdentity satisfies the transport's IdentityService port with a
@@ -26,36 +27,40 @@ var _ tamperespresso.IdentityService = stubIdentity{}
 
 var errNoInteractiveAuth = errors.New("scim example: interactive auth is not enabled (this app only does SCIM provisioning)")
 
-func (stubIdentity) Register(context.Context, string, string) (tamperespresso.AuthResult, error) {
+func (stubIdentity) Register(context.Context, tenant.ID, string, string) (tamperespresso.AuthResult, error) {
 	return tamperespresso.AuthResult{}, errNoInteractiveAuth
 }
-func (stubIdentity) Login(context.Context, string, string) (tamperespresso.AuthResult, error) {
+func (stubIdentity) Login(context.Context, tenant.ID, string, string) (tamperespresso.AuthResult, error) {
 	return tamperespresso.AuthResult{}, errNoInteractiveAuth
 }
-func (stubIdentity) Me(context.Context, string) (*identity.User, error) {
+func (stubIdentity) Me(context.Context, tenant.ID, string) (*identity.User, error) {
 	return nil, errNoInteractiveAuth
 }
-func (stubIdentity) Refresh(context.Context, string) (tamperespresso.AuthResult, error) {
+func (stubIdentity) Refresh(context.Context, tenant.ID, string) (tamperespresso.AuthResult, error) {
 	return tamperespresso.AuthResult{}, errNoInteractiveAuth
 }
-func (stubIdentity) Logout(context.Context, string) error { return errNoInteractiveAuth }
-func (stubIdentity) IssueTOTPPending(string) (string, error) {
+func (stubIdentity) Logout(context.Context, tenant.ID, string) error { return errNoInteractiveAuth }
+func (stubIdentity) IssueTOTPPending(context.Context, tenant.ID, string) (string, error) {
 	return "", errNoInteractiveAuth
 }
-func (stubIdentity) VerifyTOTPPending(string) (string, error) {
+func (stubIdentity) VerifyTOTPPending(context.Context, tenant.ID, string) (string, error) {
 	return "", errNoInteractiveAuth
 }
-func (stubIdentity) VerifyTOTP(context.Context, string, string) error { return errNoInteractiveAuth }
-func (stubIdentity) VerifyRecoveryCode(context.Context, string, string) error {
+func (stubIdentity) VerifyTOTP(context.Context, tenant.ID, string, string) error {
 	return errNoInteractiveAuth
 }
-func (stubIdentity) IssueTokensForUser(context.Context, string) (tamperespresso.AuthResult, error) {
+func (stubIdentity) VerifyRecoveryCode(context.Context, tenant.ID, string, string) error {
+	return errNoInteractiveAuth
+}
+func (stubIdentity) IssueTokensForUser(context.Context, tenant.ID, string) (tamperespresso.AuthResult, error) {
 	return tamperespresso.AuthResult{}, errNoInteractiveAuth
 }
-func (stubIdentity) EnrollTOTP(context.Context, string) (tamperespresso.TOTPEnrollment, error) {
+func (stubIdentity) EnrollTOTP(context.Context, tenant.ID, string) (tamperespresso.TOTPEnrollment, error) {
 	return tamperespresso.TOTPEnrollment{}, errNoInteractiveAuth
 }
-func (stubIdentity) DisableTOTP(context.Context, string, string) error { return errNoInteractiveAuth }
-func (stubIdentity) EnrollTOTPViaSession(context.Context, string, string) (*tamperespresso.TOTPEnrollment, *tamperespresso.AuthResult, error) {
+func (stubIdentity) DisableTOTP(context.Context, tenant.ID, string, string) error {
+	return errNoInteractiveAuth
+}
+func (stubIdentity) EnrollTOTPViaSession(context.Context, tenant.ID, string, string) (*tamperespresso.TOTPEnrollment, *tamperespresso.AuthResult, error) {
 	return nil, nil, errNoInteractiveAuth
 }

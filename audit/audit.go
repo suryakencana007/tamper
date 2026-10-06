@@ -70,10 +70,9 @@ type ActorType string
 
 const (
 	// ActorTypeUser is the default. Every authenticated HTTP request
-	// gated by RequireAuth lands as ActorTypeUser. Backwards-compat
-	// shape: ActorFromContext returns Actor{Type: ActorTypeUser} for
-	// any context that lacks an explicit override, so v0.6+ emission
-	// sites carry forward unchanged.
+	// gated by RequireAuth lands as ActorTypeUser. ActorFromContext
+	// returns Actor{Type: ActorTypeUser} for any context that lacks an
+	// explicit override.
 	ActorTypeUser ActorType = "user"
 	// ActorTypeServiceAccount is set by RequireServiceAccount (v1.0
 	// task 01). SCIM-driven mutations + future CI-runner emissions

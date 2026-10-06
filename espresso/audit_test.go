@@ -177,12 +177,12 @@ func eventIDs(events []audit.Event) []string {
 	return ids
 }
 
-// TestAuditor_SingleTenantEventIsUnchanged is standing rule 1 for this
-// fix. A token with no `tid` on a route with no tenant must hand the
-// logger the event the Auditor emitted before it knew about tenants —
-// every field, not just the two new ones — so stored rows and their
-// hashes do not move. Both single-tenant wirings are covered: no tenant
-// gate at all, and RequireTenant resolving to "" (tenant.Single).
+// TestAuditor_SingleTenantEventIsUnchanged pins the single-tenant event
+// field by field: a token with no `tid` on a route of the single tenant
+// hands the logger an event whose scope and actor tenant are both the
+// single tenant, and nothing else about it depends on tenancy. Both
+// single-tenant wirings are covered: no tenant gate at all, and
+// RequireTenant resolving to the single tenant.
 func TestAuditor_SingleTenantEventIsUnchanged(t *testing.T) {
 	j := tenantJWT(t)
 	tok := tokenFor(t, j, tenant.Single)

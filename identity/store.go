@@ -161,11 +161,9 @@ type Store interface {
 	ProvisionUserWithIdentity(ctx context.Context, u NewUser, ni NewIdentity, firstUser bool) (User, Identity, error)
 }
 
-// TenantScopedStore was here. It was the optional upgrade a Store could
-// implement to gain the *InTenant methods while the additive phase was open.
-// v0.4.0 folded those methods into Store itself, so the two-interface dance
-// and its boot-time type assertion are gone: every Store is tenant-scoped,
-// and a single-tenant deployment says so with tenant.Single.
+// There is no optional tenant-scoped upgrade of Store: every Store is
+// tenant-scoped, and a single-tenant deployment says so with
+// tenant.Single.
 
 // TOTPState is the store's projection of a user's second-factor state.
 type TOTPState struct {

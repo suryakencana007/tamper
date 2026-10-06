@@ -852,9 +852,9 @@ change is made.
 | `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
 | `espresso` | **Done in #60.** The resolvers of `RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` return `(tenant.ID, bool)`, like `DecisionGate.Tenant`; a tenant that does not resolve is refused, never read as the single tenant. `TenantFromServiceAccount` returns the same shape. |
 | `identity` Core methods keyed by a bare user id | `Refresh`, `Logout`, `VerifyTOTP`, `VerifyRecoveryCode`, `EnrollTOTP`, `DisableTOTP` take no tenant. Since #59 the port hands the adapter the tenant, but the adapter has to check the user's stored tenant itself before each of these, and an adapter that forgets compiles. Giving these methods a `tenant.ID`, as `IssueTokensForUser` has, would put the check in the library once. Found in review of #59; a candidate for a further step. |
-| `identity` throttling | A `Core` built without `WithThrottling` permits unlimited password and second-factor attempts. **Decided by the repo owner on 2026-10-06: it stays optional, and the docs recommend it.** `New` does not require it. The comment in `identity/throttle.go` that justifies the default as "the pre-7k-1 behavior" is rewritten in the docs-only change. |
+| `identity` throttling | A `Core` built without `WithThrottling` permits unlimited password and second-factor attempts. **Decided by the repo owner on 2026-10-06: it stays optional, and the docs recommend it.** `New` does not require it. The comment in `identity/throttle.go` is rewritten in #62: the option is recommended for every deployment that serves a login form and required by none. |
 | `identity/legacy_adapter_test.go` | A hand-written `Store` that stands in for a pre-Phase-7 adapter. It is still a useful second implementation of the port; its framing as "the compatibility path" is not. |
-| tests and comments | "byte-identical" tests, and history comments about Barista. A stale line in this file: the slice list still says TD-03 is "Open as #56"; it merged. |
+| tests and comments | **Done in #62.** Comments that justified a behaviour as "the pre-X behaviour" or described removed symbols are rewritten in the present tense; `identity/legacy_adapter_test.go` is `handwritten_adapter_test.go`, a second implementation of the port rather than "the compatibility path"; the stale TD-03 status line is fixed. Left as they are: the SCIM comments that cite the pre-extraction Barista handlers as the source of the wire format, which is provenance, not compatibility. |
 
 **Impact.** Each shim is a second way to do something, and the second way is
 the one without a tenant. #56 showed the cost: a gate that had to serve both
@@ -872,7 +872,7 @@ ways guessed a tenant, and three reviews could not make the guess safe.
 4. SCIM: the scoped path only. The gate resolvers are **done in #60**; SCIM
    is **done in #61**.
 5. The examples and docs follow in each change. History comments are cleaned
-   in a last, docs-only change.
+   in a last, docs-only change. **Done, #62.**
 
 ## What is ready to use
 
@@ -912,8 +912,8 @@ Suggested slice order if this work moves into Tamper:
    that the five fixes leave open, and TD-22 makes the example show the gate
    that pooled routes need.
 3. **TD-01 + TD-02** — the membership port and `EnterTenant`. Merged (#55).
-4. **TD-03** — the tenant contract for `authz`, with its leak suite. Open as
-   #56.
+4. **TD-03** — the tenant contract for `authz`, with its leak suite. Merged
+   (#56).
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is

@@ -200,11 +200,9 @@ func requireTenant(resolve func(*http.Request) (tenant.ID, bool), allowEntered b
 // PinTenant pins the tenant a request is routed to, WITHOUT requiring a
 // token. It is the pre-authentication sibling of [RequireTenant].
 //
-// Routes that run before RequireAuth still need a tenant after the v0.4.0
-// flip — an OIDC or SAML start leg has to know whose IdP to look up, and
-// the provider registry is keyed by tenant. Before the flip those routes
-// read an unscoped registry and needed nothing; that unscoped read is
-// exactly what the fold removed.
+// Routes that run before RequireAuth still need a tenant — an OIDC or
+// SAML start leg has to know whose IdP to look up, and the provider
+// registry is keyed by tenant.
 //
 // The split matters: RequireTenant cross-checks the token's tid against
 // the routed tenant and therefore CANNOT run before RequireAuth, while

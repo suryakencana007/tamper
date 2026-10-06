@@ -13,14 +13,15 @@ import (
 	"github.com/suryakencana007/tamper/tenant"
 )
 
-// This file is the local stand-in for `moon run barista:ci`, which
-// cannot run from this repository. It exists because slice 7b-2 removed
-// the module's ability to model a pre-Phase-7 adapter at all: MemStore
-// now implements TenantScopedStore, so EVERY store in the module —
-// production, examples and every test double — is *MemStore or embeds
-// one. The compatibility path stopped having an independent witness.
+// A second implementation of identity.Store, written by hand. Every
+// other store in the module — production, examples and every test
+// double — is *MemStore or embeds one, so without this file the port
+// would have one implementer and a change to it would never meet an
+// adapter that is not MemStore.
 //
-// handwrittenStore is that witness. Two properties are load-bearing:
+// handwrittenStore is that adapter: a single-tenant one, the shape an
+// application with one tenant and no tenant column writes. Two
+// properties are load-bearing:
 //
 //  1. It does NOT embed MemStore. The other single-tenant stand-ins
 //     (plainStore, singleTenantStore) satisfy Store by PROMOTION, so if
@@ -28,15 +29,12 @@ import (
 //     real hand-written adapter fails to compile. This one breaks, which
 //     is the point.
 //  2. It has no tenant column. It drops TenantID on every write and
-//     always reads back "", modelling Barista's schema literally — so a
-//     tenant value leaking into the compatibility path is observable
-//     here and nowhere else.
-//
-// It does not replace Barista CI. Consumer-side lint and unkeyed
-// composite literals in a separate repo remain out of reach.
+//     always reads back "", the single tenant's stored form — so a
+//     tenant value reaching a single-tenant adapter is observable here
+//     and nowhere else.
 
-// handwrittenStore is a hand-written, globally-keyed, single-tenant Store —
-// the shape of an adapter written before Phase 7 existed.
+// handwrittenStore is a hand-written, globally-keyed, single-tenant
+// Store.
 type handwrittenStore struct {
 	mu       sync.Mutex
 	users    map[string]User
@@ -51,7 +49,7 @@ type handwrittenStore struct {
 	// behavioural assertion notices because the outcome is unchanged.
 	calls []string
 	// tenantWrites records any non-empty TenantID that crossed the port
-	// on a write. On the compatibility path this must stay empty.
+	// on a write. For a single-tenant adapter this must stay empty.
 	tenantWrites []string
 }
 
@@ -327,12 +325,12 @@ func (s *handwrittenStore) ClearTOTP(_ context.Context, uid string) error {
 	return nil
 }
 
-func legacyCore(t *testing.T, s *handwrittenStore, opts ...Option) *Core {
+func handwrittenCore(t *testing.T, s *handwrittenStore, opts ...Option) *Core {
 	t.Helper()
 	base := []Option{WithRefreshTTL(30 * 24 * time.Hour), WithDefaultACR(testACR)}
 	c, err := New(s, testJWT(), append(base, opts...)...)
 	if err != nil {
-		t.Fatalf("New over the legacy adapter: %v", err)
+		t.Fatalf("New over the hand-written adapter: %v", err)
 	}
 	return c
 }
@@ -367,7 +365,7 @@ func TestHandwrittenStore_IsNotSatisfiedByPromotion(t *testing.T) {
 func TestHandwrittenAdapter_BaristaFlowsUnchanged(t *testing.T) {
 	ctx := context.Background()
 	s := newHandwrittenStore()
-	c := legacyCore(t, s, WithKeySet(testKeySet(t)))
+	c := handwrittenCore(t, s, WithKeySet(testKeySet(t)))
 
 	// Register: first user gets the bootstrap signal.
 	var firstSeen bool
@@ -435,12 +433,12 @@ func TestHandwrittenAdapter_BaristaFlowsUnchanged(t *testing.T) {
 		t.Errorf("Unlink last method err = %v, want ErrLastAuthMethod", err)
 	}
 
-	// THE TRIPWIRE. Nothing on the compatibility path may push a tenant
-	// across the port. A non-empty value here means the "" path started
-	// inventing tenants — the failure Barista would surface as a column
-	// that does not exist.
+	// THE TRIPWIRE. Nothing on the single-tenant path may push a tenant
+	// across the port. A non-empty value here means the Core started
+	// inventing tenants — the failure a single-tenant adapter would
+	// surface as a column that does not exist.
 	if len(s.tenantWrites) != 0 {
-		t.Errorf("tenant ids crossed the port on the compatibility path: %v", s.tenantWrites)
+		t.Errorf("tenant ids crossed the port on the single-tenant path: %v", s.tenantWrites)
 	}
 }
 
@@ -465,7 +463,7 @@ func mustIdentityID(t *testing.T, c *Core, ctx context.Context, userID string) s
 func TestHandwrittenAdapter_ProvisionPortTrace(t *testing.T) {
 	ctx := context.Background()
 	s := newHandwrittenStore()
-	c := legacyCore(t, s)
+	c := handwrittenCore(t, s)
 
 	s.reset()
 	if _, _, err := c.ProvisionUserWithIdentity(ctx, tenant.Single, "dave@example.com", "google", "sub-9"); err != nil {
@@ -482,14 +480,14 @@ func TestHandwrittenAdapter_ProvisionPortTrace(t *testing.T) {
 	}
 }
 
-// TestHandwrittenAdapter_LoginPortTrace pins that the compatibility path uses
+// TestHandwrittenAdapter_LoginPortTrace pins that the single-tenant path uses
 // the UNSCOPED lookup and reads the user exactly once. A Core that
 // consulted a scoped method here would not compile against this adapter
 // — which is the whole reason the fixture does not embed MemStore.
 func TestHandwrittenAdapter_LoginPortTrace(t *testing.T) {
 	ctx := context.Background()
 	s := newHandwrittenStore()
-	c := legacyCore(t, s)
+	c := handwrittenCore(t, s)
 	if _, _, err := c.Register(ctx, tenant.Single, "erin@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -510,7 +508,7 @@ func TestHandwrittenAdapter_LoginPortTrace(t *testing.T) {
 func TestHandwrittenAdapter_SentinelParity(t *testing.T) {
 	ctx := context.Background()
 	s := newHandwrittenStore()
-	c := legacyCore(t, s)
+	c := handwrittenCore(t, s)
 
 	if _, _, err := c.Register(ctx, tenant.Single, "frank@example.com", "correct-horse"); err != nil {
 		t.Fatalf("Register: %v", err)

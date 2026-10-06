@@ -16,8 +16,8 @@
 //   - post-registration side effects (Barista: default-org enrollment)
 //     are the OnRegistered hook;
 //   - ACR values are caller-supplied (WithDefaultACR) because they are
-//     PERSISTED in refresh-session rows and must survive extraction
-//     byte-identical (Barista: urn:barista:auth:local-password);
+//     PERSISTED in refresh-session rows and compared by step-up gates;
+//     the application owns its vocabulary;
 //   - roles/authz are not identity — see tamper/authz.
 package identity
 

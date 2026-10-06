@@ -399,11 +399,13 @@ func TestThrottle_NilThrottleNeedsNoKeys(t *testing.T) {
 	_ = WithThrottling(Throttling{})
 }
 
-// --- the "" path is unchanged ------------------------------------------
+// --- throttling is optional --------------------------------------------
 
-// TestThrottle_AbsentByDefault: a Core built without WithThrottling is
-// byte-identical to pre-7k-1 behavior. The standing rule for the phase,
-// and the reason nil is tolerated at all.
+// TestThrottle_AbsentByDefault: a Core built without WithThrottling
+// limits nothing. The option is recommended for every deployment that
+// serves a login form and required by none (owner's decision,
+// 2026-10-06); this pins that its absence is the absence of limiting,
+// not a limiter with a surprising default.
 func TestThrottle_AbsentByDefault(t *testing.T) {
 	ctx := context.Background()
 	c, _ := testCore(t)

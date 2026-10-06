@@ -80,8 +80,8 @@ var _ Throttle = (*tokenBucket)(nil)
 // know is per-replica.
 //
 // Zero or negative rate/per/burst all yield a Throttle that allows
-// everything, which is the compat shape — a misconfigured limiter must
-// not lock every user out of a login form. It is also why nil is
+// everything: a misconfigured limiter must not lock every user out of a
+// login form. It is also why nil is
 // tolerated at the call sites: absent limiting and useless limiting have
 // the same failure mode, and neither should take the service down.
 func NewTokenBucket(rate int, per time.Duration, burst int) Throttle {

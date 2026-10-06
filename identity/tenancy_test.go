@@ -8,9 +8,8 @@ import (
 	"time"
 )
 
-// Slice 7b-2 — the semantic change. Tenancy ON routes every scoped read
-// through the *InTenant methods; tenancy OFF is byte-identical to
-// before, which the pre-existing suite proves by passing unchanged.
+// Tenant isolation at the Core: every scoped read is made in the tenant
+// the caller named, and the single tenant is a tenant like any other.
 
 const (
 	tenantA = "acme"
@@ -332,4 +331,4 @@ func TestRevokeAllSessionsForTenant_IsNotThePerUserRevoke(t *testing.T) {
 	}
 }
 
-// --- compatibility ----------------------------------------------------
+// --- the single tenant ------------------------------------------------

@@ -12,9 +12,10 @@ import (
 
 	"github.com/suryakencana007/tamper/audit"
 	scim "github.com/suryakencana007/tamper/scim"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
-// Slice 7g-1 — SCIM principal tenancy (B5). Tenant A's token must not
+// SCIM principal tenancy (B5). Tenant A's token must not
 // touch tenant B's directory on ANY verb, and the refusal must be
 // byte-identical to a genuine miss.
 
@@ -34,7 +35,7 @@ type tenantSCIMStore struct {
 	calls []string
 }
 
-var _ scim.TenantScopedUserStore = (*tenantSCIMStore)(nil)
+var _ scim.UserStore = (*tenantSCIMStore)(nil)
 
 func newTenantSCIMStore() *tenantSCIMStore {
 	s := &tenantSCIMStore{
@@ -48,63 +49,58 @@ func newTenantSCIMStore() *tenantSCIMStore {
 	return s
 }
 
-func (s *tenantSCIMStore) note(t string) { s.calls = append(s.calls, t) }
+func (s *tenantSCIMStore) note(t tenant.ID) { s.calls = append(s.calls, t.String()) }
 
 // --- tenant-scoped users ---
 
-func (s *tenantSCIMStore) CreateInTenant(_ context.Context, t string, w scim.UserWrite, _ scim.WriteMeta) (scim.UserRecord, error) {
+func (s *tenantSCIMStore) Create(_ context.Context, t tenant.ID, w scim.UserWrite, _ scim.WriteMeta) (scim.UserRecord, error) {
 	s.note(t)
-	rec := scim.UserRecord{ID: "new-" + t, UserName: w.UserName, Active: true}
-	s.users[t][rec.ID] = rec
+	rec := scim.UserRecord{ID: "new-" + t.String(), UserName: w.UserName, Active: true}
+	s.users[t.String()][rec.ID] = rec
 	return rec, nil
 }
 
-func (s *tenantSCIMStore) GetInTenant(_ context.Context, t, id string) (scim.UserRecord, error) {
+func (s *tenantSCIMStore) Get(_ context.Context, t tenant.ID, id string) (scim.UserRecord, error) {
 	s.note(t)
-	rec, ok := s.users[t][id]
+	rec, ok := s.users[t.String()][id]
 	if !ok {
 		return scim.UserRecord{}, scim.ErrNotFound
 	}
 	return rec, nil
 }
 
-func (s *tenantSCIMStore) ReplaceInTenant(_ context.Context, t, id string, w scim.UserWrite, _ scim.WriteMeta) (scim.UserRecord, error) {
+func (s *tenantSCIMStore) Replace(_ context.Context, t tenant.ID, id string, w scim.UserWrite, _ scim.WriteMeta) (scim.UserRecord, error) {
 	s.note(t)
-	if _, ok := s.users[t][id]; !ok {
+	if _, ok := s.users[t.String()][id]; !ok {
 		return scim.UserRecord{}, scim.ErrNotFound
 	}
 	rec := scim.UserRecord{ID: id, UserName: w.UserName, Active: true}
-	s.users[t][id] = rec
+	s.users[t.String()][id] = rec
 	return rec, nil
 }
 
-func (s *tenantSCIMStore) DeleteInTenant(_ context.Context, t, id string, _ scim.WriteMeta) error {
+func (s *tenantSCIMStore) Delete(_ context.Context, t tenant.ID, id string, _ scim.WriteMeta) error {
 	s.note(t)
-	if _, ok := s.users[t][id]; !ok {
+	if _, ok := s.users[t.String()][id]; !ok {
 		return scim.ErrNotFound
 	}
-	delete(s.users[t], id)
+	delete(s.users[t.String()], id)
 	return nil
 }
 
-func (s *tenantSCIMStore) SavePatchInTenant(_ context.Context, t, id string, w scim.UserWrite, _ []scim.Operation) (scim.UserRecord, error) {
+func (s *tenantSCIMStore) SavePatch(_ context.Context, t tenant.ID, id string, w scim.UserWrite, _ []scim.Operation) (scim.UserRecord, error) {
 	s.note(t)
-	if _, ok := s.users[t][id]; !ok {
+	if _, ok := s.users[t.String()][id]; !ok {
 		return scim.UserRecord{}, scim.ErrNotFound
 	}
 	rec := scim.UserRecord{ID: id, UserName: w.UserName, Active: w.Active}
-	s.users[t][id] = rec
+	s.users[t.String()][id] = rec
 	return rec, nil
 }
 
-func (s *tenantSCIMStore) ListInTenant(_ context.Context, t string, _, _ int) (scim.UserPage, error) {
+func (s *tenantSCIMStore) ListFiltered(_ context.Context, t tenant.ID, _, _ int, _ string) (scim.UserPage, error) {
 	s.note(t)
-	return s.userPage(t), nil
-}
-
-func (s *tenantSCIMStore) ListFilteredInTenant(_ context.Context, t string, _, _ int, _ string) (scim.UserPage, error) {
-	s.note(t)
-	return s.userPage(t), nil
+	return s.userPage(t.String()), nil
 }
 
 func (s *tenantSCIMStore) userPage(t string) scim.UserPage {
@@ -117,7 +113,7 @@ func (s *tenantSCIMStore) userPage(t string) scim.UserPage {
 
 // --- tenant-scoped groups ---
 
-func (s *tenantSCIMStore) groupCreateInTenant(t string, w scim.GroupWrite) scim.GroupRecord {
+func (s *tenantSCIMStore) groupCreate(t string, w scim.GroupWrite) scim.GroupRecord {
 	rec := scim.GroupRecord{ID: "newg-" + t, DisplayName: w.DisplayName}
 	s.groups[t][rec.ID] = rec
 	return rec
@@ -131,131 +127,63 @@ func (s *tenantSCIMStore) groupPage(t string) scim.GroupPage {
 	return scim.GroupPage{Groups: out, Total: len(out)}
 }
 
-// --- the untenanted halves, required by the embedded base interfaces ---
-// They are never reached with Tenancy on; a test below proves it.
-
-func (s *tenantSCIMStore) Create(context.Context, scim.UserWrite, scim.WriteMeta) (scim.UserRecord, error) {
-	s.note("UNSCOPED")
-	return scim.UserRecord{ID: "leaked"}, nil
-}
-func (s *tenantSCIMStore) Get(context.Context, string) (scim.UserRecord, error) {
-	s.note("UNSCOPED")
-	return scim.UserRecord{ID: "leaked"}, nil
-}
-func (s *tenantSCIMStore) Replace(context.Context, string, scim.UserWrite, scim.WriteMeta) (scim.UserRecord, error) {
-	s.note("UNSCOPED")
-	return scim.UserRecord{ID: "leaked"}, nil
-}
-func (s *tenantSCIMStore) Delete(context.Context, string, scim.WriteMeta) error {
-	s.note("UNSCOPED")
-	return nil
-}
-func (s *tenantSCIMStore) SavePatch(context.Context, string, scim.UserWrite, []scim.Operation) (scim.UserRecord, error) {
-	s.note("UNSCOPED")
-	return scim.UserRecord{ID: "leaked"}, nil
-}
-func (s *tenantSCIMStore) List(context.Context, int, int) (scim.UserPage, error) {
-	s.note("UNSCOPED")
-	return scim.UserPage{}, nil
-}
-func (s *tenantSCIMStore) ListFiltered(context.Context, int, int, string) (scim.UserPage, error) {
-	s.note("UNSCOPED")
-	return scim.UserPage{}, nil
-}
-
 // groupSide adapts the same backing maps to the Group port. Separate
 // type because Go cannot have two methods with one name on one type.
 type groupSide struct{ s *tenantSCIMStore }
 
-var _ scim.TenantScopedGroupStore = groupSide{}
+var _ scim.GroupStore = groupSide{}
 
-func (g groupSide) CreateInTenant(_ context.Context, t string, w scim.GroupWrite, _ scim.GroupWriteMeta) (scim.GroupRecord, error) {
+func (g groupSide) Create(_ context.Context, t tenant.ID, w scim.GroupWrite, _ scim.GroupWriteMeta) (scim.GroupRecord, error) {
 	g.s.note(t)
-	return g.s.groupCreateInTenant(t, w), nil
+	return g.s.groupCreate(t.String(), w), nil
 }
-func (g groupSide) GetInTenant(_ context.Context, t, id string) (scim.GroupRecord, error) {
+func (g groupSide) Get(_ context.Context, t tenant.ID, id string) (scim.GroupRecord, error) {
 	g.s.note(t)
-	rec, ok := g.s.groups[t][id]
+	rec, ok := g.s.groups[t.String()][id]
 	if !ok {
 		return scim.GroupRecord{}, scim.ErrNotFound
 	}
 	return rec, nil
 }
-func (g groupSide) ReplaceInTenant(_ context.Context, t, id string, w scim.GroupWrite, _ scim.GroupWriteMeta) (scim.GroupRecord, error) {
+func (g groupSide) Replace(_ context.Context, t tenant.ID, id string, w scim.GroupWrite, _ scim.GroupWriteMeta) (scim.GroupRecord, error) {
 	g.s.note(t)
-	if _, ok := g.s.groups[t][id]; !ok {
+	if _, ok := g.s.groups[t.String()][id]; !ok {
 		return scim.GroupRecord{}, scim.ErrNotFound
 	}
 	rec := scim.GroupRecord{ID: id, DisplayName: w.DisplayName}
-	g.s.groups[t][id] = rec
+	g.s.groups[t.String()][id] = rec
 	return rec, nil
 }
-func (g groupSide) DeleteInTenant(_ context.Context, t, id string, _ scim.GroupWriteMeta) error {
+func (g groupSide) Delete(_ context.Context, t tenant.ID, id string, _ scim.GroupWriteMeta) error {
 	g.s.note(t)
-	if _, ok := g.s.groups[t][id]; !ok {
+	if _, ok := g.s.groups[t.String()][id]; !ok {
 		return scim.ErrNotFound
 	}
-	delete(g.s.groups[t], id)
+	delete(g.s.groups[t.String()], id)
 	return nil
 }
-func (g groupSide) SavePatchInTenant(_ context.Context, t, id string, w scim.GroupWrite, _ []scim.Operation) (scim.GroupRecord, error) {
+func (g groupSide) SavePatch(_ context.Context, t tenant.ID, id string, w scim.GroupWrite, _ []scim.Operation) (scim.GroupRecord, error) {
 	g.s.note(t)
-	if _, ok := g.s.groups[t][id]; !ok {
+	if _, ok := g.s.groups[t.String()][id]; !ok {
 		return scim.GroupRecord{}, scim.ErrNotFound
 	}
 	rec := scim.GroupRecord{ID: id, DisplayName: w.DisplayName}
-	g.s.groups[t][id] = rec
+	g.s.groups[t.String()][id] = rec
 	return rec, nil
 }
-func (g groupSide) ValidateMembersInTenant(_ context.Context, t string, members []scim.MemberRef) error {
+func (g groupSide) ValidateMembers(_ context.Context, t tenant.ID, members []scim.MemberRef) error {
 	g.s.note(t)
 	// The dangerous one: a member must belong to THIS tenant.
 	for _, m := range members {
-		if _, ok := g.s.users[t][m.Value]; !ok {
+		if _, ok := g.s.users[t.String()][m.Value]; !ok {
 			return scim.ErrInvalidInput
 		}
 	}
 	return nil
 }
-func (g groupSide) ListInTenant(_ context.Context, t string, _, _ int) (scim.GroupPage, error) {
+func (g groupSide) ListFiltered(_ context.Context, t tenant.ID, _, _ int, _ string) (scim.GroupPage, error) {
 	g.s.note(t)
-	return g.s.groupPage(t), nil
-}
-func (g groupSide) ListFilteredInTenant(_ context.Context, t string, _, _ int, _ string) (scim.GroupPage, error) {
-	g.s.note(t)
-	return g.s.groupPage(t), nil
-}
-func (g groupSide) Create(context.Context, scim.GroupWrite, scim.GroupWriteMeta) (scim.GroupRecord, error) {
-	g.s.note("UNSCOPED")
-	return scim.GroupRecord{ID: "leaked"}, nil
-}
-func (g groupSide) Get(context.Context, string) (scim.GroupRecord, error) {
-	g.s.note("UNSCOPED")
-	return scim.GroupRecord{ID: "leaked"}, nil
-}
-func (g groupSide) Replace(context.Context, string, scim.GroupWrite, scim.GroupWriteMeta) (scim.GroupRecord, error) {
-	g.s.note("UNSCOPED")
-	return scim.GroupRecord{ID: "leaked"}, nil
-}
-func (g groupSide) Delete(context.Context, string, scim.GroupWriteMeta) error {
-	g.s.note("UNSCOPED")
-	return nil
-}
-func (g groupSide) SavePatch(context.Context, string, scim.GroupWrite, []scim.Operation) (scim.GroupRecord, error) {
-	g.s.note("UNSCOPED")
-	return scim.GroupRecord{ID: "leaked"}, nil
-}
-func (g groupSide) ValidateMembers(context.Context, []scim.MemberRef) error {
-	g.s.note("UNSCOPED")
-	return nil
-}
-func (g groupSide) List(context.Context, int, int) (scim.GroupPage, error) {
-	g.s.note("UNSCOPED")
-	return scim.GroupPage{}, nil
-}
-func (g groupSide) ListFiltered(context.Context, int, int, string) (scim.GroupPage, error) {
-	g.s.note("UNSCOPED")
-	return scim.GroupPage{}, nil
+	return g.s.groupPage(t.String()), nil
 }
 
 // --- harness ----------------------------------------------------------
@@ -264,7 +192,7 @@ func tenantSCIM(t *testing.T) (*SCIMRoutes, *tenantSCIMStore) {
 	t.Helper()
 	store := newTenantSCIMStore()
 	rt, err := NewSCIMRoutes(SCIMConfig{
-		Prefix: "/scim/v2", BaseURL: "https://panel.test", MaxResults: 100, Tenancy: true,
+		Prefix: "/scim/v2", BaseURL: "https://panel.test", MaxResults: 100,
 	}, store, groupSide{s: store})
 	if err != nil {
 		t.Fatalf("NewSCIMRoutes: %v", err)
@@ -400,12 +328,12 @@ func TestSCIMTenancy_ListsAreScoped(t *testing.T) {
 	}
 }
 
-// TestSCIMTenancy_NeverReachesTheUnscopedStore is the structural half.
-// The fixture's untenanted methods record "UNSCOPED"; with Tenancy on,
-// not one of them may be called. This catches a handler that was never
-// repointed at a shim, which no behavioural assertion would notice while
-// the fixture happens to answer correctly.
-func TestSCIMTenancy_NeverReachesTheUnscopedStore(t *testing.T) {
+// TestSCIMTenancy_EveryCallCarriesThePrincipalsTenant is the structural
+// half. The fixture records the tenant each store method was handed;
+// every one must be the principal's. This catches a handler that names
+// a tenant from anywhere else, which no behavioural assertion would
+// notice while the fixture happens to answer correctly.
+func TestSCIMTenancy_EveryCallCarriesThePrincipalsTenant(t *testing.T) {
 	rt, store := tenantSCIM(t)
 
 	calls := []struct {
@@ -415,22 +343,25 @@ func TestSCIMTenancy_NeverReachesTheUnscopedStore(t *testing.T) {
 		{http.MethodPost, "/scim/v2/Users", `{"userName":"n@acme.test"}`, rt.UsersCreate},
 		{http.MethodGet, "/scim/v2/Users/u-a", "", rt.UsersGet},
 		{http.MethodPut, "/scim/v2/Users/u-a", `{"userName":"n@acme.test"}`, rt.UsersReplace},
+		{http.MethodPatch, "/scim/v2/Users/u-a",
+			`{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"active","value":false}]}`, rt.UsersPatch},
 		{http.MethodDelete, "/scim/v2/Users/u-a", "", rt.UsersDelete},
 		{http.MethodGet, "/scim/v2/Users", "", rt.UsersList},
 		{http.MethodPost, "/scim/v2/Groups", `{"displayName":"New"}`, rt.GroupsCreate},
 		{http.MethodGet, "/scim/v2/Groups/g-a", "", rt.GroupsGet},
 		{http.MethodPut, "/scim/v2/Groups/g-a", `{"displayName":"New"}`, rt.GroupsReplace},
+		{http.MethodPatch, "/scim/v2/Groups/g-a",
+			`{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"displayName","value":"renamed"}]}`, rt.GroupsPatch},
 		{http.MethodDelete, "/scim/v2/Groups/g-a", "", rt.GroupsDelete},
 		{http.MethodGet, "/scim/v2/Groups", "", rt.GroupsList},
 	}
 	for _, c := range calls {
-		_ = asTenant(c.h, tenantA, c.method, c.path, c.body)
+		if rec := asTenant(c.h, tenantA, c.method, c.path, c.body); rec.Code >= 400 {
+			t.Fatalf("%s %s: status %d (%s) — the call did not reach its store method", c.method, c.path, rec.Code, bodyOf(t, rec))
+		}
 	}
 
 	for _, got := range store.calls {
-		if got == "UNSCOPED" {
-			t.Fatalf("a handler reached the UNSCOPED store with tenancy on; call trace: %v", store.calls)
-		}
 		if got != tenantA {
 			t.Errorf("a handler passed tenant %q, want %q — the tenant did not come from the "+
 				"principal; trace: %v", got, tenantA, store.calls)
@@ -438,47 +369,6 @@ func TestSCIMTenancy_NeverReachesTheUnscopedStore(t *testing.T) {
 	}
 	if len(store.calls) == 0 {
 		t.Fatal("no store calls recorded; the test proved nothing")
-	}
-}
-
-// --- the boot guard ---------------------------------------------------
-
-func TestSCIMTenancy_BootGuardNamesTheConcreteType(t *testing.T) {
-	_, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100, Tenancy: true},
-		stubUserStore{}, stubGroupStore{})
-	if err == nil {
-		t.Fatal("NewSCIMRoutes accepted stores that cannot scope by tenant")
-	}
-	if !strings.Contains(err.Error(), "TenantScopedUserStore") {
-		t.Errorf("error does not name the required interface: %v", err)
-	}
-	if !strings.Contains(err.Error(), "stubUserStore") {
-		t.Errorf("error does not name the concrete type: %v", err)
-	}
-}
-
-func TestSCIMTenancy_BootGuardChecksGroupsToo(t *testing.T) {
-	store := newTenantSCIMStore()
-	// Users can scope; groups cannot.
-	_, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100, Tenancy: true},
-		store, stubGroupStore{})
-	if err == nil {
-		t.Fatal("NewSCIMRoutes accepted a GroupStore that cannot scope by tenant")
-	}
-	if !strings.Contains(err.Error(), "TenantScopedGroupStore") {
-		t.Errorf("error does not name the group interface: %v", err)
-	}
-}
-
-// TestSCIMTenancy_DisabledAcceptsPlainStores: the compatibility path.
-func TestSCIMTenancy_DisabledAcceptsPlainStores(t *testing.T) {
-	rt, err := NewSCIMRoutes(SCIMConfig{Prefix: "/scim/v2", MaxResults: 100},
-		stubUserStore{}, stubGroupStore{})
-	if err != nil {
-		t.Fatalf("tenancy off rejected plain stores: %v", err)
-	}
-	if rt.tenantUsers != nil || rt.tenantGroups != nil {
-		t.Error("tenancy-off routes captured scoped stores")
 	}
 }
 
@@ -515,10 +405,10 @@ func TestSCIMTenancy_ValidateMembersIsScoped(t *testing.T) {
 	g := groupSide{s: store}
 	ctx := context.Background()
 
-	if err := g.ValidateMembersInTenant(ctx, tenantA, []scim.MemberRef{{Value: "u-a"}}); err != nil {
+	if err := g.ValidateMembers(ctx, tenant.New(tenantA), []scim.MemberRef{{Value: "u-a"}}); err != nil {
 		t.Fatalf("tenant A rejected its own member: %v", err)
 	}
-	err := g.ValidateMembersInTenant(ctx, tenantA, []scim.MemberRef{{Value: "u-b"}})
+	err := g.ValidateMembers(ctx, tenant.New(tenantA), []scim.MemberRef{{Value: "u-b"}})
 	if !errors.Is(err, scim.ErrInvalidInput) {
 		t.Errorf("tenant A nested tenant B's user into an A group: err = %v", err)
 	}

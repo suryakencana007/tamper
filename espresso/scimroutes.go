@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 
 	scim "github.com/suryakencana007/tamper/scim"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // SCIM transport surface (Phase 4e-5). SCIMRoutes carries the app's
@@ -68,86 +68,18 @@ type SCIMConfig struct {
 	// into ServiceProviderConfig.
 	DocumentationURI      string
 	AuthSchemeDescription string
-
-	// Tenancy turns on pooled multi-tenancy for the SCIM surface. False
-	// (the default) is byte-identical to a pre-Phase-7 build for a
-	// single-tenant deployment: the shims call the original store methods
-	// and no tenant reaches a store.
-	//
-	// False is NOT, by itself, a way to run pooled. A request whose
-	// validated principal carries a non-empty TenantID is refused with a
-	// 500 CONFIG_ERROR before any store method runs — see
-	// requireUntenanted. The unscoped methods have no tenant argument, so
-	// serving that request would hand tenant A's service account every
-	// tenant's directory; a deployment that issues tenant-bound
-	// credentials and forgot this flag must find out on its first request,
-	// not in an incident review. TenantBoundStores is the way to say the
-	// refusal does not apply.
-	//
-	// When true, BOTH stores must implement their tenant-scoped form or
-	// NewSCIMRoutes fails, naming the type. Every read and write is then
-	// constrained to the tenant on the VALIDATED PRINCIPAL — see
-	// Principal.TenantID for why it can only come from there.
-	Tenancy bool
-
-	// TenantBoundStores is the application's DECLARATION that the unscoped
-	// stores it hands to NewSCIMRoutes are already confined to one tenant
-	// by other means, so a tenant-bound principal may be served by them.
-	// False (the default) keeps the refusal described on Tenancy.
-	//
-	// It exists because Principal.TenantID is not only a scoping key. A
-	// validator sets it for entitlements, throttle keys, audit attribution
-	// and BaseURLForTenant too, and a deployment can want all of those
-	// while isolating its directory without the TenantScoped* ports. There
-	// are two legitimate shapes:
-	//
-	//   - One SCIMRoutes per tenant, each built over stores bound to that
-	//     tenant. The store cannot return another tenant's row because it
-	//     cannot see one. The application then also owns dispatching each
-	//     request to the routes of the PRINCIPAL's tenant; nothing here
-	//     checks that the two agree.
-	//   - Stores that scope themselves: every method reads the validated
-	//     principal from the context (GetPrincipal) and constrains its
-	//     query to that tenant.
-	//
-	// TAMPER CANNOT VERIFY EITHER. The flag is taken on trust, it removes
-	// the guard and adds nothing in its place: with it set, and Tenancy
-	// off, the surface behaves exactly as it did before the guard existed.
-	// Setting it on a store that several tenants share and that does not
-	// scope itself re-opens the leak — tenant A's service account reads
-	// and changes tenant B's users and groups, with a 200.
-	//
-	// It contradicts Tenancy, which scopes every call by the principal's
-	// tenant instead of trusting the store; NewSCIMRoutes rejects the two
-	// together rather than guess which was meant. A single-tenant
-	// deployment (empty Principal.TenantID) needs neither.
-	TenantBoundStores bool
 }
 
 // SCIMRoutes is the SCIM transport. Construct with NewSCIMRoutes.
 type SCIMRoutes struct {
 	cfg SCIMConfig
 
-	// users / groups are the UNSCOPED ports, and never the application's
-	// stores as received: NewSCIMRoutes wraps them in guardedUserStore /
-	// guardedGroupStore, which refuse a tenant-bound credential before
-	// delegating. They are the bare stores only when the application set
-	// SCIMConfig.TenantBoundStores. A new handler that reaches for s.users
-	// therefore gets the guard without knowing it is there.
+	// users / groups are the application's stores. Every call the
+	// transport makes to them goes through the shims below, which hand
+	// over the tenant on the validated principal. A new handler reaches
+	// for a shim, not for s.users.
 	users  scim.UserStore
 	groups scim.GroupStore
-
-	// tenantUsers / tenantGroups are the scoped forms, settled ONCE at
-	// construction. Non-nil exactly when SCIMConfig.Tenancy is on, so the
-	// per-request shims below branch on a boot-time decision rather than
-	// re-asserting a type on every call — the Phase 0c lesson.
-	//
-	// These hold the application's stores UNWRAPPED, and the scoped ports
-	// embed the unscoped ones, so s.tenantUsers.Get compiles and bypasses
-	// the guard on users above. Only the …InTenant methods may be called
-	// through these two fields.
-	tenantUsers  scim.TenantScopedUserStore
-	tenantGroups scim.TenantScopedGroupStore
 }
 
 // NewSCIMRoutes validates the wiring at construction time (never at request
@@ -174,60 +106,7 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 	if cfg.MaxPayloadBytes <= 0 {
 		cfg.MaxPayloadBytes = defaultSCIMMaxPayloadBytes
 	}
-	// The two tenancy flags answer the same question in opposite ways, so
-	// both at once is a misconfiguration, and it fails here like the rest.
-	// Picking a winner would mean silently ignoring the other: either the
-	// operator's request for scoping, or their statement that the stores
-	// need none.
-	if cfg.Tenancy && cfg.TenantBoundStores {
-		return nil, errors.New(
-			"tamper/espresso: SCIMConfig.Tenancy and SCIMConfig.TenantBoundStores are mutually " +
-				"exclusive; Tenancy scopes every store call by the principal's tenant, " +
-				"TenantBoundStores declares the unscoped stores already confined to one")
-	}
-	s := &SCIMRoutes{cfg: cfg}
-	// The optional-interface upgrade is checked HERE, once, and the
-	// result stored. A store that cannot scope by tenant is a
-	// misconfiguration, and discovering it on the first cross-tenant read
-	// means discovering it in production (§6.4). The message names the
-	// concrete type, because "SCIM tenancy doesn't work" with nothing to
-	// grep for is the Phase 0c experience.
-	if cfg.Tenancy {
-		tu, ok := users.(scim.TenantScopedUserStore)
-		if !ok {
-			return nil, fmt.Errorf(
-				"tamper/espresso: SCIMConfig.Tenancy requires a scim.UserStore that implements "+
-					"scim.TenantScopedUserStore; %T does not", users)
-		}
-		tg, ok := groups.(scim.TenantScopedGroupStore)
-		if !ok {
-			return nil, fmt.Errorf(
-				"tamper/espresso: SCIMConfig.Tenancy requires a scim.GroupStore that implements "+
-					"scim.TenantScopedGroupStore; %T does not", groups)
-		}
-		s.tenantUsers, s.tenantGroups = tu, tg
-	}
-	// The guard goes on AFTER the assertions above, which must see the
-	// application's own stores: the decorators implement the unscoped port
-	// and nothing else, so asserting on them would report every store as
-	// unable to scope, and name the wrong type while doing it.
-	//
-	// It goes on with Tenancy too. Every shim takes the scoped branch
-	// there, so the guarded stores are never called — but "never called"
-	// is a property of today's shims, and the guard is what holds if one
-	// of tomorrow's reaches for s.users. (It does not cover the unscoped
-	// methods reachable through s.tenantUsers / s.tenantGroups; see the
-	// note on those fields.)
-	//
-	// With TenantBoundStores the stores are kept bare, not wrapped in a
-	// guard that is switched off: the declared path is then the pre-guard
-	// code with nothing in between, which is the easiest thing to be sure
-	// is byte-identical.
-	s.users, s.groups = users, groups
-	if !cfg.TenantBoundStores {
-		s.users, s.groups = guardedUserStore{next: users}, guardedGroupStore{next: groups}
-	}
-	return s, nil
+	return &SCIMRoutes{cfg: cfg, users: users, groups: groups}, nil
 }
 
 // scimTenant returns the tenant this request acts in.
@@ -242,8 +121,13 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 // business being served: MustGetPrincipal panics, which is correct for a
 // route mounted outside RequireServiceAccount (a programmer error, not a
 // runtime condition).
-func scimTenant(ctx context.Context) string {
-	return MustGetPrincipal(ctx).TenantID
+//
+// The principal's TenantID is a stored fact set by the validator, so ""
+// is the single tenant.
+func scimTenant(ctx context.Context) tenant.ID {
+	MustGetPrincipal(ctx) // the panic, with its message, for a route mounted outside the gate
+	id, _ := tenantOfPrincipal(ctx)
+	return id
 }
 
 // baseURL resolves the absolute URL prefix for THIS request's tenant.
@@ -271,114 +155,63 @@ func (s *SCIMRoutes) baseURL(r *http.Request) string {
 
 // --- store routing shims ---------------------------------------------
 //
-// One shim per store method the TRANSPORT calls, so the
-// scoped-vs-unscoped decision exists in exactly one place per call site,
-// each individually mutation-testable, and no handler branches on
-// tenancy.
+// One shim per store method the TRANSPORT calls, so the place the
+// tenant is handed to a store exists exactly once per call site, each
+// individually mutation-testable, and no handler names a tenant.
 //
-// There is no shim for List: both List handlers call ListFiltered
-// unconditionally, passing the client's filter (empty when absent), so
-// the plain List is never reached from here. Its tenant-scoped form
-// still exists on the port — an application calling List directly must
-// have a scoped option — it simply has no transport caller to wrap. With Tenancy off these are the original
-// calls, unchanged, which is what keeps the single-tenant path
-// byte-identical.
-//
-// With Tenancy off the calls land on s.users / s.groups, which hold the
-// GUARDED stores (scimtenantguard.go) unless the application declared
-// TenantBoundStores. The refusal of a tenant-bound credential therefore
-// happens inside the store value, not here: a shim has nothing to
-// remember, and neither does the next handler someone writes.
+// Both List handlers call ListFiltered with the client's filter (empty
+// when absent), which is why the port has no plain List.
 
 func (s *SCIMRoutes) userCreate(ctx context.Context, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
-	if s.tenantUsers != nil {
-		return s.tenantUsers.CreateInTenant(ctx, scimTenant(ctx), w, meta)
-	}
-	return s.users.Create(ctx, w, meta)
+	return s.users.Create(ctx, scimTenant(ctx), w, meta)
 }
 
 func (s *SCIMRoutes) userGet(ctx context.Context, id string) (scim.UserRecord, error) {
-	if s.tenantUsers != nil {
-		return s.tenantUsers.GetInTenant(ctx, scimTenant(ctx), id)
-	}
-	return s.users.Get(ctx, id)
+	return s.users.Get(ctx, scimTenant(ctx), id)
 }
 
 func (s *SCIMRoutes) userReplace(ctx context.Context, id string, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
-	if s.tenantUsers != nil {
-		return s.tenantUsers.ReplaceInTenant(ctx, scimTenant(ctx), id, w, meta)
-	}
-	return s.users.Replace(ctx, id, w, meta)
+	return s.users.Replace(ctx, scimTenant(ctx), id, w, meta)
 }
 
 func (s *SCIMRoutes) userDelete(ctx context.Context, id string, meta scim.WriteMeta) error {
-	if s.tenantUsers != nil {
-		return s.tenantUsers.DeleteInTenant(ctx, scimTenant(ctx), id, meta)
-	}
-	return s.users.Delete(ctx, id, meta)
+	return s.users.Delete(ctx, scimTenant(ctx), id, meta)
 }
 
 func (s *SCIMRoutes) userSavePatch(ctx context.Context, id string, w scim.UserWrite, ops []scim.Operation) (scim.UserRecord, error) {
-	if s.tenantUsers != nil {
-		return s.tenantUsers.SavePatchInTenant(ctx, scimTenant(ctx), id, w, ops)
-	}
-	return s.users.SavePatch(ctx, id, w, ops)
+	return s.users.SavePatch(ctx, scimTenant(ctx), id, w, ops)
 }
 
 func (s *SCIMRoutes) userListFiltered(ctx context.Context, startIndex, count int, filter string) (scim.UserPage, error) {
-	if s.tenantUsers != nil {
-		return s.tenantUsers.ListFilteredInTenant(ctx, scimTenant(ctx), startIndex, count, filter)
-	}
-	return s.users.ListFiltered(ctx, startIndex, count, filter)
+	return s.users.ListFiltered(ctx, scimTenant(ctx), startIndex, count, filter)
 }
 
 func (s *SCIMRoutes) groupCreate(ctx context.Context, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
-	if s.tenantGroups != nil {
-		return s.tenantGroups.CreateInTenant(ctx, scimTenant(ctx), w, meta)
-	}
-	return s.groups.Create(ctx, w, meta)
+	return s.groups.Create(ctx, scimTenant(ctx), w, meta)
 }
 
 func (s *SCIMRoutes) groupGet(ctx context.Context, id string) (scim.GroupRecord, error) {
-	if s.tenantGroups != nil {
-		return s.tenantGroups.GetInTenant(ctx, scimTenant(ctx), id)
-	}
-	return s.groups.Get(ctx, id)
+	return s.groups.Get(ctx, scimTenant(ctx), id)
 }
 
 func (s *SCIMRoutes) groupReplace(ctx context.Context, id string, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
-	if s.tenantGroups != nil {
-		return s.tenantGroups.ReplaceInTenant(ctx, scimTenant(ctx), id, w, meta)
-	}
-	return s.groups.Replace(ctx, id, w, meta)
+	return s.groups.Replace(ctx, scimTenant(ctx), id, w, meta)
 }
 
 func (s *SCIMRoutes) groupDelete(ctx context.Context, id string, meta scim.GroupWriteMeta) error {
-	if s.tenantGroups != nil {
-		return s.tenantGroups.DeleteInTenant(ctx, scimTenant(ctx), id, meta)
-	}
-	return s.groups.Delete(ctx, id, meta)
+	return s.groups.Delete(ctx, scimTenant(ctx), id, meta)
 }
 
 func (s *SCIMRoutes) groupSavePatch(ctx context.Context, id string, w scim.GroupWrite, ops []scim.Operation) (scim.GroupRecord, error) {
-	if s.tenantGroups != nil {
-		return s.tenantGroups.SavePatchInTenant(ctx, scimTenant(ctx), id, w, ops)
-	}
-	return s.groups.SavePatch(ctx, id, w, ops)
+	return s.groups.SavePatch(ctx, scimTenant(ctx), id, w, ops)
 }
 
 func (s *SCIMRoutes) groupValidateMembers(ctx context.Context, members []scim.MemberRef) error {
-	if s.tenantGroups != nil {
-		return s.tenantGroups.ValidateMembersInTenant(ctx, scimTenant(ctx), members)
-	}
-	return s.groups.ValidateMembers(ctx, members)
+	return s.groups.ValidateMembers(ctx, scimTenant(ctx), members)
 }
 
 func (s *SCIMRoutes) groupListFiltered(ctx context.Context, startIndex, count int, filter string) (scim.GroupPage, error) {
-	if s.tenantGroups != nil {
-		return s.tenantGroups.ListFilteredInTenant(ctx, scimTenant(ctx), startIndex, count, filter)
-	}
-	return s.groups.ListFiltered(ctx, startIndex, count, filter)
+	return s.groups.ListFiltered(ctx, scimTenant(ctx), startIndex, count, filter)
 }
 
 // defaultSCIMMaxPayloadBytes is the request-body cap applied when

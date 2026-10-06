@@ -16,6 +16,7 @@ import (
 
 	"github.com/suryakencana007/tamper/audit"
 	"github.com/suryakencana007/tamper/scim"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // This file implements the two persistence ports the SCIM transport calls —
@@ -61,6 +62,26 @@ type memUserStore struct {
 
 var _ scim.UserStore = (*memUserStore)(nil)
 
+// inSingleTenant is the example's isolation contract, in one place for
+// both stores. They file every row under ONE tenant, the single tenant,
+// and refuse any other with ErrNotFound: a request for a tenant this
+// store does not hold is a miss, like an id it does not hold, and must
+// not read as a permission error. A pooled adapter files rows under the
+// tenant instead and constrains every query to it.
+//
+// Lists are the exception, and they call holdsTenant: a list of a
+// tenant the store does not hold is an EMPTY page, not an error. The
+// transport renders a list error as a 500, and an empty page is what a
+// constrained query returns.
+func inSingleTenant(tenantID tenant.ID) error {
+	if !holdsTenant(tenantID) {
+		return fmt.Errorf("%w: tenant %q", scim.ErrNotFound, tenantID)
+	}
+	return nil
+}
+
+func holdsTenant(tenantID tenant.ID) bool { return tenantID.IsSingle() }
+
 func newUserStore(a audit.Logger) *memUserStore {
 	return &memUserStore{users: map[string]scim.UserRecord{}, audit: a}
 }
@@ -79,7 +100,10 @@ func (s *memUserStore) exists(id string) bool {
 	return ok
 }
 
-func (s *memUserStore) Create(ctx context.Context, w scim.UserWrite, _ scim.WriteMeta) (scim.UserRecord, error) {
+func (s *memUserStore) Create(ctx context.Context, tenantID tenant.ID, w scim.UserWrite, _ scim.WriteMeta) (scim.UserRecord, error) {
+	if err := inSingleTenant(tenantID); err != nil {
+		return scim.UserRecord{}, err
+	}
 	s.mu.Lock()
 	for _, rec := range s.users {
 		if rec.UserName == w.UserName {
@@ -95,7 +119,10 @@ func (s *memUserStore) Create(ctx context.Context, w scim.UserWrite, _ scim.Writ
 	return rec, nil
 }
 
-func (s *memUserStore) Get(_ context.Context, id string) (scim.UserRecord, error) {
+func (s *memUserStore) Get(_ context.Context, tenantID tenant.ID, id string) (scim.UserRecord, error) {
+	if err := inSingleTenant(tenantID); err != nil {
+		return scim.UserRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.users[id]
@@ -105,7 +132,10 @@ func (s *memUserStore) Get(_ context.Context, id string) (scim.UserRecord, error
 	return rec, nil
 }
 
-func (s *memUserStore) Replace(ctx context.Context, id string, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
+func (s *memUserStore) Replace(ctx context.Context, tenantID tenant.ID, id string, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
+	if err := inSingleTenant(tenantID); err != nil {
+		return scim.UserRecord{}, err
+	}
 	s.mu.Lock()
 	existing, ok := s.users[id]
 	if !ok {
@@ -130,7 +160,10 @@ func (s *memUserStore) Replace(ctx context.Context, id string, w scim.UserWrite,
 	return rec, nil
 }
 
-func (s *memUserStore) Delete(ctx context.Context, id string, meta scim.WriteMeta) error {
+func (s *memUserStore) Delete(ctx context.Context, tenantID tenant.ID, id string, meta scim.WriteMeta) error {
+	if err := inSingleTenant(tenantID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if _, ok := s.users[id]; !ok {
 		s.mu.Unlock()
@@ -147,7 +180,10 @@ func (s *memUserStore) Delete(ctx context.Context, id string, meta scim.WriteMet
 // transport pre-applies the ops and hands us a UserWrite carrying only
 // UserName/ExternalID/Active; FamilyName/GivenName are zero and MUST be left
 // untouched (resetting them here would wipe the user's name on every PATCH).
-func (s *memUserStore) SavePatch(ctx context.Context, id string, w scim.UserWrite, ops []scim.Operation) (scim.UserRecord, error) {
+func (s *memUserStore) SavePatch(ctx context.Context, tenantID tenant.ID, id string, w scim.UserWrite, ops []scim.Operation) (scim.UserRecord, error) {
+	if err := inSingleTenant(tenantID); err != nil {
+		return scim.UserRecord{}, err
+	}
 	s.mu.Lock()
 	existing, ok := s.users[id]
 	if !ok {
@@ -167,15 +203,10 @@ func (s *memUserStore) SavePatch(ctx context.Context, id string, w scim.UserWrit
 	return rec, nil
 }
 
-func (s *memUserStore) List(_ context.Context, startIndex, count int) (scim.UserPage, error) {
-	s.mu.Lock()
-	all := sortedUsers(s.users)
-	s.mu.Unlock()
-	page := pageUsers(all, startIndex, count)
-	return scim.UserPage{Users: page, Total: len(all)}, nil
-}
-
-func (s *memUserStore) ListFiltered(ctx context.Context, startIndex, count int, filter string) (scim.UserPage, error) {
+func (s *memUserStore) ListFiltered(ctx context.Context, tenantID tenant.ID, startIndex, count int, filter string) (scim.UserPage, error) {
+	if !holdsTenant(tenantID) {
+		return scim.UserPage{Users: []scim.UserRecord{}}, nil
+	}
 	// A real adapter runs scim.Parse + scim.Translate to a SQL WHERE against
 	// its ColumnMapping. In-memory, we walk the AST for the one clause the
 	// example supports; anything else folds to ErrInvalidFilter (→ 400).
@@ -348,14 +379,20 @@ func (s *memGroupStore) resolveMembersLocked(members []scim.MemberRef) (userIDs,
 	return userIDs, groupIDs, nil
 }
 
-func (s *memGroupStore) ValidateMembers(_ context.Context, members []scim.MemberRef) error {
+func (s *memGroupStore) ValidateMembers(_ context.Context, tenantID tenant.ID, members []scim.MemberRef) error {
+	if err := inSingleTenant(tenantID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, _, err := s.resolveMembersLocked(members)
 	return err
 }
 
-func (s *memGroupStore) Create(ctx context.Context, w scim.GroupWrite, _ scim.GroupWriteMeta) (scim.GroupRecord, error) {
+func (s *memGroupStore) Create(ctx context.Context, tenantID tenant.ID, w scim.GroupWrite, _ scim.GroupWriteMeta) (scim.GroupRecord, error) {
+	if err := inSingleTenant(tenantID); err != nil {
+		return scim.GroupRecord{}, err
+	}
 	s.mu.Lock()
 	rec, err := s.buildGroupLocked(ctx, uuid.NewString(), w, time.Now().UTC())
 	if err != nil {
@@ -369,7 +406,10 @@ func (s *memGroupStore) Create(ctx context.Context, w scim.GroupWrite, _ scim.Gr
 	return rec, nil
 }
 
-func (s *memGroupStore) Get(_ context.Context, id string) (scim.GroupRecord, error) {
+func (s *memGroupStore) Get(_ context.Context, tenantID tenant.ID, id string) (scim.GroupRecord, error) {
+	if err := inSingleTenant(tenantID); err != nil {
+		return scim.GroupRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.groups[id]
@@ -379,7 +419,10 @@ func (s *memGroupStore) Get(_ context.Context, id string) (scim.GroupRecord, err
 	return rec, nil
 }
 
-func (s *memGroupStore) Replace(ctx context.Context, id string, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
+func (s *memGroupStore) Replace(ctx context.Context, tenantID tenant.ID, id string, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
+	if err := inSingleTenant(tenantID); err != nil {
+		return scim.GroupRecord{}, err
+	}
 	if w.ActorServiceAccountID == "" {
 		return scim.GroupRecord{}, fmt.Errorf("%w: missing service-account actor", scim.ErrInvalidInput)
 	}
@@ -401,7 +444,10 @@ func (s *memGroupStore) Replace(ctx context.Context, id string, w scim.GroupWrit
 	return rec, nil
 }
 
-func (s *memGroupStore) Delete(ctx context.Context, id string, meta scim.GroupWriteMeta) error {
+func (s *memGroupStore) Delete(ctx context.Context, tenantID tenant.ID, id string, meta scim.GroupWriteMeta) error {
+	if err := inSingleTenant(tenantID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if _, ok := s.groups[id]; !ok {
 		s.mu.Unlock()
@@ -414,7 +460,10 @@ func (s *memGroupStore) Delete(ctx context.Context, id string, meta scim.GroupWr
 	return nil
 }
 
-func (s *memGroupStore) SavePatch(ctx context.Context, id string, w scim.GroupWrite, ops []scim.Operation) (scim.GroupRecord, error) {
+func (s *memGroupStore) SavePatch(ctx context.Context, tenantID tenant.ID, id string, w scim.GroupWrite, ops []scim.Operation) (scim.GroupRecord, error) {
+	if err := inSingleTenant(tenantID); err != nil {
+		return scim.GroupRecord{}, err
+	}
 	s.mu.Lock()
 	existing, ok := s.groups[id]
 	if !ok {
@@ -433,14 +482,10 @@ func (s *memGroupStore) SavePatch(ctx context.Context, id string, w scim.GroupWr
 	return rec, nil
 }
 
-func (s *memGroupStore) List(_ context.Context, startIndex, count int) (scim.GroupPage, error) {
-	s.mu.Lock()
-	all := sortedGroups(s.groups)
-	s.mu.Unlock()
-	return scim.GroupPage{Groups: pageGroups(all, startIndex, count), Total: len(all)}, nil
-}
-
-func (s *memGroupStore) ListFiltered(ctx context.Context, startIndex, count int, filter string) (scim.GroupPage, error) {
+func (s *memGroupStore) ListFiltered(ctx context.Context, tenantID tenant.ID, startIndex, count int, filter string) (scim.GroupPage, error) {
+	if !holdsTenant(tenantID) {
+		return scim.GroupPage{Groups: []scim.GroupRecord{}}, nil
+	}
 	want, matchAll, err := parseEqFilter(filter, "displayName")
 	if err != nil {
 		return scim.GroupPage{}, err

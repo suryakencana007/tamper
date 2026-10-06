@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/suryakencana007/tamper/audit"
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
+	"github.com/suryakencana007/tamper/scim"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // This test IS the IdP: it drives the SCIM server exactly as Okta / Entra
@@ -344,5 +347,84 @@ func TestSCIM_ThrottleRunsInsideTheAuthGate(t *testing.T) {
 		t.Error("an unauthenticated flood consumed the authenticated connector's " +
 			"budget; the limiter is mounted outside the service-account gate, so " +
 			"every caller shares one bucket")
+	}
+}
+
+// The store files everything under the single tenant and refuses any
+// other with the miss a missing id gets. Driven directly: the example
+// issues no tenant-bound credential, so no request reaches the store
+// with another tenant, and this is what would hold if one did.
+func TestSCIM_StoreRefusesAnotherTenant(t *testing.T) {
+	ctx := context.Background()
+	users := newUserStore(audit.NewNoopLogger())
+	groups := newGroupStore(audit.NewNoopLogger(), users)
+	acme := tenant.New("acme")
+
+	rec, err := users.Create(ctx, tenant.Single, scim.UserWrite{UserName: "a@example.test"}, scim.WriteMeta{})
+	if err != nil {
+		t.Fatalf("Create in the single tenant: %v", err)
+	}
+	grp, err := groups.Create(ctx, tenant.Single, scim.GroupWrite{DisplayName: "g"}, scim.GroupWriteMeta{})
+	if err != nil {
+		t.Fatalf("Create group in the single tenant: %v", err)
+	}
+	_, missErr := users.Get(ctx, tenant.Single, "no-such-id")
+
+	for name, call := range map[string]func() error{
+		"users.Get": func() error { _, err := users.Get(ctx, acme, rec.ID); return err },
+		"users.Create": func() error {
+			_, err := users.Create(ctx, acme, scim.UserWrite{UserName: "b@example.test"}, scim.WriteMeta{})
+			return err
+		},
+		"users.Replace": func() error {
+			_, err := users.Replace(ctx, acme, rec.ID, scim.UserWrite{UserName: "c@example.test"}, scim.WriteMeta{})
+			return err
+		},
+		"users.Delete":    func() error { return users.Delete(ctx, acme, rec.ID, scim.WriteMeta{}) },
+		"users.SavePatch": func() error { _, err := users.SavePatch(ctx, acme, rec.ID, scim.UserWrite{}, nil); return err },
+		"groups.Create": func() error {
+			_, err := groups.Create(ctx, acme, scim.GroupWrite{DisplayName: "g"}, scim.GroupWriteMeta{})
+			return err
+		},
+		"groups.Get": func() error { _, err := groups.Get(ctx, acme, grp.ID); return err },
+		"groups.Replace": func() error {
+			_, err := groups.Replace(ctx, acme, grp.ID, scim.GroupWrite{DisplayName: "h"}, scim.GroupWriteMeta{})
+			return err
+		},
+		"groups.Delete": func() error { return groups.Delete(ctx, acme, grp.ID, scim.GroupWriteMeta{}) },
+		"groups.SavePatch": func() error {
+			_, err := groups.SavePatch(ctx, acme, grp.ID, scim.GroupWrite{DisplayName: "h"}, nil)
+			return err
+		},
+		"groups.ValidateMembers": func() error { return groups.ValidateMembers(ctx, acme, []scim.MemberRef{{Value: rec.ID}}) },
+	} {
+		err := call()
+		if !errors.Is(err, scim.ErrNotFound) {
+			t.Errorf("%s for tenant acme: err = %v, want ErrNotFound", name, err)
+		}
+	}
+	if !errors.Is(missErr, scim.ErrNotFound) {
+		t.Fatalf("fixture: a missing id is %v", missErr)
+	}
+	// A list of a tenant the store does not hold is an empty page, not
+	// an error: the transport renders a list error as a 500, and an
+	// empty page is what a constrained query returns.
+	if page, err := users.ListFiltered(ctx, acme, 1, 10, ""); err != nil || page.Total != 0 || len(page.Users) != 0 {
+		t.Errorf("users.ListFiltered for tenant acme = %+v, %v; want an empty page", page, err)
+	}
+	if page, err := groups.ListFiltered(ctx, acme, 1, 10, ""); err != nil || page.Total != 0 || len(page.Groups) != 0 {
+		t.Errorf("groups.ListFiltered for tenant acme = %+v, %v; want an empty page", page, err)
+	}
+
+	// Nothing was written for acme, and the single tenant's rows are
+	// intact.
+	if users.Count() != 1 || groups.Count() != 1 {
+		t.Errorf("rows = %d users, %d groups; want 1 and 1: a refused write stored something", users.Count(), groups.Count())
+	}
+	if got, err := users.Get(ctx, tenant.Single, rec.ID); err != nil || got.ID != rec.ID {
+		t.Errorf("the single tenant's user: %v, %v", got, err)
+	}
+	if got, err := groups.Get(ctx, tenant.Single, grp.ID); err != nil || got.ID != grp.ID || got.DisplayName != "g" {
+		t.Errorf("the single tenant's group: %v, %v", got, err)
 	}
 }

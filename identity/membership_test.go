@@ -350,14 +350,14 @@ func TestEnterTenant_InactiveUser(t *testing.T) {
 
 // A membership does not loosen the ordinary mint: a full session is
 // still only ever for the user's own tenant.
-func TestMembership_DoesNotLoosenIssueTokensForUserInTenant(t *testing.T) {
+func TestMembership_DoesNotLoosenIssueTokensForUser(t *testing.T) {
 	ctx := context.Background()
 	c, store := enterCore(t)
 	admin := platformAdmin(t, c)
 	store.AddMembership(admin.ID, tAcme)
 
-	if _, err := c.IssueTokensForUserInTenant(ctx, admin.ID, tAcme, 0, ""); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("IssueTokensForUserInTenant into a tenant the user is only a member of: err = %v, want ErrNotFound", err)
+	if _, err := c.IssueTokensForUser(ctx, admin.ID, tAcme, time.Now().Unix(), testACR); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("IssueTokensForUser into a tenant the user is only a member of: err = %v, want ErrNotFound", err)
 	}
 }
 

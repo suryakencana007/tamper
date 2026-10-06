@@ -249,7 +249,7 @@ func (a *app) signIn(ctx context.Context, providerID string, claims *oidc.Claims
 		}
 	}
 
-	tokens, err := a.core.IssueTokensForUserWithACR(ctx, user.ID, time.Now().Unix(), crypto.ACRLocalPassword)
+	tokens, err := a.core.IssueTokensForUser(ctx, user.ID, tenant.Single, time.Now().Unix(), crypto.ACRLocalPassword)
 	if err != nil {
 		return callbackResult{}, mapIdentityError(err)
 	}

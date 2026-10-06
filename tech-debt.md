@@ -846,11 +846,13 @@ change is made.
 | Where | What |
 |---|---|
 | `crypto` | **Done in #57.** `Issue`, `Verify`, and the tenant-less `IssueTOTPPending` / `VerifyTOTPPending` are removed. A token with no `purpose`, no `auth_time` or no `acr` is refused. |
-| `identity` | `IssueTokensForUser` and `IssueTokensForUserWithACR` mint for `tenant.Single` without reading the user row. |
+| `identity` | **Done in #58.** `IssueTokensForUser` and `…WithACR` are removed; `…InTenant` is now `IssueTokensForUser(user, tenant, authTime, acr)`. The fallbacks to "now" and the default ACR, and the rotation of a session row with no `auth_time`, are gone. |
 | `espresso.IdentityService` (port) | `IssueTokensForUser(ctx, userID)` and the TOTP-pending methods take no tenant. This is the root of TD-10, which was patched in the adapter, not in the port. |
 | `espresso` SCIM | `SCIMConfig.TenantBoundStores` and the unscoped store path. |
 | `espresso` | `ContextWithUserID` and `SetUserID` put a user id in the context with no token. |
 | `espresso` | The resolvers of `RequireTenant`, `RequireTenantAllowEntered` and `PinTenant` return a `string`, and `""` becomes `tenant.Single`. A route pattern with no tenant segment is then served as a single-tenant route. `DecisionGate.Tenant` already returns `(tenant.ID, bool)`; these should too. |
+| `identity` throttling | A `Core` built without `WithThrottling` permits unlimited password and second-factor attempts. The doc says this is allowed "because it is the pre-7k-1 behavior". Whether `New` should require a throttle is a product decision, not a shim removal; it was not changed in #58. |
+| `identity/legacy_adapter_test.go` | A hand-written `Store` that stands in for a pre-Phase-7 adapter. It is still a useful second implementation of the port; its framing as "the compatibility path" is not. |
 | tests and comments | "byte-identical" tests, and history comments about Barista. A stale line in this file: the slice list still says TD-03 is "Open as #56"; it merged. |
 
 **Impact.** Each shim is a second way to do something, and the second way is
@@ -862,7 +864,7 @@ ways guessed a tenant, and three reviews could not make the guess safe.
 1. `crypto`: one set of functions, all taking a tenant; `purpose` required.
    **Done, #57.**
 2. `identity`: one mint function that always reads the user and checks the
-   tenant.
+   tenant. **Done, #58.**
 3. `espresso.IdentityService` and `AuthRoutes`: every method takes the
    tenant, so the TOTP second leg is bound to a tenant by the library.
 4. SCIM: the scoped path only.

@@ -87,9 +87,9 @@ type RefreshSession struct {
 	// AuthTime + ACR are the step-up carry-forward pair: rotation copies
 	// them UNCHANGED onto the successor row and the new access JWT. If
 	// rotation advanced AuthTime, a fresh-auth gate would silently re-arm
-	// every access-token TTL, defeating the step-up promise. A zero
-	// AuthTime marks a legacy row: rotation falls back to now + the
-	// configured default ACR (one forced re-auth, then carried forward).
+	// every access-token TTL, defeating the step-up promise. Both are
+	// always set on a row this package writes; Refresh refuses a row
+	// that lacks either.
 	AuthTime time.Time
 	ACR      string
 }

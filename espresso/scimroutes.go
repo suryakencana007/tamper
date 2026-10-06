@@ -125,7 +125,9 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 // The principal's TenantID is a stored fact set by the validator, so ""
 // is the single tenant.
 func scimTenant(ctx context.Context) tenant.ID {
-	return tenant.FromStored(MustGetPrincipal(ctx).TenantID)
+	MustGetPrincipal(ctx) // the panic, with its message, for a route mounted outside the gate
+	id, _ := tenantOfPrincipal(ctx)
+	return id
 }
 
 // baseURL resolves the absolute URL prefix for THIS request's tenant.

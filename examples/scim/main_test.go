@@ -364,6 +364,10 @@ func TestSCIM_StoreRefusesAnotherTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create in the single tenant: %v", err)
 	}
+	grp, err := groups.Create(ctx, tenant.Single, scim.GroupWrite{DisplayName: "g"}, scim.GroupWriteMeta{})
+	if err != nil {
+		t.Fatalf("Create group in the single tenant: %v", err)
+	}
 	_, missErr := users.Get(ctx, tenant.Single, "no-such-id")
 
 	for name, call := range map[string]func() error{
@@ -376,16 +380,23 @@ func TestSCIM_StoreRefusesAnotherTenant(t *testing.T) {
 			_, err := users.Replace(ctx, acme, rec.ID, scim.UserWrite{UserName: "c@example.test"}, scim.WriteMeta{})
 			return err
 		},
-		"users.Delete":       func() error { return users.Delete(ctx, acme, rec.ID, scim.WriteMeta{}) },
-		"users.SavePatch":    func() error { _, err := users.SavePatch(ctx, acme, rec.ID, scim.UserWrite{}, nil); return err },
-		"users.ListFiltered": func() error { _, err := users.ListFiltered(ctx, acme, 1, 10, ""); return err },
+		"users.Delete":    func() error { return users.Delete(ctx, acme, rec.ID, scim.WriteMeta{}) },
+		"users.SavePatch": func() error { _, err := users.SavePatch(ctx, acme, rec.ID, scim.UserWrite{}, nil); return err },
 		"groups.Create": func() error {
 			_, err := groups.Create(ctx, acme, scim.GroupWrite{DisplayName: "g"}, scim.GroupWriteMeta{})
 			return err
 		},
-		"groups.Get":             func() error { _, err := groups.Get(ctx, acme, "any"); return err },
+		"groups.Get": func() error { _, err := groups.Get(ctx, acme, grp.ID); return err },
+		"groups.Replace": func() error {
+			_, err := groups.Replace(ctx, acme, grp.ID, scim.GroupWrite{DisplayName: "h"}, scim.GroupWriteMeta{})
+			return err
+		},
+		"groups.Delete": func() error { return groups.Delete(ctx, acme, grp.ID, scim.GroupWriteMeta{}) },
+		"groups.SavePatch": func() error {
+			_, err := groups.SavePatch(ctx, acme, grp.ID, scim.GroupWrite{DisplayName: "h"}, nil)
+			return err
+		},
 		"groups.ValidateMembers": func() error { return groups.ValidateMembers(ctx, acme, []scim.MemberRef{{Value: rec.ID}}) },
-		"groups.ListFiltered":    func() error { _, err := groups.ListFiltered(ctx, acme, 1, 10, ""); return err },
 	} {
 		err := call()
 		if !errors.Is(err, scim.ErrNotFound) {
@@ -395,11 +406,25 @@ func TestSCIM_StoreRefusesAnotherTenant(t *testing.T) {
 	if !errors.Is(missErr, scim.ErrNotFound) {
 		t.Fatalf("fixture: a missing id is %v", missErr)
 	}
-	// Nothing was written for acme, and the single tenant's row is intact.
-	if users.Count() != 1 {
-		t.Errorf("user rows = %d, want 1: a refused write stored something", users.Count())
+	// A list of a tenant the store does not hold is an empty page, not
+	// an error: the transport renders a list error as a 500, and an
+	// empty page is what a constrained query returns.
+	if page, err := users.ListFiltered(ctx, acme, 1, 10, ""); err != nil || page.Total != 0 || len(page.Users) != 0 {
+		t.Errorf("users.ListFiltered for tenant acme = %+v, %v; want an empty page", page, err)
+	}
+	if page, err := groups.ListFiltered(ctx, acme, 1, 10, ""); err != nil || page.Total != 0 || len(page.Groups) != 0 {
+		t.Errorf("groups.ListFiltered for tenant acme = %+v, %v; want an empty page", page, err)
+	}
+
+	// Nothing was written for acme, and the single tenant's rows are
+	// intact.
+	if users.Count() != 1 || groups.Count() != 1 {
+		t.Errorf("rows = %d users, %d groups; want 1 and 1: a refused write stored something", users.Count(), groups.Count())
 	}
 	if got, err := users.Get(ctx, tenant.Single, rec.ID); err != nil || got.ID != rec.ID {
-		t.Errorf("the single tenant's row: %v, %v", got, err)
+		t.Errorf("the single tenant's user: %v, %v", got, err)
+	}
+	if got, err := groups.Get(ctx, tenant.Single, grp.ID); err != nil || got.ID != grp.ID || got.DisplayName != "g" {
+		t.Errorf("the single tenant's group: %v, %v", got, err)
 	}
 }

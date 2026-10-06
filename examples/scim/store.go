@@ -62,18 +62,25 @@ type memUserStore struct {
 
 var _ scim.UserStore = (*memUserStore)(nil)
 
-// in is the example's isolation contract. This store files every row
-// under ONE tenant, the single tenant, and it refuses any other with
-// ErrNotFound: a request for a tenant this store does not hold is a
-// miss, like an id it does not hold, and must not read as a permission
-// error. A pooled adapter files rows under the tenant instead and
-// constrains every query to it.
-func (s *memUserStore) in(tenantID tenant.ID) error {
-	if !tenantID.IsSingle() {
+// inSingleTenant is the example's isolation contract, in one place for
+// both stores. They file every row under ONE tenant, the single tenant,
+// and refuse any other with ErrNotFound: a request for a tenant this
+// store does not hold is a miss, like an id it does not hold, and must
+// not read as a permission error. A pooled adapter files rows under the
+// tenant instead and constrains every query to it.
+//
+// Lists are the exception, and they call holdsTenant: a list of a
+// tenant the store does not hold is an EMPTY page, not an error. The
+// transport renders a list error as a 500, and an empty page is what a
+// constrained query returns.
+func inSingleTenant(tenantID tenant.ID) error {
+	if !holdsTenant(tenantID) {
 		return fmt.Errorf("%w: tenant %q", scim.ErrNotFound, tenantID)
 	}
 	return nil
 }
+
+func holdsTenant(tenantID tenant.ID) bool { return tenantID.IsSingle() }
 
 func newUserStore(a audit.Logger) *memUserStore {
 	return &memUserStore{users: map[string]scim.UserRecord{}, audit: a}
@@ -94,7 +101,7 @@ func (s *memUserStore) exists(id string) bool {
 }
 
 func (s *memUserStore) Create(ctx context.Context, tenantID tenant.ID, w scim.UserWrite, _ scim.WriteMeta) (scim.UserRecord, error) {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return scim.UserRecord{}, err
 	}
 	s.mu.Lock()
@@ -113,7 +120,7 @@ func (s *memUserStore) Create(ctx context.Context, tenantID tenant.ID, w scim.Us
 }
 
 func (s *memUserStore) Get(_ context.Context, tenantID tenant.ID, id string) (scim.UserRecord, error) {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return scim.UserRecord{}, err
 	}
 	s.mu.Lock()
@@ -126,7 +133,7 @@ func (s *memUserStore) Get(_ context.Context, tenantID tenant.ID, id string) (sc
 }
 
 func (s *memUserStore) Replace(ctx context.Context, tenantID tenant.ID, id string, w scim.UserWrite, meta scim.WriteMeta) (scim.UserRecord, error) {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return scim.UserRecord{}, err
 	}
 	s.mu.Lock()
@@ -154,7 +161,7 @@ func (s *memUserStore) Replace(ctx context.Context, tenantID tenant.ID, id strin
 }
 
 func (s *memUserStore) Delete(ctx context.Context, tenantID tenant.ID, id string, meta scim.WriteMeta) error {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -174,7 +181,7 @@ func (s *memUserStore) Delete(ctx context.Context, tenantID tenant.ID, id string
 // UserName/ExternalID/Active; FamilyName/GivenName are zero and MUST be left
 // untouched (resetting them here would wipe the user's name on every PATCH).
 func (s *memUserStore) SavePatch(ctx context.Context, tenantID tenant.ID, id string, w scim.UserWrite, ops []scim.Operation) (scim.UserRecord, error) {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return scim.UserRecord{}, err
 	}
 	s.mu.Lock()
@@ -197,8 +204,8 @@ func (s *memUserStore) SavePatch(ctx context.Context, tenantID tenant.ID, id str
 }
 
 func (s *memUserStore) ListFiltered(ctx context.Context, tenantID tenant.ID, startIndex, count int, filter string) (scim.UserPage, error) {
-	if err := s.in(tenantID); err != nil {
-		return scim.UserPage{}, err
+	if !holdsTenant(tenantID) {
+		return scim.UserPage{Users: []scim.UserRecord{}}, nil
 	}
 	// A real adapter runs scim.Parse + scim.Translate to a SQL WHERE against
 	// its ColumnMapping. In-memory, we walk the AST for the one clause the
@@ -339,14 +346,6 @@ type memGroupStore struct {
 
 var _ scim.GroupStore = (*memGroupStore)(nil)
 
-// in: see memUserStore.in.
-func (s *memGroupStore) in(tenantID tenant.ID) error {
-	if !tenantID.IsSingle() {
-		return fmt.Errorf("%w: tenant %q", scim.ErrNotFound, tenantID)
-	}
-	return nil
-}
-
 func newGroupStore(a audit.Logger, u *memUserStore) *memGroupStore {
 	return &memGroupStore{groups: map[string]scim.GroupRecord{}, users: u, audit: a}
 }
@@ -381,7 +380,7 @@ func (s *memGroupStore) resolveMembersLocked(members []scim.MemberRef) (userIDs,
 }
 
 func (s *memGroupStore) ValidateMembers(_ context.Context, tenantID tenant.ID, members []scim.MemberRef) error {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -391,7 +390,7 @@ func (s *memGroupStore) ValidateMembers(_ context.Context, tenantID tenant.ID, m
 }
 
 func (s *memGroupStore) Create(ctx context.Context, tenantID tenant.ID, w scim.GroupWrite, _ scim.GroupWriteMeta) (scim.GroupRecord, error) {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return scim.GroupRecord{}, err
 	}
 	s.mu.Lock()
@@ -408,7 +407,7 @@ func (s *memGroupStore) Create(ctx context.Context, tenantID tenant.ID, w scim.G
 }
 
 func (s *memGroupStore) Get(_ context.Context, tenantID tenant.ID, id string) (scim.GroupRecord, error) {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return scim.GroupRecord{}, err
 	}
 	s.mu.Lock()
@@ -421,7 +420,7 @@ func (s *memGroupStore) Get(_ context.Context, tenantID tenant.ID, id string) (s
 }
 
 func (s *memGroupStore) Replace(ctx context.Context, tenantID tenant.ID, id string, w scim.GroupWrite, meta scim.GroupWriteMeta) (scim.GroupRecord, error) {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return scim.GroupRecord{}, err
 	}
 	if w.ActorServiceAccountID == "" {
@@ -446,7 +445,7 @@ func (s *memGroupStore) Replace(ctx context.Context, tenantID tenant.ID, id stri
 }
 
 func (s *memGroupStore) Delete(ctx context.Context, tenantID tenant.ID, id string, meta scim.GroupWriteMeta) error {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -462,7 +461,7 @@ func (s *memGroupStore) Delete(ctx context.Context, tenantID tenant.ID, id strin
 }
 
 func (s *memGroupStore) SavePatch(ctx context.Context, tenantID tenant.ID, id string, w scim.GroupWrite, ops []scim.Operation) (scim.GroupRecord, error) {
-	if err := s.in(tenantID); err != nil {
+	if err := inSingleTenant(tenantID); err != nil {
 		return scim.GroupRecord{}, err
 	}
 	s.mu.Lock()
@@ -484,8 +483,8 @@ func (s *memGroupStore) SavePatch(ctx context.Context, tenantID tenant.ID, id st
 }
 
 func (s *memGroupStore) ListFiltered(ctx context.Context, tenantID tenant.ID, startIndex, count int, filter string) (scim.GroupPage, error) {
-	if err := s.in(tenantID); err != nil {
-		return scim.GroupPage{}, err
+	if !holdsTenant(tenantID) {
+		return scim.GroupPage{Groups: []scim.GroupRecord{}}, nil
 	}
 	want, matchAll, err := parseEqFilter(filter, "displayName")
 	if err != nil {

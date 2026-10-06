@@ -181,10 +181,6 @@ func (g groupSide) ValidateMembers(_ context.Context, t tenant.ID, members []sci
 	}
 	return nil
 }
-func (g groupSide) List(_ context.Context, t tenant.ID, _, _ int) (scim.GroupPage, error) {
-	g.s.note(t)
-	return g.s.groupPage(t.String()), nil
-}
 func (g groupSide) ListFiltered(_ context.Context, t tenant.ID, _, _ int, _ string) (scim.GroupPage, error) {
 	g.s.note(t)
 	return g.s.groupPage(t.String()), nil
@@ -347,16 +343,22 @@ func TestSCIMTenancy_EveryCallCarriesThePrincipalsTenant(t *testing.T) {
 		{http.MethodPost, "/scim/v2/Users", `{"userName":"n@acme.test"}`, rt.UsersCreate},
 		{http.MethodGet, "/scim/v2/Users/u-a", "", rt.UsersGet},
 		{http.MethodPut, "/scim/v2/Users/u-a", `{"userName":"n@acme.test"}`, rt.UsersReplace},
+		{http.MethodPatch, "/scim/v2/Users/u-a",
+			`{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"active","value":false}]}`, rt.UsersPatch},
 		{http.MethodDelete, "/scim/v2/Users/u-a", "", rt.UsersDelete},
 		{http.MethodGet, "/scim/v2/Users", "", rt.UsersList},
 		{http.MethodPost, "/scim/v2/Groups", `{"displayName":"New"}`, rt.GroupsCreate},
 		{http.MethodGet, "/scim/v2/Groups/g-a", "", rt.GroupsGet},
 		{http.MethodPut, "/scim/v2/Groups/g-a", `{"displayName":"New"}`, rt.GroupsReplace},
+		{http.MethodPatch, "/scim/v2/Groups/g-a",
+			`{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"displayName","value":"renamed"}]}`, rt.GroupsPatch},
 		{http.MethodDelete, "/scim/v2/Groups/g-a", "", rt.GroupsDelete},
 		{http.MethodGet, "/scim/v2/Groups", "", rt.GroupsList},
 	}
 	for _, c := range calls {
-		_ = asTenant(c.h, tenantA, c.method, c.path, c.body)
+		if rec := asTenant(c.h, tenantA, c.method, c.path, c.body); rec.Code >= 400 {
+			t.Fatalf("%s %s: status %d (%s) — the call did not reach its store method", c.method, c.path, rec.Code, bodyOf(t, rec))
+		}
 	}
 
 	for _, got := range store.calls {

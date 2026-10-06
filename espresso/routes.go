@@ -1,6 +1,7 @@
 package espresso
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -222,7 +223,15 @@ func TenantFromRoutedContext(r *http.Request) (tenant.ID, bool) {
 // principal's TenantID is a stored fact set by the validator, so "" is
 // the single tenant.
 func TenantFromServiceAccount(r *http.Request) (tenant.ID, bool) {
-	p, ok := GetPrincipal(r.Context())
+	return tenantOfPrincipal(r.Context())
+}
+
+// tenantOfPrincipal is the one place the principal's tenant is read as
+// a tenant.ID: the SCIM store calls and the entitlement resolver both
+// go through it, so they cannot disagree on which tenant a request is
+// in. Nothing without a principal.
+func tenantOfPrincipal(ctx context.Context) (tenant.ID, bool) {
+	p, ok := GetPrincipal(ctx)
 	if !ok {
 		return tenant.ID{}, false
 	}

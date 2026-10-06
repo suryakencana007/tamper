@@ -93,6 +93,7 @@ app owns its paths (see `PHASE4D-BOUNDARY-DECISION.md` §A10).
 surfaces, err := tamperespresso.Routes(provider, tamperespresso.RouteConfig{
 	Auth: tamperespresso.AuthRoutesConfig{
 		MountPrefix: "/api/auth",
+		Tenant:      tamperespresso.FixedTenant(tenant.Single), // every call to Identity names the tenant
 		Cookies:     tamperespresso.CookieConfig{Name: "myapp_refresh"},
 		ProjectUser: projectUser, // renders YOUR user DTO into the response
 	},

@@ -48,6 +48,7 @@ import (
 	"github.com/suryakencana007/tamper/crypto"
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // The two tenants. Opaque, app-defined strings — tamper never parses one.
@@ -98,11 +99,12 @@ func run() error {
 
 // buildHandler wires ONE Provider and mounts ONE auth surface PER TENANT.
 //
-// The Provider — and therefore the identity.Core, the JWT service and the
-// store — is shared. Only the adapter differs: each tenant's routes are
-// backed by a tenantIdentity closed over that tenant's id. That is what
-// makes this pooled rather than N processes, and it is the smallest
-// wiring that puts a real tenant boundary in the request path.
+// The Provider — and therefore the identity.Core, the JWT service, the
+// store and the adapter — is shared. Only the tenant differs: each
+// prefix resolves its own, and the port hands it to the adapter on every
+// call. That is what makes this pooled rather than N processes, and it
+// is the smallest wiring that puts a real tenant boundary in the request
+// path.
 func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamper.Provider, error) {
 	// There is no tenancy switch to turn on. Every identity.Store is
 	// tenant-scoped, so a store that cannot scope by tenant does not
@@ -126,18 +128,25 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 		return nil, nil, err
 	}
 
+	// One adapter for every tenant. The port hands it the tenant on
+	// each call, resolved per prefix below.
+	svc := newPooledIdentity(provider, store)
+
 	r := espresso.Portafilter()
 	for _, tenantID := range tenants {
 		prefix := "/t/" + tenantID + "/auth"
 		surfaces, serr := tamperespresso.Routes(provider, tamperespresso.RouteConfig{
 			Auth: tamperespresso.AuthRoutesConfig{
 				MountPrefix: prefix,
+				// The prefix is the tenant's, so the tenant is fixed for
+				// every request under it. It is never read from the token.
+				Tenant: tamperespresso.FixedTenant(tenant.New(tenantID)),
 				// Per-tenant cookie name: one browser must be able to hold a
 				// session in each tenant without them overwriting each other.
 				Cookies:     tamperespresso.CookieConfig{Name: "mt_" + tenantID + "_refresh"},
 				ProjectUser: projectUser,
 			},
-			Identity: newTenantIdentity(provider, store, tenantID),
+			Identity: svc,
 		})
 		if serr != nil {
 			_ = provider.Close()

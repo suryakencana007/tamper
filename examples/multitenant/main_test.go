@@ -345,11 +345,12 @@ func TestTOTPSecondLegIsTenantBound(t *testing.T) {
 	}
 	defer func() { _ = provider.Close() }()
 
-	// The same constructor buildHandler mounts the routes with.
-	acme := newTenantIdentity(provider, store, tenantAcme)
-	globex := newTenantIdentity(provider, store, tenantGlobex)
+	// The same constructor buildHandler mounts the routes with, called
+	// with the tenant each prefix would resolve.
+	svc := newPooledIdentity(provider, store)
+	acme, globex := tenant.New(tenantAcme), tenant.New(tenantGlobex)
 
-	reg, err := globex.Register(ctx, "bob@globex.example", password)
+	reg, err := svc.Register(ctx, globex, "bob@globex.example", password)
 	if err != nil {
 		t.Fatalf("register into %s: %v", tenantGlobex, err)
 	}
@@ -357,14 +358,14 @@ func TestTOTPSecondLegIsTenantBound(t *testing.T) {
 
 	// 1. Password step done under globex's prefix: the routes mint the
 	//    pending token through globex's adapter.
-	pending, err := globex.IssueTOTPPending(bob.ID)
+	pending, err := svc.IssueTOTPPending(ctx, globex, bob.ID)
 	if err != nil {
 		t.Fatalf("IssueTOTPPending: %v", err)
 	}
 
 	// 2. The token is replayed under ACME's prefix. It must die here,
 	//    at the first thing the route does.
-	if uid, err := acme.VerifyTOTPPending(pending); !errors.Is(err, crypto.ErrInvalidToken) {
+	if uid, err := svc.VerifyTOTPPending(ctx, acme, pending); !errors.Is(err, crypto.ErrInvalidToken) {
 		t.Fatalf("%s accepted a pending token minted under %s: uid=%q err=%v", tenantAcme, tenantGlobex, uid, err)
 	}
 	// A pending token for the single tenant is refused too: it carries
@@ -373,30 +374,30 @@ func TestTOTPSecondLegIsTenantBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueTOTPPending (single): %v", err)
 	}
-	for _, a := range []tenantIdentity{acme, globex} {
-		if uid, err := a.VerifyTOTPPending(unbound); !errors.Is(err, crypto.ErrInvalidToken) {
-			t.Errorf("%s accepted a single-tenant pending token: uid=%q err=%v", a.tenantID, uid, err)
+	for _, tid := range []tenant.ID{acme, globex} {
+		if uid, err := svc.VerifyTOTPPending(ctx, tid, unbound); !errors.Is(err, crypto.ErrInvalidToken) {
+			t.Errorf("%s accepted a single-tenant pending token: uid=%q err=%v", tid, uid, err)
 		}
 	}
 
 	// And if acme's adapter is asked to mint for bob anyway, it reports
 	// a user that does not exist — the same answer as for one that
 	// really does not.
-	_, crossErr := acme.IssueTokensForUser(ctx, bob.ID)
-	_, missErr := acme.IssueTokensForUser(ctx, "no-such-user")
+	_, crossErr := svc.IssueTokensForUser(ctx, acme, bob.ID)
+	_, missErr := svc.IssueTokensForUser(ctx, acme, "no-such-user")
 	if !errors.Is(crossErr, identity.ErrNotFound) || !errors.Is(missErr, identity.ErrNotFound) {
 		t.Fatalf("cross-tenant mint err = %v, missing-user err = %v; want ErrNotFound for both", crossErr, missErr)
 	}
 
 	// 3. The honest path, under globex's prefix.
-	uid, err := globex.VerifyTOTPPending(pending)
+	uid, err := svc.VerifyTOTPPending(ctx, globex, pending)
 	if err != nil {
 		t.Fatalf("%s refused its own pending token: %v", tenantGlobex, err)
 	}
 	if uid != bob.ID {
 		t.Fatalf("pending token resolved to %q, want %q", uid, bob.ID)
 	}
-	res, err := globex.IssueTokensForUser(ctx, uid)
+	res, err := svc.IssueTokensForUser(ctx, globex, uid)
 	if err != nil {
 		t.Fatalf("IssueTokensForUser: %v", err)
 	}
@@ -419,10 +420,10 @@ func TestTOTPSecondLegIsTenantBound(t *testing.T) {
 
 	// So does the refresh session: it rotates under globex and is
 	// refused under acme. With the tid-less mint it rotated nowhere.
-	if _, err := acme.Refresh(ctx, res.Tokens.Refresh); !errors.Is(err, identity.ErrInvalidSession) {
+	if _, err := svc.Refresh(ctx, acme, res.Tokens.Refresh); !errors.Is(err, identity.ErrInvalidSession) {
 		t.Errorf("%s rotated a %s session: err = %v, want ErrInvalidSession", tenantAcme, tenantGlobex, err)
 	}
-	rotated, err := globex.Refresh(ctx, res.Tokens.Refresh)
+	rotated, err := svc.Refresh(ctx, globex, res.Tokens.Refresh)
 	if err != nil {
 		t.Fatalf("the post-TOTP session does not refresh under %s: %v", tenantGlobex, err)
 	}
@@ -504,5 +505,75 @@ func TestTenantGateRefusesBeforeTheAdapter(t *testing.T) {
 	}
 	if code, _ := getMeRaw(t, srv, tenantGlobex, noTID); code != http.StatusUnauthorized {
 		t.Errorf("a token with no tid on the globex route: status %d, want 401", code)
+	}
+}
+
+// The adapter's own fence, with no route and no gate in front: every
+// method keyed by a bare user id or token refuses a user of another
+// tenant with the error a missing user gets. The HTTP tests cannot see
+// this — RequireTenant refuses first — and that is the point: it is
+// what still holds if a route is ever mounted without the gate.
+func TestAdapterRefusesAnotherTenantsUserWithoutTheGate(t *testing.T) {
+	ctx := context.Background()
+	store := newTenantStore()
+	_, provider, err := buildHandler(store, "multitenant-test-secret")
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+	defer func() { _ = provider.Close() }()
+	svc := newPooledIdentity(provider, store)
+	acme, globex := tenant.New(tenantAcme), tenant.New(tenantGlobex)
+
+	reg, err := svc.Register(ctx, globex, "bob@globex.example", password)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	bob := reg.User
+
+	_, missErr := svc.Me(ctx, acme, "no-such-user")
+	for name, call := range map[string]func() error{
+		"Me":                 func() error { _, err := svc.Me(ctx, acme, bob.ID); return err },
+		"IssueTokensForUser": func() error { _, err := svc.IssueTokensForUser(ctx, acme, bob.ID); return err },
+		"VerifyTOTP":         func() error { return svc.VerifyTOTP(ctx, acme, bob.ID, "123456") },
+		"VerifyRecoveryCode": func() error { return svc.VerifyRecoveryCode(ctx, acme, bob.ID, "abcd-efgh") },
+		"EnrollTOTP":         func() error { _, err := svc.EnrollTOTP(ctx, acme, bob.ID); return err },
+		"DisableTOTP":        func() error { return svc.DisableTOTP(ctx, acme, bob.ID, "123456") },
+	} {
+		err := call()
+		if !errors.Is(err, identity.ErrNotFound) {
+			t.Errorf("%s for a globex user asked in acme: err = %v, want ErrNotFound", name, err)
+		}
+		// The same text once the id is taken out: nothing but the id
+		// the caller supplied may differ.
+		got := strings.ReplaceAll(err.Error(), bob.ID, "<id>")
+		want := strings.ReplaceAll(missErr.Error(), "no-such-user", "<id>")
+		if got != want {
+			t.Errorf("%s: a cross-tenant user (%q) reads differently from a missing one (%q)", name, got, want)
+		}
+	}
+	// In its own tenant the same user is found.
+	if u, err := svc.Me(ctx, globex, bob.ID); err != nil || u.ID != bob.ID {
+		t.Errorf("Me in globex: %v, %v", u, err)
+	}
+	// A globex session does not refresh or log out under acme.
+	if _, err := svc.Refresh(ctx, acme, reg.Tokens.Refresh); !errors.Is(err, identity.ErrInvalidSession) {
+		t.Errorf("Refresh of a globex session in acme: err = %v, want ErrInvalidSession", err)
+	}
+	if err := svc.Logout(ctx, acme, reg.Tokens.Refresh); err != nil {
+		t.Errorf("Logout of a globex session in acme: %v, want nil (idempotent)", err)
+	}
+	// A store failure is a store failure, not an invalid session: an
+	// outage must not sign the user out.
+	boom := errors.New("store is down")
+	store.failSessionReads(boom)
+	if _, err := svc.Refresh(ctx, globex, reg.Tokens.Refresh); !errors.Is(err, boom) || errors.Is(err, identity.ErrInvalidSession) {
+		t.Errorf("Refresh during a store failure: err = %v, want the store's error, not ErrInvalidSession", err)
+	}
+	if err := svc.Logout(ctx, globex, reg.Tokens.Refresh); !errors.Is(err, boom) {
+		t.Errorf("Logout during a store failure: err = %v, want the store's error", err)
+	}
+	store.failSessionReads(nil)
+	if _, err := svc.Refresh(ctx, globex, reg.Tokens.Refresh); err != nil {
+		t.Errorf("the globex session was touched by acme's logout: %v", err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	espressofw "github.com/suryakencana007/espresso/v2"
 
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // AuthResult bundles the authenticated user with the minted tokens.
@@ -37,60 +38,58 @@ type TOTPEnrollment struct {
 // the verify form. TOTP-pending session tokens are owned BEHIND this
 // port (mint + verify both) — one owner for the ceremony token.
 type IdentityService interface {
-	Register(ctx context.Context, email, password string) (AuthResult, error)
-	Login(ctx context.Context, email, password string) (AuthResult, error)
-	Me(ctx context.Context, userID string) (*identity.User, error)
-	Refresh(ctx context.Context, refreshToken string) (AuthResult, error)
-	Logout(ctx context.Context, refreshToken string) error
+	// Every method is handed the tenant the request is routed to,
+	// resolved by AuthRoutesConfig.Tenant. The adapter never has to know
+	// it from somewhere else, and cannot leave it out: a user is read,
+	// written or signed in inside that tenant and no other. In a
+	// single-tenant deployment it is tenant.Single on every call.
+	//
+	// Where the adapter reaches a Core method that takes the tenant
+	// (Register, Login, IssueTokensForUser), it passes it through. Where
+	// it reaches one keyed by a bare user id or a bare token (Me,
+	// Refresh, Logout, the TOTP verbs), it checks first that the user, or
+	// the session's user, is stored in that tenant, and answers a
+	// mismatch with identity.ErrNotFound (or ErrInvalidSession for a
+	// token) — the same error a user that does not exist gets. The
+	// examples show the shape.
+	Register(ctx context.Context, tenantID tenant.ID, email, password string) (AuthResult, error)
+	Login(ctx context.Context, tenantID tenant.ID, email, password string) (AuthResult, error)
+	Me(ctx context.Context, tenantID tenant.ID, userID string) (*identity.User, error)
+	Refresh(ctx context.Context, tenantID tenant.ID, refreshToken string) (AuthResult, error)
+	Logout(ctx context.Context, tenantID tenant.ID, refreshToken string) error
 
-	// The next five methods carry the two-phase TOTP login, and NONE of
-	// them is handed a tenant: the routes pass a user id and nothing
-	// else. A single-tenant adapter forwards them as they are. A POOLED
-	// adapter — one instance per tenant, the tenant bound at wiring time
-	// — owes the three obligations noted below, and the port cannot
-	// enforce them: nothing here fails to compile when the tenant is
-	// left out. Left out, the login fails one of two ways. Either the
-	// session it mints carries no tenant and every tenant route refuses
-	// it, or it carries the ROUTED tenant for a user who is stored in
-	// another one.
+	// The next five methods carry the two-phase TOTP login. The tenant
+	// on each is the tenant of the routes the leg ran under, so the
+	// second leg is tied to the tenant the first leg ran in by the port
+	// itself.
 
 	// IssueTOTPPending mints the session token returned after a
-	// password-only Login, for the user that Login just authenticated.
-	//
-	// The port passes no tenant, so the adapter supplies its own:
-	// crypto.JWTService.IssueTOTPPending(userID, tenant). A single-tenant
-	// adapter passes tenant.Single.
-	IssueTOTPPending(userID string) (string, error)
-	// VerifyTOTPPending validates that session token and returns the user
-	// id it was minted for. Any error renders as the generic 401.
-	//
-	// Verify against the adapter's tenant —
-	// crypto.JWTService.VerifyTOTPPending(token, tenant) — so a pending token
-	// minted under another tenant's routes is refused here, before a code
-	// is checked or anything is minted. This is the only place the second
-	// leg can be tied to the tenant the first leg ran in: VerifyTOTP and
-	// VerifyRecoveryCode below are keyed by user id alone.
-	VerifyTOTPPending(sessionToken string) (userID string, err error)
-	VerifyTOTP(ctx context.Context, userID, code string) error
-	VerifyRecoveryCode(ctx context.Context, userID, code string) error
+	// password-only Login, for the user that Login just authenticated:
+	// crypto.JWTService.IssueTOTPPending(userID, tenantID).
+	IssueTOTPPending(ctx context.Context, tenantID tenant.ID, userID string) (string, error)
+	// VerifyTOTPPending validates that session token FOR tenantID and
+	// returns the user id it was minted for:
+	// crypto.JWTService.VerifyTOTPPending(token, tenantID). A pending
+	// token minted under another tenant's routes is refused here, before
+	// a code is checked or anything is minted. Any error renders as the
+	// generic 401.
+	VerifyTOTPPending(ctx context.Context, tenantID tenant.ID, sessionToken string) (userID string, err error)
+	VerifyTOTP(ctx context.Context, tenantID tenant.ID, userID, code string) error
+	VerifyRecoveryCode(ctx context.Context, tenantID tenant.ID, userID, code string) error
 	// IssueTokensForUser mints the session that completes the second
-	// leg, and returns the user alongside it.
-	//
-	// Mint with identity.Core.IssueTokensForUser, the adapter's tenant
-	// (tenant.Single in a single-tenant deployment), the time the second
-	// factor was verified, and the ACR the deployment gives that login
-	// (Core.DefaultACR, or a stronger one). The tenant passed must be the
-	// one the user is STORED in; the Core refuses a mismatch with
-	// identity.ErrNotFound, the same error as a user that does not exist,
-	// and an adapter that loads the user itself must report its own
-	// mismatch the same way.
-	IssueTokensForUser(ctx context.Context, userID string) (AuthResult, error)
-	EnrollTOTP(ctx context.Context, userID string) (TOTPEnrollment, error)
-	DisableTOTP(ctx context.Context, userID, code string) error
+	// leg, and returns the user alongside it: identity.Core.
+	// IssueTokensForUser with tenantID, the time the second factor was
+	// verified, and the ACR the deployment gives that login
+	// (Core.DefaultACR, or a stronger one). The Core refuses a user not
+	// stored in tenantID with identity.ErrNotFound, the same error as a
+	// user that does not exist.
+	IssueTokensForUser(ctx context.Context, tenantID tenant.ID, userID string) (AuthResult, error)
+	EnrollTOTP(ctx context.Context, tenantID tenant.ID, userID string) (TOTPEnrollment, error)
+	DisableTOTP(ctx context.Context, tenantID tenant.ID, userID, code string) error
 	// EnrollTOTPViaSession is the two-phase session-token enrollment:
 	// phase 1 (empty currentCode) returns the enrollment material;
 	// phase 2 returns the minted AuthResult.
-	EnrollTOTPViaSession(ctx context.Context, sessionToken, currentCode string) (*TOTPEnrollment, *AuthResult, error)
+	EnrollTOTPViaSession(ctx context.Context, tenantID tenant.ID, sessionToken, currentCode string) (*TOTPEnrollment, *AuthResult, error)
 }
 
 // CookieConfig carries the app's refresh-cookie branding. The cookie
@@ -112,6 +111,22 @@ type AuthRoutesConfig struct {
 	// MountPrefix is the route prefix ("/api/auth"). The refresh
 	// cookie's Path IS this value. Required, must start with "/".
 	MountPrefix string
+	// Tenant resolves the tenant a request is routed to, from the
+	// request context. Required. Every IdentityService call is made with
+	// its answer. A request on which it resolves nothing is refused with
+	// the 401 RequireTenant and RequireDecision write for a tenant that
+	// did not resolve — the same envelope, so the answer does not tell a
+	// client whether a tenant gate is mounted on the route — and the
+	// port is not reached. Refresh and Logout clear the refresh cookie
+	// on that path as they do on every other refusal, so a client does
+	// not keep replaying it.
+	//
+	// Behind PinTenant or RequireTenant, pass TenantFromContext. A
+	// single-tenant application passes FixedTenant(tenant.Single). The
+	// answer never comes from the token: an authenticated route still
+	// resolves it from where the request was routed, and RequireTenant
+	// in front has already checked the token against that.
+	Tenant func(context.Context) (tenant.ID, bool)
 	// Cookies is the refresh-cookie branding. Name required.
 	Cookies CookieConfig
 	// ProjectUser renders the app's user payload for the AuthRes
@@ -166,6 +181,11 @@ func NewAuthRoutes(svc IdentityService, cfg AuthRoutesConfig) (*AuthRoutes, erro
 	if cfg.ProjectUser == nil {
 		return nil, errors.New("tamper/espresso: ProjectUser hook is required")
 	}
+	if cfg.Tenant == nil {
+		return nil, errors.New("tamper/espresso: AuthRoutesConfig.Tenant is required — " +
+			"auth routes that know no tenant would sign users into none; a single-tenant " +
+			"application passes FixedTenant(tenant.Single)")
+	}
 	if cfg.ValidationMessage == nil {
 		cfg.ValidationMessage = defaultValidationMessage
 	}
@@ -173,6 +193,38 @@ func NewAuthRoutes(svc IdentityService, cfg AuthRoutesConfig) (*AuthRoutes, erro
 		cfg.OnAuthenticated = SetUserID
 	}
 	return &AuthRoutes{svc: svc, cfg: cfg}, nil
+}
+
+// FixedTenant returns a resolver that reports one tenant for every
+// request: the single-tenant application's AuthRoutesConfig.Tenant, or
+// a surface mounted for exactly one tenant.
+//
+// Panics on an unset id. A surface fixed to no tenant would refuse
+// every request, and that is a tenancy misconfiguration, which fails
+// where the surface is built and not as traffic that looks ordinary —
+// the posture RequireTenant takes on a nil resolver. A single-tenant
+// application passes tenant.Single, which is set.
+func FixedTenant(id tenant.ID) func(context.Context) (tenant.ID, bool) {
+	if !id.Valid() {
+		panic("tamper/espresso: FixedTenant requires a set tenant.ID — " +
+			"a surface fixed to no tenant would refuse every request; the single tenant is tenant.Single")
+	}
+	return func(context.Context) (tenant.ID, bool) { return id, true }
+}
+
+// errNoTenant is the answer on a route whose tenant did not resolve:
+// the envelope writeUnauthenticated gives a token that does not fit
+// its tenant, so this surface and the tenant gates answer the missing
+// tenant alike.
+var errNoTenant = espressofw.ErrUnauthorized("invalid token").WithCode("UNAUTHENTICATED")
+
+// tenant resolves the request's tenant or returns the 404.
+func (a *AuthRoutes) tenant(ctx context.Context) (tenant.ID, error) {
+	id, ok := a.cfg.Tenant(ctx)
+	if !ok || !id.Valid() {
+		return tenant.ID{}, errNoTenant
+	}
+	return id, nil
 }
 
 // refreshCookieSlotName is the context slot the mounted refresh /
@@ -231,7 +283,11 @@ func (a *AuthRoutes) authRes(ctx context.Context, status int, res AuthResult) es
 // Register handles POST {prefix}/register: 201 + refresh cookie, 409
 // EMAIL_TAKEN on duplicates, 400 VALIDATION_ERROR on bad input.
 func (a *AuthRoutes) Register(ctx context.Context, req *espressofw.JSON[RegisterReq]) (espressofw.JSON[AuthRes], error) {
-	res, err := a.svc.Register(ctx, req.Data.Email, req.Data.Password)
+	tid, err := a.tenant(ctx)
+	if err != nil {
+		return espressofw.JSON[AuthRes]{}, err
+	}
+	res, err := a.svc.Register(ctx, tid, req.Data.Email, req.Data.Password)
 	if err != nil {
 		return espressofw.JSON[AuthRes]{}, mapAuthWireError(err, a.cfg.ValidationMessage)
 	}
@@ -242,10 +298,14 @@ func (a *AuthRoutes) Register(ctx context.Context, req *espressofw.JSON[Register
 // response is 200 with totp_required + a session token and NO refresh
 // cookie — the cookie is minted only after the second factor lands.
 func (a *AuthRoutes) Login(ctx context.Context, req *espressofw.JSON[LoginReq]) (espressofw.JSON[AuthRes], error) {
-	res, err := a.svc.Login(ctx, req.Data.Email, req.Data.Password)
+	tid, err := a.tenant(ctx)
+	if err != nil {
+		return espressofw.JSON[AuthRes]{}, err
+	}
+	res, err := a.svc.Login(ctx, tid, req.Data.Email, req.Data.Password)
 	if err != nil {
 		if errors.Is(err, identity.ErrTOTPRequired) && res.User != nil {
-			sessionTok, mintErr := a.svc.IssueTOTPPending(res.User.ID)
+			sessionTok, mintErr := a.svc.IssueTOTPPending(ctx, tid, res.User.ID)
 			if mintErr != nil {
 				return espressofw.JSON[AuthRes]{}, espressofw.ErrInternal("internal error").Wrap(mintErr)
 			}
@@ -267,8 +327,12 @@ func (a *AuthRoutes) Login(ctx context.Context, req *espressofw.JSON[LoginReq]) 
 // Me handles GET {prefix}/me behind RequireAuth. A valid token whose
 // user row is gone reads as unauthenticated.
 func (a *AuthRoutes) Me(ctx context.Context) (espressofw.JSON[json.RawMessage], error) {
+	tid, err := a.tenant(ctx)
+	if err != nil {
+		return espressofw.JSON[json.RawMessage]{}, err
+	}
 	userID := MustGetUserID(ctx)
-	user, err := a.svc.Me(ctx, userID)
+	user, err := a.svc.Me(ctx, tid, userID)
 	if err != nil {
 		if errors.Is(err, identity.ErrNotFound) {
 			return espressofw.JSON[json.RawMessage]{},
@@ -287,21 +351,35 @@ func (a *AuthRoutes) Me(ctx context.Context) (espressofw.JSON[json.RawMessage], 
 // recovery code; both failure paths surface INVALID_TOTP so the UX
 // stays uniform.
 func (a *AuthRoutes) VerifyTOTP(ctx context.Context, req *espressofw.JSON[TOTPVerifyReq]) (espressofw.JSON[AuthRes], error) {
-	userID, err := a.svc.VerifyTOTPPending(req.Data.SessionToken)
+	tid, err := a.tenant(ctx)
+	if err != nil {
+		return espressofw.JSON[AuthRes]{}, err
+	}
+	userID, err := a.svc.VerifyTOTPPending(ctx, tid, req.Data.SessionToken)
 	if err != nil {
 		return espressofw.JSON[AuthRes]{},
 			espressofw.ErrUnauthorized("session expired").WithCode("UNAUTHENTICATED")
 	}
+	// The adapter answers a user who is not stored in this tenant with
+	// ErrNotFound, the same error as a user that is gone: there is no
+	// session to complete, which is what a dead pending token is told.
+	// The generic mapping would render it as a 500.
+	notHere := func(err error) error {
+		if errors.Is(err, identity.ErrNotFound) {
+			return espressofw.ErrUnauthorized("session expired").WithCode("UNAUTHENTICATED")
+		}
+		return mapTOTPWireError(err, a.cfg.ValidationMessage)
+	}
 	if len(req.Data.Code) == 6 {
-		if err := a.svc.VerifyTOTP(ctx, userID, req.Data.Code); err != nil {
-			return espressofw.JSON[AuthRes]{}, mapTOTPWireError(err, a.cfg.ValidationMessage)
+		if err := a.svc.VerifyTOTP(ctx, tid, userID, req.Data.Code); err != nil {
+			return espressofw.JSON[AuthRes]{}, notHere(err)
 		}
 	} else {
-		if err := a.svc.VerifyRecoveryCode(ctx, userID, req.Data.Code); err != nil {
-			return espressofw.JSON[AuthRes]{}, mapTOTPWireError(err, a.cfg.ValidationMessage)
+		if err := a.svc.VerifyRecoveryCode(ctx, tid, userID, req.Data.Code); err != nil {
+			return espressofw.JSON[AuthRes]{}, notHere(err)
 		}
 	}
-	res, err := a.svc.IssueTokensForUser(ctx, userID)
+	res, err := a.svc.IssueTokensForUser(ctx, tid, userID)
 	if err != nil {
 		// The mint says "no such user" for a user that is gone AND for a
 		// user stored in another tenant; it is one error on purpose, so
@@ -322,9 +400,18 @@ func (a *AuthRoutes) VerifyTOTP(ctx context.Context, req *espressofw.JSON[TOTPVe
 
 // EnrollTOTP handles POST {prefix}/totp/enroll behind RequireAuth.
 func (a *AuthRoutes) EnrollTOTP(ctx context.Context) (espressofw.JSON[TOTPEnrollRes], error) {
-	userID := MustGetUserID(ctx)
-	enr, err := a.svc.EnrollTOTP(ctx, userID)
+	tid, err := a.tenant(ctx)
 	if err != nil {
+		return espressofw.JSON[TOTPEnrollRes]{}, err
+	}
+	userID := MustGetUserID(ctx)
+	enr, err := a.svc.EnrollTOTP(ctx, tid, userID)
+	if err != nil {
+		// A user not stored in this tenant reads as a user that is gone,
+		// as Me says it: the token does not authenticate anyone here.
+		if errors.Is(err, identity.ErrNotFound) {
+			return espressofw.JSON[TOTPEnrollRes]{}, errNoTenant
+		}
 		return espressofw.JSON[TOTPEnrollRes]{}, mapAuthWireError(err, a.cfg.ValidationMessage)
 	}
 	return espressofw.JSON[TOTPEnrollRes]{
@@ -343,8 +430,15 @@ func (a *AuthRoutes) EnrollTOTP(ctx context.Context) (espressofw.JSON[TOTPEnroll
 // requires a current code (a hijacked session cannot silently drop
 // 2FA).
 func (a *AuthRoutes) DisableTOTP(ctx context.Context, req *espressofw.JSON[TOTPDisableReq]) (espressofw.Status, error) {
+	tid, err := a.tenant(ctx)
+	if err != nil {
+		return 0, err
+	}
 	userID := MustGetUserID(ctx)
-	if err := a.svc.DisableTOTP(ctx, userID, req.Data.Code); err != nil {
+	if err := a.svc.DisableTOTP(ctx, tid, userID, req.Data.Code); err != nil {
+		if errors.Is(err, identity.ErrNotFound) {
+			return 0, errNoTenant
+		}
 		return 0, mapTOTPWireError(err, a.cfg.ValidationMessage)
 	}
 	return espressofw.Status(http.StatusNoContent), nil
@@ -355,7 +449,11 @@ func (a *AuthRoutes) DisableTOTP(ctx context.Context, req *espressofw.JSON[TOTPD
 // response shape (token + user + refresh cookie) and fires the app's
 // OnTOTPEnrolledViaSession hook before the response ships.
 func (a *AuthRoutes) EnrollSession(ctx context.Context, req *espressofw.JSON[TOTPEnrollSessionReq]) (espressofw.JSON[TOTPEnrollSessionRes], error) {
-	phase1, phase2, err := a.svc.EnrollTOTPViaSession(ctx, req.Data.SessionToken, req.Data.CurrentCode)
+	tid, err := a.tenant(ctx)
+	if err != nil {
+		return espressofw.JSON[TOTPEnrollSessionRes]{}, err
+	}
+	phase1, phase2, err := a.svc.EnrollTOTPViaSession(ctx, tid, req.Data.SessionToken, req.Data.CurrentCode)
 	if err != nil {
 		switch {
 		case errors.Is(err, identity.ErrTOTPAlreadyEnrolled):
@@ -402,12 +500,23 @@ func (a *AuthRoutes) EnrollSession(ctx context.Context, req *espressofw.JSON[TOT
 // 401 with a clear-cookie so the browser stops replaying the stale
 // cookie (the app's fetcher branches on the 401 status alone).
 func (a *AuthRoutes) Refresh(ctx context.Context) (espressofw.JSON[AuthRes], error) {
+	tid, err := a.tenant(ctx)
+	if err != nil {
+		// The cookies-on-error shape, as for an inactive user: the typed
+		// error path cannot carry Set-Cookie, and a cookie that is not
+		// cleared is replayed by the client on every refresh.
+		return espressofw.JSON[AuthRes]{
+			StatusCode: http.StatusUnauthorized,
+			Cookies:    []*http.Cookie{a.clearRefreshCookie()},
+			Data:       AuthRes{User: a.cfg.ProjectUser(ctx, nil)},
+		}, nil
+	}
 	tok, ok := NamedCookieValue(ctx, refreshCookieSlotName)
 	if !ok {
 		return espressofw.JSON[AuthRes]{},
 			espressofw.ErrUnauthorized("refresh token missing").WithCode("UNAUTHENTICATED")
 	}
-	res, err := a.svc.Refresh(ctx, tok)
+	res, err := a.svc.Refresh(ctx, tid, tok)
 	if err != nil {
 		if errors.Is(err, identity.ErrUserInactive) {
 			return espressofw.JSON[AuthRes]{
@@ -429,8 +538,13 @@ func (a *AuthRoutes) Refresh(ctx context.Context) (espressofw.JSON[AuthRes], err
 // Logout handles POST {prefix}/logout: best-effort revocation +
 // unconditional clear-cookie, idempotent 204.
 func (a *AuthRoutes) Logout(ctx context.Context) (espressofw.JSON[struct{}], error) {
-	if tok, ok := NamedCookieValue(ctx, refreshCookieSlotName); ok {
-		_ = a.svc.Logout(ctx, tok)
+	// Idempotent and unconditional: the cookie is cleared whatever else
+	// is true. With no tenant there is nothing to revoke, and the port
+	// is not asked.
+	if tid, err := a.tenant(ctx); err == nil {
+		if tok, ok := NamedCookieValue(ctx, refreshCookieSlotName); ok {
+			_ = a.svc.Logout(ctx, tid, tok)
+		}
 	}
 	return espressofw.JSON[struct{}]{
 		StatusCode: http.StatusNoContent,

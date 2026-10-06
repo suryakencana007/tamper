@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	tamper "github.com/suryakencana007/tamper"
@@ -12,56 +13,94 @@ import (
 	"github.com/suryakencana007/tamper/tenant"
 )
 
-// tenantIdentity adapts *identity.Core to the transport's
-// IdentityService port FOR ONE TENANT. One instance per tenant is
-// mounted under that tenant's route prefix, so the tenant is bound at
-// wiring time and every request under that prefix is scoped by
-// construction.
-//
-// IdentityService's methods take (email, password) with no tenant, so
-// the tenant rides on the ADAPTER rather than on the call. Closing over
-// it is also the safer shape: there is no code path here that can
-// forget to pass a tenant, because there is no path that passes one.
+// pooledIdentity adapts *identity.Core to the transport's
+// IdentityService port for EVERY tenant at once. One instance serves all
+// the prefixes; the port hands each call the tenant the request was
+// routed to (AuthRoutesConfig.Tenant), so there is no code path here
+// that can forget a tenant, because there is no call that lacks one.
 //
 // The adapter is the second fence, not the first. On an authenticated
 // route the first is espresso.RequireTenant, mounted in main.go, which
-// refuses a token whose `tid` is not this tenant before any method here
-// runs.
+// refuses a token whose `tid` is not the routed tenant before any
+// method here runs.
 //
-// It is deliberately NOT read from the request context. tamper's
-// tenant.WithTenant documents why: an implicit tenant is a cross-tenant
-// leak waiting for one missing middleware call, and it fails OPEN.
-type tenantIdentity struct {
+// The Core methods that take a tenant (Register, Login,
+// IssueTokensForUser) get it passed through, and the Core checks it
+// against the stored row itself. The ones keyed by a bare user id or a
+// bare token (Me, Refresh, Logout, the TOTP verbs) are preceded by a
+// check here that the user, or the session's user, is stored in that
+// tenant. A mismatch is answered with the error a missing user gets:
+// a deny and a miss must be indistinguishable.
+type pooledIdentity struct {
 	core  *identity.Core
 	store *tenantStore
 	// jwt mints and verifies the totp-pending token. It is the SAME
 	// service the Core signs access tokens with (the Provider's), so the
 	// ceremony token and the session it leads to share one key.
-	jwt      *crypto.JWTService
-	tenantID string
+	jwt *crypto.JWTService
 }
 
-var _ tamperespresso.IdentityService = tenantIdentity{}
+var _ tamperespresso.IdentityService = pooledIdentity{}
 
-// newTenantIdentity binds one tenant's adapter to the shared Provider.
-// A constructor rather than a struct literal at the mount site so that
+// newPooledIdentity binds the adapter to the shared Provider. A
+// constructor rather than a struct literal at the mount site so that
 // the wiring the routes get is the wiring the tests exercise: the JWT
 // service is only reached on the TOTP leg, and a literal that forgot it
 // would pass every other test and fail on the first 2FA login.
-func newTenantIdentity(p *tamper.Provider, store *tenantStore, tenantID string) tenantIdentity {
-	return tenantIdentity{core: p.Identity, store: store, jwt: p.JWT, tenantID: tenantID}
+func newPooledIdentity(p *tamper.Provider, store *tenantStore) pooledIdentity {
+	return pooledIdentity{core: p.Identity, store: store, jwt: p.JWT}
 }
 
-func (t tenantIdentity) Register(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
-	u, tok, err := t.core.Register(ctx, tenant.New(t.tenantID), email, password)
+// userIn loads a user and refuses one that is not stored in tenantID
+// with the same error a missing user gets.
+func (p pooledIdentity) userIn(ctx context.Context, tenantID tenant.ID, userID string) (identity.User, error) {
+	u, err := p.store.UserByID(ctx, userID)
+	if err != nil {
+		return identity.User{}, err
+	}
+	if tenant.FromStored(u.TenantID) != tenantID {
+		// Spelled exactly as the store spells a missing user, so the two
+		// cannot be told apart by their text either.
+		return identity.User{}, fmt.Errorf("%w: user %s", identity.ErrNotFound, userID)
+	}
+	return u, nil
+}
+
+// sessionIn refuses a refresh token that does not name a session of
+// tenantID, with ErrInvalidSession. It uses only public API — hash the
+// presented token, read the row, compare — and reads only; the Core
+// does the rotation or the revoke.
+func (p pooledIdentity) sessionIn(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
+	hash, err := crypto.HashRefreshToken(refreshToken)
+	if err != nil {
+		return identity.ErrInvalidSession
+	}
+	s, err := p.store.RefreshSessionByHash(ctx, hash)
+	if err != nil {
+		// A missing row is an invalid session. Any other error is the
+		// store's, and it is NOT an invalid session: a transient failure
+		// must not sign the user out.
+		if errors.Is(err, identity.ErrNotFound) {
+			return identity.ErrInvalidSession
+		}
+		return err
+	}
+	if tenant.FromStored(s.TenantID) != tenantID {
+		return identity.ErrInvalidSession
+	}
+	return nil
+}
+
+func (p pooledIdentity) Register(ctx context.Context, tenantID tenant.ID, email, password string) (tamperespresso.AuthResult, error) {
+	u, tok, err := p.core.Register(ctx, tenantID, email, password)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
 	return tamperespresso.AuthResult{User: &u, Tokens: tok}, nil
 }
 
-func (t tenantIdentity) Login(ctx context.Context, email, password string) (tamperespresso.AuthResult, error) {
-	u, tok, err := t.core.Login(ctx, tenant.New(t.tenantID), email, password)
+func (p pooledIdentity) Login(ctx context.Context, tenantID tenant.ID, email, password string) (tamperespresso.AuthResult, error) {
+	u, tok, err := p.core.Login(ctx, tenantID, email, password)
 	if err != nil {
 		if errors.Is(err, identity.ErrTOTPRequired) {
 			return tamperespresso.AuthResult{User: &u}, err
@@ -72,117 +111,115 @@ func (t tenantIdentity) Login(ctx context.Context, email, password string) (tamp
 }
 
 // Me checks the user's STORED tenant, although RequireTenant has already
-// checked the token's `tid` on the route.
-//
-// The two checks read different facts. The gate compares the token with
-// the route. This compares the user row with the adapter's tenant, and
-// it is what still holds if a route is ever mounted without the gate,
-// or if a token and its user's row have come to disagree.
-//
-// The mismatch returns ErrNotFound, never a permission error. A deny and
-// a miss must be indistinguishable, or the response tells the caller
-// that a user it may not see exists.
-func (t tenantIdentity) Me(ctx context.Context, userID string) (*identity.User, error) {
-	u, err := t.store.UserByID(ctx, userID)
+// checked the token's `tid` on the route. The two checks read different
+// facts: the gate compares the token with the route; this compares the
+// user row with the routed tenant, and it is what still holds if a
+// route is ever mounted without the gate.
+func (p pooledIdentity) Me(ctx context.Context, tenantID tenant.ID, userID string) (*identity.User, error) {
+	u, err := p.userIn(ctx, tenantID, userID)
 	if err != nil {
 		return nil, err
-	}
-	if u.TenantID != t.tenantID {
-		return nil, identity.ErrNotFound
 	}
 	return &u, nil
 }
 
 // Refresh checks the session's tenant BEFORE rotating. Core.Refresh
 // takes no tenant (rotation is keyed by the token hash), so without this
-// an acme refresh token would rotate happily on a globex route. The
-// check uses only public API — hash the presented token, read the row,
-// compare — and it happens before any state changes, so a cross-tenant
-// attempt neither rotates nor revokes.
-func (t tenantIdentity) Refresh(ctx context.Context, refreshToken string) (tamperespresso.AuthResult, error) {
-	if hash, err := crypto.HashRefreshToken(refreshToken); err == nil {
-		if s, err := t.store.RefreshSessionByHash(ctx, hash); err == nil && s.TenantID != t.tenantID {
-			// Collapsed onto the ordinary invalid-session rejection: a
-			// wrong-tenant token and an unknown one look the same.
-			return tamperespresso.AuthResult{}, identity.ErrInvalidSession
-		}
+// an acme refresh token would rotate happily on a globex route. A
+// wrong-tenant token and an unknown one look the same.
+func (p pooledIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refreshToken string) (tamperespresso.AuthResult, error) {
+	if err := p.sessionIn(ctx, tenantID, refreshToken); err != nil {
+		return tamperespresso.AuthResult{}, err
 	}
-	u, tok, err := t.core.Refresh(ctx, refreshToken)
+	u, tok, err := p.core.Refresh(ctx, refreshToken)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
 	return tamperespresso.AuthResult{User: &u, Tokens: tok}, nil
 }
 
-func (t tenantIdentity) Logout(ctx context.Context, refreshToken string) error {
-	return t.core.Logout(ctx, refreshToken)
+// Logout is idempotent: a token of another tenant is treated like a
+// stale one, and nothing happens.
+func (p pooledIdentity) Logout(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
+	if err := p.sessionIn(ctx, tenantID, refreshToken); err != nil {
+		if errors.Is(err, identity.ErrInvalidSession) {
+			return nil
+		}
+		return err
+	}
+	return p.core.Logout(ctx, refreshToken)
 }
 
-// IssueTokensForUser is the mint at the end of the TOTP second leg, and
-// the port hands it nothing but a user id. The tenant therefore comes
-// from the adapter, and it is checked against the user's STORED row
-// twice over — here, and again inside Core.IssueTokensForUser.
-//
-// The comparison below stays even though the Core makes the same one.
-// The row is loaded here regardless — the port returns the user — and
-// an adapter that leans on a check it cannot see is one refactor away
-// from having none.
-func (t tenantIdentity) IssueTokensForUser(ctx context.Context, userID string) (tamperespresso.AuthResult, error) {
-	u, err := t.store.UserByID(ctx, userID)
+// IssueTokensForUser is the mint at the end of the TOTP second leg. The
+// tenant is checked against the user's STORED row twice over — here,
+// and again inside Core.IssueTokensForUser. The comparison here stays
+// even though the Core makes the same one: the row is loaded here
+// regardless, the port returns the user, and an adapter that leans on a
+// check it cannot see is one refactor away from having none.
+func (p pooledIdentity) IssueTokensForUser(ctx context.Context, tenantID tenant.ID, userID string) (tamperespresso.AuthResult, error) {
+	u, err := p.userIn(ctx, tenantID, userID)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
-	}
-	if u.TenantID != t.tenantID {
-		return tamperespresso.AuthResult{}, identity.ErrNotFound
 	}
 	// The user cleared a password and a code just now: auth_time is now,
 	// and the ACR is the one the Core stamps on a password login.
-	tok, err := t.core.IssueTokensForUser(ctx, userID, tenant.New(t.tenantID), time.Now().Unix(), t.core.DefaultACR())
+	tok, err := p.core.IssueTokensForUser(ctx, userID, tenantID, time.Now().Unix(), p.core.DefaultACR())
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
 	return tamperespresso.AuthResult{User: &u, Tokens: tok}, nil
 }
 
-func (t tenantIdentity) VerifyTOTP(ctx context.Context, userID, code string) error {
-	return t.core.VerifyTOTP(ctx, userID, code)
+func (p pooledIdentity) VerifyTOTP(ctx context.Context, tenantID tenant.ID, userID, code string) error {
+	if _, err := p.userIn(ctx, tenantID, userID); err != nil {
+		return err
+	}
+	return p.core.VerifyTOTP(ctx, userID, code)
 }
 
-func (t tenantIdentity) VerifyRecoveryCode(ctx context.Context, userID, code string) error {
-	return t.core.VerifyRecoveryCode(ctx, userID, code)
+func (p pooledIdentity) VerifyRecoveryCode(ctx context.Context, tenantID tenant.ID, userID, code string) error {
+	if _, err := p.userIn(ctx, tenantID, userID); err != nil {
+		return err
+	}
+	return p.core.VerifyRecoveryCode(ctx, userID, code)
 }
 
-func (t tenantIdentity) EnrollTOTP(ctx context.Context, userID string) (tamperespresso.TOTPEnrollment, error) {
-	e, err := t.core.EnrollTOTP(ctx, userID)
+func (p pooledIdentity) EnrollTOTP(ctx context.Context, tenantID tenant.ID, userID string) (tamperespresso.TOTPEnrollment, error) {
+	if _, err := p.userIn(ctx, tenantID, userID); err != nil {
+		return tamperespresso.TOTPEnrollment{}, err
+	}
+	e, err := p.core.EnrollTOTP(ctx, userID)
 	if err != nil {
 		return tamperespresso.TOTPEnrollment{}, err
 	}
 	return tamperespresso.TOTPEnrollment{OTPAuthURI: e.OTPAuthURI, RecoveryCodes: e.RecoveryCodes}, nil
 }
 
-func (t tenantIdentity) DisableTOTP(ctx context.Context, userID, code string) error {
-	return t.core.DisableTOTP(ctx, userID, code)
+func (p pooledIdentity) DisableTOTP(ctx context.Context, tenantID tenant.ID, userID, code string) error {
+	if _, err := p.userIn(ctx, tenantID, userID); err != nil {
+		return err
+	}
+	return p.core.DisableTOTP(ctx, userID, code)
 }
 
-// IssueTOTPPending binds the pending token to THIS tenant. The routes
-// call it straight after a Login that already ran in this tenant, so the
-// user id it is handed belongs here; the `tid` claim records that fact
-// in the one credential the second leg will present.
-func (t tenantIdentity) IssueTOTPPending(userID string) (string, error) {
-	return t.jwt.IssueTOTPPending(userID, tenant.New(t.tenantID))
+// IssueTOTPPending binds the pending token to the tenant the password
+// step ran in. The routes call it straight after a Login in that
+// tenant, and the `tid` claim records the fact in the one credential
+// the second leg will present.
+func (p pooledIdentity) IssueTOTPPending(_ context.Context, tenantID tenant.ID, userID string) (string, error) {
+	return p.jwt.IssueTOTPPending(userID, tenantID)
 }
 
 // VerifyTOTPPending is where a pending token minted under another
 // tenant's prefix is refused — before any code is checked and before
-// anything is minted. The port hands this method no tenant, so the
-// adapter names its own: the token must have been minted for exactly
-// this tenant.
-func (t tenantIdentity) VerifyTOTPPending(sessionToken string) (string, error) {
-	return t.jwt.VerifyTOTPPending(sessionToken, tenant.New(t.tenantID))
+// anything is minted. The token must have been minted for exactly the
+// routed tenant.
+func (p pooledIdentity) VerifyTOTPPending(_ context.Context, tenantID tenant.ID, sessionToken string) (string, error) {
+	return p.jwt.VerifyTOTPPending(sessionToken, tenantID)
 }
 
 var errNoSessionTOTP = errors.New("multitenant: session-token TOTP enrollment is app policy — not implemented in this example")
 
-func (t tenantIdentity) EnrollTOTPViaSession(context.Context, string, string) (*tamperespresso.TOTPEnrollment, *tamperespresso.AuthResult, error) {
+func (p pooledIdentity) EnrollTOTPViaSession(context.Context, tenant.ID, string, string) (*tamperespresso.TOTPEnrollment, *tamperespresso.AuthResult, error) {
 	return nil, nil, errNoSessionTOTP
 }

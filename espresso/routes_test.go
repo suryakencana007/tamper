@@ -14,6 +14,7 @@ import (
 	"github.com/suryakencana007/tamper/oidc"
 	"github.com/suryakencana007/tamper/saml"
 	"github.com/suryakencana007/tamper/scim"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // The route surfaces only HOLD these ports — Routes never calls a method — so
@@ -47,6 +48,7 @@ func newProvider(t *testing.T, withOIDC, withSAML bool) *tamper.Provider {
 func authCfg() espresso.AuthRoutesConfig {
 	return espresso.AuthRoutesConfig{
 		MountPrefix: "/api/auth",
+		Tenant:      espresso.FixedTenant(tenant.Single),
 		Cookies:     espresso.CookieConfig{Name: "x_refresh"},
 		ProjectUser: func(context.Context, *identity.User) json.RawMessage { return nil },
 	}
@@ -221,7 +223,7 @@ func TestRoutes_Errors(t *testing.T) {
 			name: "invalid auth config (no ProjectUser)",
 			tp:   newProvider(t, false, false),
 			cfg: espresso.RouteConfig{Identity: stubIdentity{}, Auth: espresso.AuthRoutesConfig{
-				MountPrefix: "/api/auth", Cookies: espresso.CookieConfig{Name: "x_refresh"},
+				MountPrefix: "/api/auth", Tenant: espresso.FixedTenant(tenant.Single), Cookies: espresso.CookieConfig{Name: "x_refresh"},
 			}},
 		},
 	}

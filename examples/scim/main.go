@@ -32,6 +32,7 @@ import (
 	"github.com/suryakencana007/tamper/crypto"
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 func main() {
@@ -105,6 +106,7 @@ func buildHandler(auditDBPath, jwtSecret, saToken string) (*espresso.Router, *ta
 	//    valid Auth config (ProjectUser is required).
 	surfaces, err := tamperespresso.Routes(provider, tamperespresso.RouteConfig{
 		Auth: tamperespresso.AuthRoutesConfig{
+			Tenant:      tamperespresso.FixedTenant(tenant.Single),
 			MountPrefix: "/api/auth",
 			Cookies:     tamperespresso.CookieConfig{Name: "scim_refresh"},
 			ProjectUser: projectUser,

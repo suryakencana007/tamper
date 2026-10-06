@@ -44,6 +44,10 @@ type tenantStore struct {
 	// (identity.MembershipStore). A real app keeps this in its own table,
 	// written by whatever grants a platform admin access to a customer.
 	memberships map[string]map[tenant.ID]bool
+
+	// sessionReadErr, when set, fails every RefreshSessionByHash (test
+	// support: an outage must read as an outage, not as a bad session).
+	sessionReadErr error
 }
 
 var (
@@ -171,6 +175,9 @@ func (s *tenantStore) CreateRefreshSession(_ context.Context, x identity.Refresh
 func (s *tenantStore) RefreshSessionByHash(_ context.Context, h string) (identity.RefreshSession, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.sessionReadErr != nil {
+		return identity.RefreshSession{}, s.sessionReadErr
+	}
 	id, ok := s.byHash[h]
 	if !ok {
 		return identity.RefreshSession{}, fmt.Errorf("%w: session", identity.ErrNotFound)
@@ -364,4 +371,12 @@ func (s *tenantStore) MembershipsFor(_ context.Context, userID string) ([]tenant
 		out = append(out, id)
 	}
 	return out, nil
+}
+
+// failSessionReads makes every session read fail with err, or nil to
+// stop (test support).
+func (s *tenantStore) failSessionReads(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionReadErr = err
 }

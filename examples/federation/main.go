@@ -135,6 +135,7 @@ func buildHandler(store identity.Store, jwtSecret, idpIssuer string, appBaseURL 
 	surfaces, err := tamperespresso.Routes(provider, tamperespresso.RouteConfig{
 		Auth: tamperespresso.AuthRoutesConfig{
 			MountPrefix: "/api/auth",
+			Tenant:      tamperespresso.FixedTenant(tenant.Single),
 			Cookies:     tamperespresso.CookieConfig{Name: "federation_refresh"},
 			ProjectUser: projectUser,
 		},

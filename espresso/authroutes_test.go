@@ -11,6 +11,7 @@ import (
 	espressofw "github.com/suryakencana007/espresso/v2"
 
 	"github.com/suryakencana007/tamper/identity"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // fakeIdentity scripts the port surface per test.
@@ -22,17 +23,17 @@ type fakeIdentity struct {
 	pending string
 }
 
-func (f *fakeIdentity) Login(_ context.Context, email, password string) (AuthResult, error) {
+func (f *fakeIdentity) Login(_ context.Context, _ tenant.ID, email, password string) (AuthResult, error) {
 	return f.login(email, password)
 }
-func (f *fakeIdentity) IssueTOTPPending(userID string) (string, error) {
+func (f *fakeIdentity) IssueTOTPPending(_ context.Context, _ tenant.ID, userID string) (string, error) {
 	f.pending = userID
 	return "session-tok-" + userID, nil
 }
-func (f *fakeIdentity) Refresh(_ context.Context, tok string) (AuthResult, error) {
+func (f *fakeIdentity) Refresh(_ context.Context, _ tenant.ID, tok string) (AuthResult, error) {
 	return f.refresh(tok)
 }
-func (f *fakeIdentity) Logout(_ context.Context, tok string) error {
+func (f *fakeIdentity) Logout(_ context.Context, _ tenant.ID, tok string) error {
 	f.logout = append(f.logout, tok)
 	return nil
 }
@@ -41,6 +42,7 @@ func testRoutes(t *testing.T, svc IdentityService) *AuthRoutes {
 	t.Helper()
 	a, err := NewAuthRoutes(svc, AuthRoutesConfig{
 		MountPrefix: "/api/auth",
+		Tenant:      FixedTenant(tenant.Single),
 		Cookies:     CookieConfig{Name: "app_refresh", Secure: true, MaxAgeSeconds: 3600},
 		ProjectUser: func(_ context.Context, u *identity.User) json.RawMessage {
 			if u == nil {
@@ -59,8 +61,8 @@ func testRoutes(t *testing.T, svc IdentityService) *AuthRoutes {
 func TestAuthRoutes_ConfigValidation(t *testing.T) {
 	svc := &fakeIdentity{}
 	for name, cfg := range map[string]AuthRoutesConfig{
-		"bad prefix":   {MountPrefix: "api/auth", Cookies: CookieConfig{Name: "c"}, ProjectUser: func(context.Context, *identity.User) json.RawMessage { return nil }},
-		"slash suffix": {MountPrefix: "/api/auth/", Cookies: CookieConfig{Name: "c"}, ProjectUser: func(context.Context, *identity.User) json.RawMessage { return nil }},
+		"bad prefix":   {MountPrefix: "api/auth", Cookies: CookieConfig{Name: "c"}, Tenant: FixedTenant(tenant.Single), ProjectUser: func(context.Context, *identity.User) json.RawMessage { return nil }},
+		"slash suffix": {MountPrefix: "/api/auth/", Cookies: CookieConfig{Name: "c"}, Tenant: FixedTenant(tenant.Single), ProjectUser: func(context.Context, *identity.User) json.RawMessage { return nil }},
 		"no cookie":    {MountPrefix: "/api/auth", ProjectUser: func(context.Context, *identity.User) json.RawMessage { return nil }},
 		"no projector": {MountPrefix: "/api/auth", Cookies: CookieConfig{Name: "c"}},
 	} {
@@ -183,7 +185,7 @@ func TestAuthRoutes_LogoutIdempotentClear(t *testing.T) {
 	}
 }
 
-func (f *fakeIdentity) EnrollTOTPViaSession(_ context.Context, _, currentCode string) (*TOTPEnrollment, *AuthResult, error) {
+func (f *fakeIdentity) EnrollTOTPViaSession(_ context.Context, _ tenant.ID, _, currentCode string) (*TOTPEnrollment, *AuthResult, error) {
 	if currentCode == "" {
 		return &TOTPEnrollment{OTPAuthURI: "otpauth://x", RecoveryCodes: []string{"a-b"}}, nil, nil
 	}

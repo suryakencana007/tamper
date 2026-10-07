@@ -30,9 +30,6 @@ func tenantCore(t *testing.T, opts ...Option) (*Core, *MemStore) {
 	return c, store
 }
 
-// plainStore implements Store and NOT TenantScopedStore — Barista's
-// exact shape, and the store the boot guard must reject.
-
 // --- B1: the same email in two tenants --------------------------------
 
 func TestRegisterInTenant_SameEmailInTwoTenants(t *testing.T) {
@@ -331,4 +328,3 @@ func TestRevokeAllSessionsForTenant_IsNotThePerUserRevoke(t *testing.T) {
 	}
 }
 
-// --- the single tenant ------------------------------------------------

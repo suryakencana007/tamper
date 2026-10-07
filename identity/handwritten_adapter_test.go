@@ -23,9 +23,9 @@ import (
 // application with one tenant and no tenant column writes. Two
 // properties are load-bearing:
 //
-//  1. It does NOT embed MemStore. The other single-tenant stand-ins
-//     (plainStore, singleTenantStore) satisfy Store by PROMOTION, so if
-//     Store ever widens they are auto-satisfied and stay green while a
+//  1. It does NOT embed MemStore. Every other store in the module
+//     satisfies Store by PROMOTION, so if Store ever widens they are
+//     auto-satisfied and stay green while a
 //     real hand-written adapter fails to compile. This one breaks, which
 //     is the point.
 //  2. It has no tenant column. It drops TenantID on every write and
@@ -85,8 +85,8 @@ func (s *handwrittenStore) CreateUser(_ context.Context, u NewUser, _ bool) erro
 			return fmt.Errorf("%w: %s", ErrEmailTaken, u.Email)
 		}
 	}
-	// No tenant column: the value is dropped on write, as Barista's
-	// INSERT would drop a field its schema has never heard of.
+	// No tenant column: the value is dropped on write, as a single-tenant
+	// schema's INSERT drops a field it has never heard of.
 	s.users[u.ID] = User{ID: u.ID, Email: u.Email, PasswordHash: u.PasswordHash, Active: true, CreatedAt: u.CreatedAt}
 	return nil
 }
@@ -345,11 +345,6 @@ func TestHandwrittenStore_IsNotSatisfiedByPromotion(t *testing.T) {
 	// Store ever widens they are auto-satisfied and stay green while a
 	// real adapter in a consumer's repo fails to compile. This one has to
 	// break, which is the entire reason it exists.
-	//
-	// Before v0.4.0 this asserted "does not implement TenantScopedStore".
-	// That interface is gone, but the property it protected is not: it
-	// just moved from "models a pre-tenancy adapter" to "models a
-	// hand-written one".
 	rt := reflect.TypeOf(handwrittenStore{})
 	for i := range rt.NumField() {
 		f := rt.Field(i)
@@ -360,9 +355,9 @@ func TestHandwrittenStore_IsNotSatisfiedByPromotion(t *testing.T) {
 	}
 }
 
-// TestHandwrittenAdapter_BaristaFlowsUnchanged drives the flow list Barista
-// drives, against a store that has never heard of a tenant.
-func TestHandwrittenAdapter_BaristaFlowsUnchanged(t *testing.T) {
+// TestHandwrittenAdapter_SingleTenantFlows drives the login, TOTP and
+// session flows against a store that has never heard of a tenant.
+func TestHandwrittenAdapter_SingleTenantFlows(t *testing.T) {
 	ctx := context.Background()
 	s := newHandwrittenStore()
 	c := handwrittenCore(t, s, WithKeySet(testKeySet(t)))
@@ -480,10 +475,10 @@ func TestHandwrittenAdapter_ProvisionPortTrace(t *testing.T) {
 	}
 }
 
-// TestHandwrittenAdapter_LoginPortTrace pins that the single-tenant path uses
-// the UNSCOPED lookup and reads the user exactly once. A Core that
-// consulted a scoped method here would not compile against this adapter
-// — which is the whole reason the fixture does not embed MemStore.
+// TestHandwrittenAdapter_LoginPortTrace pins the conversation Login has
+// with the port: which methods, in which order, and that the user is
+// read exactly once. A second read, or a reordered lookup, changes
+// nothing a behavioural assertion sees and shows up only here.
 func TestHandwrittenAdapter_LoginPortTrace(t *testing.T) {
 	ctx := context.Background()
 	s := newHandwrittenStore()

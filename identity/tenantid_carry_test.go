@@ -153,8 +153,8 @@ func TestRefresh_CrossTenantSessionDoesNotDiscloseInactive(t *testing.T) {
 	}
 }
 
-// TestRefresh_EmptyTenantStaysEmpty is the parity half: a pre-7b-1 row
-// carries no tenant, and rotation must not invent one.
+// TestRefresh_EmptyTenantStaysEmpty: a single-tenant session row carries
+// "" as its tenant, and rotation must not invent one.
 func TestRefresh_EmptyTenantStaysEmpty(t *testing.T) {
 	ctx := context.Background()
 	c, store := testCore(t)
@@ -301,10 +301,10 @@ func TestMemStore_CreateUser_PersistsTenant(t *testing.T) {
 	// The tenant-scoped read finds them...
 	scoped, err := store.UserByEmail(ctx, tenant.New("globex"), "gina@globex.com")
 	if err != nil {
-		t.Fatalf("UserByEmailInTenant: %v", err)
+		t.Fatalf("UserByEmail: %v", err)
 	}
 	if scoped.ID != "u2" {
-		t.Errorf("UserByEmailInTenant returned %q, want %q", scoped.ID, "u2")
+		t.Errorf("UserByEmail returned %q, want %q", scoped.ID, "u2")
 	}
 
 	// ...and the UNSCOPED read does not. This is the 7b-2 rule, pinned

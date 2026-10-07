@@ -222,7 +222,7 @@ func (c *Core) Register(ctx context.Context, tenantID tenant.ID, email, password
 //
 // Timing parity is preserved and it is the reason the tenant is applied
 // by the LOOKUP rather than by a comparison afterwards. A wrong tenant
-// makes UserByEmailInTenant miss, which lands on the SAME branch as an
+// makes UserByEmail miss, which lands on the SAME branch as an
 // unknown email — stub bcrypt burn, then ErrInvalidCredentials. There is
 // deliberately no "fetch globally, then compare TenantID" step: that
 // would both leak (the row is read) and return early before the hash

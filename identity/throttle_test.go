@@ -387,9 +387,9 @@ func TestThrottle_BootGuardFires(t *testing.T) {
 	}
 }
 
-// TestThrottle_NilThrottleNeedsNoKeys: the compat shape. A Throttling
-// with no limiter has nothing to key, so demanding key functions would
-// make the zero value unconstructible and break every existing caller.
+// TestThrottle_NilThrottleNeedsNoKeys: a Throttling with no limiter has
+// nothing to key, so key functions are not demanded of it; the zero
+// value stays constructible.
 func TestThrottle_NilThrottleNeedsNoKeys(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -426,7 +426,7 @@ func TestThrottle_AbsentByDefault(t *testing.T) {
 // TestThrottle_AllowedRequestsPassThroughUnchanged: a limiter that is
 // consulted and says yes must not alter the outcome. Otherwise the
 // throttled build and the unthrottled build disagree about a successful
-// login, which is the compat break this phase forbids.
+// login.
 func TestThrottle_AllowedRequestsPassThroughUnchanged(t *testing.T) {
 	ctx := context.Background()
 	rt := &recordingThrottle{} // allows

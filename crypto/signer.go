@@ -23,8 +23,7 @@ type Signer interface {
 	Alg() string
 
 	// KeyID is the JWS `kid` header value; "" means no kid header is
-	// written, which is what keeps the default HS256 token byte-identical
-	// to a pre-seam one.
+	// written, which is what the default HS256 path does.
 	KeyID() string
 
 	// Sign returns the raw (un-encoded) signature over signingString.

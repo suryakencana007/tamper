@@ -44,11 +44,11 @@ stop before writing code.
   2026-10-05; see standing rule 1.
 - **`examples/multitenant` is the proving ground, not Barista.** Barista is
   single-tenant and structurally cannot prove the tenant path — a Barista
-  façade would pass `tenantID=""` everywhere and prove only the compat half.
-  This is a bounded, documented exception to the phase rule (sketch §3), not
-  its abandonment. Barista still gates the `""` path on every slice.
+  façade would pass `tenant.Single` everywhere and prove only that half.
+  Since 2026-10-05 Barista is not kept compiling against `main` either
+  (standing rule 1, TD-27).
 
-### Standing rules while Phase 7 is open
+### Standing rules
 
 1. **No compatibility code. Decided by the repo owner on 2026-10-05.** Do not
    keep an old function, an old signature or an old behaviour alive beside

@@ -34,7 +34,7 @@ type Core struct {
 	totpRequired bool
 	defaultACR   string
 	hooks        Hooks
-	throttling   Throttling      // zero value = no rate limiting (pre-7k-1 behavior)
+	throttling   Throttling      // zero value = no rate limiting; see WithThrottling
 	invitations  InvitationStore // nil = invitation verbs error (opt-in, 7j-1)
 	memberships  MembershipStore // nil = EnterTenant errors (opt-in, Phase 8)
 	enterTTL     time.Duration   // 0 = entered tokens live as long as ordinary ones
@@ -61,10 +61,8 @@ func WithTOTPRequired(required bool) Option { return func(c *Core) { c.totpRequi
 // own value. Defaults to crypto.ACRLocalPassword.
 func WithDefaultACR(acr string) Option { return func(c *Core) { c.defaultACR = acr } }
 
-// WithTenancy was here. It gated the fallback path while the additive
-// phase was open. v0.4.0 removed the fallback, so there is nothing to
-// enable: every Core is tenant-scoped and a single-tenant deployment says
-// so by passing tenant.Single.
+// There is no option that turns tenancy on. Every Core is tenant-scoped,
+// and a single-tenant deployment says so by passing tenant.Single.
 
 // WithHooks attaches the app-side extension points.
 func WithHooks(h Hooks) Option { return func(c *Core) { c.hooks = h } }
@@ -104,12 +102,9 @@ func New(store Store, jwt *crypto.JWTService, opts ...Option) (*Core, error) {
 		return nil, fmt.Errorf("identity: WithEnterTenantTTL(%s) is longer than the access token TTL (%s)",
 			c.enterTTL, jwt.AccessTTL())
 	}
-	// The optional-interface upgrade and its boot assertion were here.
-	// v0.4.0 folded TenantScopedStore into Store, so there is no longer a
-	// second interface to assert against: a Store that does not implement
-	// the tenant-scoped methods does not compile, which is strictly better
-	// than a boot-time error. Phase 0c's lesson is preserved by making the
-	// failure earlier, not by keeping the check.
+	// There is no optional interface to assert against: a Store that does
+	// not implement the tenant-scoped methods does not compile, which is
+	// strictly better than a boot-time error.
 	return c, nil
 }
 
@@ -123,12 +118,9 @@ func New(store Store, jwt *crypto.JWTService, opts ...Option) (*Core, error) {
 // UNSET tenant, which is what a caller who forgot to thread it produces.
 // It fails closed.
 //
-// Before v0.4.0 this had a second arm, for a non-empty tenant against a
-// tenancy-disabled Core. There is no disabled mode now, so that shape
-// cannot occur. What remains is the shape a bare string could never
-// express: tenant.ID's zero value is distinguishable from tenant.Single,
-// so "I forgot" and "I am single-tenant" are finally different inputs and
-// only the first one denies (§6.2, sketch §8 item 7).
+// This is the shape a bare string could never express: tenant.ID's zero
+// value is distinguishable from tenant.Single, so "I forgot" and "I am
+// single-tenant" are different inputs and only the first one denies.
 func (c *Core) tenantGate(tenantID tenant.ID) error {
 	if !tenantID.Valid() {
 		return ErrTenantRequired
@@ -230,7 +222,7 @@ func (c *Core) Register(ctx context.Context, tenantID tenant.ID, email, password
 //
 // Timing parity is preserved and it is the reason the tenant is applied
 // by the LOOKUP rather than by a comparison afterwards. A wrong tenant
-// makes UserByEmailInTenant miss, which lands on the SAME branch as an
+// makes UserByEmail miss, which lands on the SAME branch as an
 // unknown email — stub bcrypt burn, then ErrInvalidCredentials. There is
 // deliberately no "fetch globally, then compare TenantID" step: that
 // would both leak (the row is read) and return early before the hash

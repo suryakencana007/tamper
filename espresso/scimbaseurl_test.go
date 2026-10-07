@@ -123,11 +123,11 @@ func TestSCIMBaseURL_UnknownTenantFallsBackNotLeaks(t *testing.T) {
 	}
 }
 
-// --- "" mode is byte-identical ----------------------------------------
+// --- the single tenant ------------------------------------------------
 
-// TestSCIMBaseURL_SingleTenantIsByteIdentical is the compatibility
-// proof: a build with no per-tenant mapping renders exactly what it
-// rendered before this slice, byte for byte.
+// TestSCIMBaseURL_SingleTenantIsByteIdentical: a mapping that declines
+// every tenant renders exactly what no mapping renders, byte for byte.
+// The fall-through must be exact, not merely similar.
 func TestSCIMBaseURL_SingleTenantIsByteIdentical(t *testing.T) {
 	cfg := SCIMConfig{
 		Prefix: "/scim/v2", BaseURL: "https://panel.test", MaxResults: 100,

@@ -94,7 +94,7 @@ below in one pass.
 **DoD line, appearing in most slices:** *"Barista CI green with zero diff in
 its adapter."*
 
-**What stood in for it.** `identity/legacy_adapter_test.go` — a hand-written
+**What stood in for it.** `identity/handwritten_adapter_test.go` (then `legacy_adapter_test.go`) — a hand-written
 adapter that implements `identity.Store` and deliberately does **not** embed
 `MemStore`, so it fails to compile the moment the core reaches for a
 tenant-scoped method it should not. Plus a golden port-call trace, added after

@@ -110,7 +110,7 @@ func TestTenantRegistry_DisjointProviderSets(t *testing.T) {
 
 	regEmpty, err := m.GetRegistry(ctx, tenant.New("initech"))
 	if err != nil {
-		t.Fatalf("GetRegistryForTenant(initech): %v", err)
+		t.Fatalf("GetRegistry(initech): %v", err)
 	}
 	if regEmpty != nil {
 		t.Errorf("a tenant with no providers got a registry: %+v", regEmpty)
@@ -118,7 +118,7 @@ func TestTenantRegistry_DisjointProviderSets(t *testing.T) {
 
 	for _, tid := range []string{"acme", "globex"} {
 		if _, err := m.GetRegistry(ctx, tenant.New(tid)); err != nil {
-			t.Fatalf("GetRegistryForTenant(%s): %v", tid, err)
+			t.Fatalf("GetRegistry(%s): %v", tid, err)
 		}
 		if s.calls(tenant.New(tid)) != 1 {
 			t.Errorf("tenant %s: store reads = %d, want 1", tid, s.calls(tenant.New(tid)))
@@ -241,7 +241,7 @@ func TestTenantRegistry_ConcurrentAcrossTenants(t *testing.T) {
 	}
 }
 
-// --- the untenanted path is unchanged ---------------------------------
+// --- the single tenant ------------------------------------------------
 
 func TestTenantRegistry_UntenantedKeyHoldsExactlyOneRegistry(t *testing.T) {
 	ctx := context.Background()

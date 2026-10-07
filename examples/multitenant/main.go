@@ -6,10 +6,9 @@
 //
 // It exists because Barista — tamper's flagship and usual proving ground
 // — is single-tenant by construction. A Barista facade over tenancy would
-// pass tenantID="" everywhere and prove only that the compatibility
-// escape hatch works, which is the least interesting half. This example
-// is the consumer that makes the tenant path real (sketch section 3.2),
-// and it lands in M1 rather than at the end for exactly that reason.
+// pass tenant.Single everywhere and prove only the single-tenant half,
+// which is the least interesting one. This example is the consumer that
+// makes the tenant path real (sketch section 3.2).
 //
 // What it shows:
 //

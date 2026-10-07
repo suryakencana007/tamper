@@ -105,8 +105,8 @@ type JWTService struct {
 	ttl    time.Duration
 	issuer string
 	// signer, when non-nil, replaces the built-in HS256 path. nil is the
-	// default and the ONLY configuration that can produce a
-	// byte-identical pre-seam token — see sign.
+	// default, and the only configuration that produces the golden
+	// vectors in the tests — see sign.
 	signer Signer
 	// verifiers resolves a token's `kid` to the Signer that can check
 	// it: key rotation, and eventually a per-tenant key. Empty means
@@ -128,9 +128,9 @@ type JWTOption func(*JWTService)
 // default path, where an empty secret still means every token is
 // forgeable.
 //
-// A service with a Signer no longer produces byte-identical tokens to
-// the default path unless the Signer is an equivalent HS256 with no
-// kid — which is the point: you asked for different signing.
+// A service with a Signer produces different bytes from the default path
+// unless the Signer is an equivalent HS256 with no kid — which is the
+// point: you asked for different signing.
 func WithSigner(s Signer) JWTOption { return func(j *JWTService) { j.signer = s } }
 
 // WithVerifiers supplies the verification keys, keyed by `kid`, for
@@ -180,10 +180,9 @@ func NewJWTService(cfg JWTConfig, opts ...JWTOption) *JWTService {
 
 // sign produces the signed token for claims.
 //
-// The default branch is deliberately the original code, unchanged and
-// untouched by the seam: byte-identity with a pre-7d-1 token is
-// guaranteed by construction rather than merely asserted by a test. The
-// pinned-token test then proves the guarantee held.
+// The default branch is the plain HS256 mint with no kid header. Its
+// output is pinned by the golden-vector tests, so a change to the wire
+// format cannot go unnoticed.
 func (j *JWTService) sign(claims jwt.Claims) (string, error) {
 	if j.signer == nil {
 		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

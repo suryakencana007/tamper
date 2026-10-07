@@ -26,7 +26,7 @@ import (
 // login attempt.
 type Throttling struct {
 	// Throttle is the limiter. Nil disables throttling entirely, which is
-	// the compat shape and is UNSAFE IN PRODUCTION — see WithThrottling.
+	// UNSAFE IN PRODUCTION — see WithThrottling.
 	Throttle crypto.Throttle
 
 	// LoginKey composes the throttle key for Login and LoginInTenant.
@@ -64,8 +64,10 @@ const (
 //
 // NIL IS UNSAFE IN PRODUCTION. A Core built without this option, or with
 // a nil Throttle, permits unlimited password and second-factor attempts.
-// It is allowed because it is the pre-7k-1 behavior and this phase does
-// not break the "" path — not because it is a reasonable deployment.
+// The option is not required by New — a Core is also built for crypto
+// operations, tests and bootstrap, where a limiter is noise — so the
+// recommendation is this comment: every deployment that serves a login
+// form installs one. Decided by the repo owner, 2026-10-06.
 //
 // The in-process crypto.NewTokenBucket is PER-REPLICA: behind N replicas
 // the effective limit is N times what you configured. A deployment that

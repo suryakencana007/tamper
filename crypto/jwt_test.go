@@ -846,10 +846,9 @@ func TestVerifyAccess_UnsetTenantDeniesBeforeParsing(t *testing.T) {
 	}
 }
 
-// TestVerifyAccess_SingleTenantIsUnaffected is the compatibility pin.
-// The hardening must deny the FORGOTTEN tenant and nothing else: a
-// single-tenant deployment passes tenant.Single explicitly and keeps
-// working byte-for-byte.
+// TestVerifyAccess_SingleTenantIsUnaffected: the unset-tenant denial
+// must deny the FORGOTTEN tenant and nothing else. tenant.Single, said,
+// verifies.
 func TestVerifyAccess_SingleTenantIsUnaffected(t *testing.T) {
 	s := pinnedService(t)
 	tok, err := s.IssueAccess(pinnedSubject, tenant.Single, pinnedAuthAt, ACRLocalPassword)

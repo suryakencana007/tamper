@@ -176,12 +176,13 @@ func buildHandler(store identity.Store, jwtSecret, idpIssuer string, appBaseURL 
 	readState := fed.ReadStateCookie()
 
 	r := espresso.Portafilter()
-	// tamper v0.4.0: every request must say which tenant it is for, and this
-	// example is single-tenant — so it says so, once, here. RequireTenant
-	// pins tenant.Single for every route; the federation routes read it when
-	// they resolve a provider, and RequireAuth's token check is cross-checked
-	// against it. Before the flip an unpinned request silently meant "the
-	// single-tenant table"; now that has to be stated.
+	// Every request must say which tenant it is for, and this example is
+	// single-tenant — so it says so, once, here. PinTenant pins
+	// tenant.Single for every route, and the federation routes read it
+	// when they resolve a provider. PinTenant checks no token; this
+	// deployment mints only single-tenant tokens, so RequireAuth alone is
+	// enough on /me here. A pooled deployment mounts RequireTenant on its
+	// authenticated routes.
 	r.Use(tamperespresso.PinTenant(tamperespresso.FixedRequestTenant(tenant.Single)))
 	r.Post("/api/auth/register", espresso.Doppio(auth.Register))
 	r.Post("/api/auth/login", espresso.Doppio(auth.Login))

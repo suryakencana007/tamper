@@ -87,8 +87,7 @@ type Manager struct {
 	// a second lock and does not make the write path hot (§6.6).
 	mu sync.RWMutex
 	// registries is the cache, keyed by tenant. The "" key is the
-	// single-tenant deployment and holds exactly one registry, which is
-	// what keeps the untenanted path byte-identical.
+	// single-tenant deployment and holds exactly one registry.
 	//
 	// MAP GROWTH — the decision, since the invariant demands one be
 	// stated. The Manager has no tenant.Store to validate ids against, so
@@ -500,12 +499,9 @@ func (m *Manager) rebuildLocked(ctx context.Context, tenantID tenant.ID) (*Provi
 	return reg, nil
 }
 
-// listEnabled reads the tenant's enabled providers. The untenanted key
-// There is one call now. Before v0.4.0 this branched: an empty tenant
-// took the unscoped store call and a named tenant required the optional
-// scoped upgrade. Folding the interfaces removed the branch, and with it
-// the possibility of the unscoped call ever running for a named tenant —
-// which was the leak the branch existed to prevent.
+// listEnabled reads the tenant's enabled providers. One call, for every
+// tenant: there is no unscoped store call that could run for a named
+// tenant.
 func (m *Manager) listEnabled(ctx context.Context, tenantID tenant.ID) ([]ProviderRecord, error) {
 	recs, err := m.store.ListEnabledProviders(ctx, tenantID)
 	if err != nil {

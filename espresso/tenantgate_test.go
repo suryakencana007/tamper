@@ -66,11 +66,10 @@ func TestRequireTenant_Matrix(t *testing.T) {
 		tokenTenant string
 		wantStatus  int
 	}{
-		// The compatibility path: no tenant anywhere. This is the shape a
-		// single-tenant deployment has today, and it must still pass.
+		// The single tenant: its token on its route.
 		{"untenanted route, untenanted token", "", "", http.StatusOK},
-		// Tenancy ON with a token that has no tid. This is where 7c-1's
-		// legacy tolerance ends: absence is not a match.
+		// A named tenant with a token that has no tid: absence is not a
+		// match.
 		{"tenanted route, untenanted token", "acme", "", http.StatusUnauthorized},
 		// A tenant token on a route that names no tenant.
 		{"untenanted route, tenanted token", "", "acme", http.StatusUnauthorized},

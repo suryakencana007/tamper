@@ -18,9 +18,8 @@ type MemStore struct {
 	usersByID map[string]User
 	// emailToID is keyed by (tenant, email), not by email alone. That is
 	// what makes an address unique PER TENANT rather than globally, so two
-	// customers can both have bob@acme.com — blocker B1. Single-tenant
-	// rows all carry tenant "", so their keys and their collision
-	// behaviour are byte-identical to the pre-tenancy map.
+	// customers can both have bob@acme.com. Single-tenant rows all carry
+	// tenant "", the single tenant's stored form.
 	emailToID  map[string]string
 	sessions   map[string]RefreshSession // by session id
 	hashToID   map[string]string         // token hash -> session id

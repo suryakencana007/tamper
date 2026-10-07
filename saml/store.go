@@ -68,7 +68,6 @@ type ProviderStore interface {
 	DeleteProvider(ctx context.Context, id string) error
 }
 
-// TenantScopedProviderStore was here — the optional upgrade that added
-// ListEnabledProvidersForTenant while the additive phase was open. v0.4.0
-// folded it into ProviderStore, so there is no second interface and no
-// boot-time assertion: a store that cannot scope by tenant fails to compile.
+// There is no optional tenant-scoped upgrade of ProviderStore and no
+// boot-time assertion: a store that cannot scope by tenant fails to
+// compile.

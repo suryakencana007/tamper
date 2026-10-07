@@ -33,9 +33,8 @@ type SCIMConfig struct {
 	// (acme.example.com) or path segment.
 	//
 	// Optional. Nil — or a function returning "" — falls through to
-	// BaseURL and then to the request's own scheme + host, so a
-	// single-tenant deployment produces byte-identical DTOs to a
-	// pre-Phase-7 build.
+	// BaseURL and then to the request's own scheme + host, which is all a
+	// single-tenant deployment needs.
 	//
 	// It exists because meta.location and $ref are ABSOLUTE URLs a SCIM
 	// client will follow. Rendering acme's resources under globex's host
@@ -75,9 +74,9 @@ type SCIMRoutes struct {
 	cfg SCIMConfig
 
 	// users / groups are the application's stores. Every call the
-	// transport makes to them goes through the shims below, which hand
-	// over the tenant on the validated principal. A new handler reaches
-	// for a shim, not for s.users.
+	// transport makes to them goes through the routing helpers below,
+	// which hand over the tenant on the validated principal. A new
+	// handler reaches for a helper, not for s.users.
 	users  scim.UserStore
 	groups scim.GroupStore
 }
@@ -132,8 +131,9 @@ func scimTenant(ctx context.Context) tenant.ID {
 
 // baseURL resolves the absolute URL prefix for THIS request's tenant.
 //
-// One shim, so every meta.location and $ref in the surface is built from
-// one decision — the 7g-1 discipline applied to URLs instead of queries.
+// One helper, so every meta.location and $ref in the surface is built
+// from one decision — the same discipline the store helpers apply to
+// queries.
 //
 // It reads GetPrincipal rather than scimTenant deliberately: the SCIM
 // discovery endpoints (ServiceProviderConfig, ResourceTypes, Schemas)
@@ -153,9 +153,9 @@ func (s *SCIMRoutes) baseURL(r *http.Request) string {
 	return ResolveBaseURL(r, s.cfg.BaseURL)
 }
 
-// --- store routing shims ---------------------------------------------
+// --- store routing helpers -------------------------------------------
 //
-// One shim per store method the TRANSPORT calls, so the place the
+// One helper per store method the TRANSPORT calls, so the place the
 // tenant is handed to a store exists exactly once per call site, each
 // individually mutation-testable, and no handler names a tenant.
 //

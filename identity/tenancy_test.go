@@ -327,4 +327,3 @@ func TestRevokeAllSessionsForTenant_IsNotThePerUserRevoke(t *testing.T) {
 			"the boundary", tenantB, n)
 	}
 }
-

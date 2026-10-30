@@ -85,7 +85,7 @@ design_ref: "ADR §2, §3.1, §3.3, §3.7"
 **Goal.** A store that holds the two kinds of binding row the mechanism needs —
 the **intent** row (scope = tenant-group) and the **materialized** rows (scope
 = each child organization) — with atomic, idempotent writes. Reads satisfy
-`authz.BindingStore`. Nothing provisions yet.
+`authz.BindingStore`. Nothing provisions yet. Storage per decision 1: one table.
 
 **reads**
 - `authz/store.go` — the isolation contract, word for word
@@ -187,7 +187,8 @@ design_ref: "ADR §3.2, §3.3, §4.3"
 
 **Goal.** The heart of the mechanism. Granting "admin of tenant-group X" writes
 one **intent** row in scope X and **one materialized binding per child org**,
-translated through `RoleMap`, in one atomic apply. Revoking removes both.
+translated through `RoleMap`, in one atomic apply. Revoking removes both. Shape
+per decision 2; one transaction per decision 3.
 
 **reads**
 - `examples/tenanthierarchy/store.go` (9a-1)
@@ -240,10 +241,9 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
   expansion.
 - `RevokeGroupAdmin`: in one `Apply`, remove every materialized binding for
   `sub` under every child of `group`, plus the intent row.
-- The materialized binding's **shape mirrors a direct org-admin grant**: if the
-  app expresses org admin as a global binding within the org scope, use that
-  shape; if as `{organization, <org>}`, use that. It must be exactly the shape
-  the org route's policy matches.
+- The materialized binding is **concrete**: `{organization, <org>}` in the
+  org's scope — the exact shape a direct org-admin grant has (decision 2). A
+  global binding in the org scope satisfies nothing the org route checks.
 
 **invariants**
 - A granted group admin has a binding in **every** child org; a revoked one has
@@ -252,6 +252,10 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
   binding and fails the grant.
 - No binding is written outside the scope of the resource it grants on.
 - Error means no partial state: `Grant`/`Revoke` are atomic through `Apply`.
+- One transaction per operation, no automatic chunking (decision 3). If the
+  projected write count exceeds `MaxProvisionRows` (default 100_000), the
+  operation errors; the operator runs the idempotent `SyncGroup` in bounded
+  batches. The cap is a loud stop, never a silent split.
 
 **tests**
 - Grant on a group with 3 children writes 1 intent + 3 bindings, roles translated.
@@ -374,6 +378,7 @@ design_ref: "ADR §3.2, §3.3, §3.5; PHASE8 §4"
 
 **Goal.** A tenant-group admin can enter a child org. Membership is **derived**
 from the intent rows plus parentage — no second materialized set, no drift.
+Keying per decision 4.
 
 **reads**
 - `identity/membership.go` — `MembershipStore`, `EnterTenant`, `EnterableTenants`
@@ -413,6 +418,9 @@ func (m *Membership) MembershipsFor(ctx context.Context, userID string) ([]tenan
 - No membership table exists; removing the intent immediately removes the
   ability to enter (the token window is Phase 8's `EnterTenant` TTL).
 - `MembershipsFor` never returns a tenant the user cannot actually enter.
+- Membership keys on the user id alone: the deployment relies on
+  globally-unique user ids, the same assumption `identity.Store.UserByID` makes
+  (decision 4).
 
 **tests**
 - Admin of `tg-acme` → `IsMember(bob, org-1)` true for every child; false for
@@ -571,7 +579,7 @@ design_ref: "ADR §3.7, §6, §7; CLAUDE.md rule 6"
 **Goal.** The guard that makes eager provisioning safe. `Reconcile` compares
 the intent rows (× parentage) against the materialized rows and reports **both**
 missing and orphan bindings. `SyncGroup` repairs, idempotently and explicitly.
-A boot guard fails loudly; a test proves the guard fires.
+A boot guard fails loudly; a test proves the guard fires. Status per decision 5.
 
 **reads**
 - `examples/tenanthierarchy/provisioner.go` (9a-2, 9a-3)
@@ -658,7 +666,7 @@ design_ref: "ADR §3.6; PHASE8 §3"
 
 **Goal.** Provisioning (grant/revoke, org membership change) is recorded, and an
 org mutation by a group admin audits with the correct scope and actor tenant. One
-chain.
+chain. Authority per decision 6.
 
 **reads**
 - `espresso/audit.go` — `Auditor.For`, `MutationContext`
@@ -682,6 +690,9 @@ only the event's scope, actor tenant, and type.
   (the home tenant, from `htid`).
 - One chain. No per-group chain. Level (platform / tenant-group / org admin) is
   read from scope + role, **never** from `actor.subject_type`.
+- Only a platform admin may grant/revoke a group admin or change an org's group
+  membership; a group admin manages org resources, not its own grant list
+  (decision 6).
 
 **tests**
 - Grant group admin → one event, scope = group, actor = operator.
@@ -723,16 +734,69 @@ go test -race ./examples/tenanthierarchy/...
 - **Barista.** Not kept compiling against `main` (standing rule 1, TD-27); the
   proving ground is the example.
 
-## Decisions still open (resolve before the referenced slice)
+## Decisions (resolved 2026-10-30)
 
-| # | Decision | Slice |
-|---|---|---|
-| 1 | One binding table (intent + materialized) vs a separate intent table | 9a-1 |
-| 2 | Materialized binding shape: `{organization, <org>}` vs a global binding within the org scope | 9a-2 |
-| 3 | Chunked transaction threshold for very large `C × A` | 9a-2 |
-| 4 | `MembershipsFor(userID)` has no home tenant in the port; how the app disambiguates across groups | 9b-1 |
-| 5 | Suspended group/org: which gate enforces (TD-06), and how the guard treats it | 9c-1 |
-| 6 | Who may grant a group admin (outside the PDP), and where that is audited | 9c-2 |
+These were open when the manifest was first drafted. They are decided; the
+slices below assume the answers.
+
+### 1 — Storage: one table (9a-1)
+
+One `authz_binding` table holds both kinds of row:
+
+- **intent** — scope = tenant-group, `Resource{tenant_group, <group>}`, the
+  group role;
+- **materialized** — scope = organization, `Resource{organization, <org>}`, the
+  mapped org role.
+
+The intent row is the source of truth, the materialized rows are the projection,
+and `Reconcile` compares them. A separate intent table is allowed **only** if it
+is the sole authority and every binding row is derived from it; never keep two
+independent sources. Rich intent metadata (`granted_by`, `reason`, `at`) goes in
+a side table keyed by the intent row's key, not in an authority of its own.
+
+### 2 — Materialized shape: concrete `{organization, <org>}` (9a-2)
+
+Not a free choice — it is what the engine matches. `authz/rbac.go` consults the
+singleton `{Type, ""}` only when a requirement's `Type` differs from the
+resource's; for a same-type requirement it calls `effective` on the concrete
+resource and keeps only `b.Resource == res`. So an org-admin grant is a binding
+on `{organization, <org>}` in that org's scope. A global binding in the org
+scope would satisfy nothing the org route checks.
+
+### 3 — Transactions: one, fail loud past a cap (9a-2)
+
+Provisioning is **one transaction per operation**. No automatic chunking: a
+partial write is exactly the drift the guard exists to catch. The store exposes
+a `MaxProvisionRows` cap (default 100_000); an operation whose projected writes
+exceed it returns an error, and the operator runs the idempotent `SyncGroup` in
+bounded batches followed by `Reconcile`. The cap is a loud stop, never a silent
+split.
+
+### 4 — Membership keys on the user id alone (9b-1)
+
+`identity.Store.UserByID(ctx, id)` already resolves a user by id with no tenant,
+and `EnterTenant` derives the home tenant from that row. The deployment
+therefore already relies on **globally-unique user ids**; the app's membership
+keys on `(userID, target)`, and `MembershipsFor(userID)` scans groups for that
+id. If an app ever allows the same id in two tenants, the port cannot
+disambiguate — a documented constraint, not a port change.
+
+### 5 — Status does not touch bindings (9c-1)
+
+Suspending a group or an org does **not** add, remove or alter bindings. The
+projection is a function of intent × parentage only. Enforcement is a request
+gate (TD-06, `RequireActiveTenant`); un-suspension resumes instantly with no
+re-sync. `Reconcile` ignores `Status` — a suspended org still must have its
+bindings. The token window (a valid entered token outliving a suspension by up
+to `WithEnterTenantTTL`) is Phase 8's known limit.
+
+### 6 — Only a platform admin grants; same chain (9c-2)
+
+Writes are outside the PDP (Phase 8b §6). Only a **platform admin** may
+grant/revoke a group admin or change an org's group; a group admin manages the
+orgs' resources, not its own grant list. The operation runs on the group's route
+(the platform admin has entered the group), so the audit event's scope is the
+**group** and its actor tenant is **platform**, on the single existing chain.
 
 ## Definition of done — whole manifest
 

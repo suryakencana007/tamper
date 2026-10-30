@@ -302,15 +302,30 @@ AND-gates (`authz/policy.go:49`).
 - domains: a parent's domain claim does not apply to a child.
 
 **Workaround in the application.** The engine leaves all indirection to the
-store. So the application's `BindingStore` may return bindings that come from
-ancestors. Entitlements and the IdP registry can be wrapped by an adapter that
-walks up to the parent. Decide inheritance for each axis separately. Do not
-assume the answer is the same for all of them.
+store, but since Phase 8b (`authz` tenant-scoped) a store must return a binding
+in the scope asked for (`authz/store.go`, "A binding returned has Tenant set to
+tenantID"), and the RBAC engine drops any binding whose scope is not the one
+asked. A store may **not** return an ancestor's binding in a child's scope; a
+wrapper that instead re-stamps `Tenant` to the child scope only fabricates a
+row that was never written, and `authz/tenanttest.RunBindingStoreLeakSuite`
+tests the adapter, not a wrapper, so it will not catch that. So for **roles**
+the application must **materialize** the inherited grant as real per-child
+bindings at provisioning time (eager provisioning): a tenant-group admin holds
+a binding in each child org scope, with the tenant-group as its home tenant.
+This is decided in
+[`ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md`](ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md).
+
+Entitlements and the IdP registry are not `authz` bindings and are not covered
+by that rule, so they can still be wrapped by an adapter that walks up to the
+parent. Decide inheritance for each axis separately. Do not assume the answer
+is the same for all of them.
 
 **Proposal for Tamper.** First answer the product question the sketch deferred
 (does the parent's IdP serve a child?). Then add `tenant.Store.Ancestors(id)`
 and `Children(id)`. Make inheritance opt-in per axis, with cycle detection like
-`scim.DetectCycle`.
+`scim.DetectCycle`. For roles, the application can already do this today
+(ADR-0001); the port would move the parentage lookup into tamper without
+changing the tenant-scoped binding model.
 
 ### TD-05 — No tenant lifecycle
 
@@ -917,7 +932,9 @@ Suggested slice order if this work moves into Tamper:
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
 6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
-   answered.
+   answered. For the roles axis the application-side mechanism is decided in
+   `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md` (eager per-tenant
+   provisioning); IdP, entitlements and domains are still open.
 8. **TD-17, TD-18, TD-20, TD-23, TD-26** — merged (#49 to #52, #54).
 9. **TD-12, TD-13, TD-14** — the rest.
 

@@ -274,3 +274,55 @@ func TestMaxProvisionRows_CapsTheOperation(t *testing.T) {
 		t.Fatalf("rows = %d, want 0 — the cap writes nothing", len(s.rows))
 	}
 }
+
+// ---------------------------------------------------------------------
+// Provenance: a group revoke must not remove a direct grant that lands on
+// the same binding (review B1).
+// ---------------------------------------------------------------------
+
+func TestRevokeGroupAdmin_KeepsDirectGrantOnSameBinding(t *testing.T) {
+	p, s, _ := newProvisioner(t)
+	direct := authz.Binding{Tenant: org1, Subject: bob, Resource: resOrg1, Role: "org_admin"}
+	if err := s.Grant(ctx, direct); err != nil {
+		t.Fatalf("direct grant: %v", err)
+	}
+	if err := p.GrantGroupAdmin(ctx, bob, tg, groupRole()); err != nil {
+		t.Fatalf("GrantGroupAdmin: %v", err)
+	}
+	if err := p.RevokeGroupAdmin(ctx, bob, tg); err != nil {
+		t.Fatalf("RevokeGroupAdmin: %v", err)
+	}
+
+	if _, ok := s.rows[keyOf(direct)]; !ok {
+		t.Fatal("the DIRECT org-1 grant was removed by the group revoke")
+	}
+	// org-2 and org-3 were justified by the group alone, so they are gone.
+	if _, ok := s.rows[keyOf(materializedBinding(bob, "org-2", "org_admin"))]; ok {
+		t.Fatal("org-2's group binding survived the revoke")
+	}
+	// The direct grant is the last origin on org-1; revoking it clears the row.
+	if err := s.Revoke(ctx, keyOf(direct)); err != nil {
+		t.Fatalf("Revoke(direct): %v", err)
+	}
+	if len(s.rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(s.rows))
+	}
+}
+
+func TestRevokeGroupAdmin_KeepsDirectGrantOnGroupResource(t *testing.T) {
+	p, s, _ := newProvisioner(t)
+	// Same key as the intent row, so only provenance tells them apart.
+	direct := intentBinding(bob, tg, groupRole())
+	if err := s.Grant(ctx, direct); err != nil {
+		t.Fatalf("direct grant: %v", err)
+	}
+	if err := p.GrantGroupAdmin(ctx, bob, tg, groupRole()); err != nil {
+		t.Fatalf("GrantGroupAdmin: %v", err)
+	}
+	if err := p.RevokeGroupAdmin(ctx, bob, tg); err != nil {
+		t.Fatalf("RevokeGroupAdmin: %v", err)
+	}
+	if _, ok := s.rows[keyOf(direct)]; !ok {
+		t.Fatal("the DIRECT grant on the group resource was removed by the revoke")
+	}
+}

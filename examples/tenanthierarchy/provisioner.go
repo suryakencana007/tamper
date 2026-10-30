@@ -35,25 +35,17 @@ var (
 	ErrTooManyRows = errors.New("tenanthierarchy: provisioning would write too many rows")
 )
 
-// BindingSource is the read+write surface provisioning needs.
-//
-// Writes alone are not enough: a revoke is keyed by role (BindingKey carries
-// the Role), and RevokeGroupAdmin is not told the role — it must find what the
-// subject actually holds and remove each row by its key. So the Provisioner
-// reads through the same store it writes through. The 9a-1 Store satisfies
-// this.
-type BindingSource interface {
-	authz.BindingStore
-	BindingWriter
-}
-
 // Provisioner turns "grant this subject admin of this tenant-group" into real
 // bindings, at provision time (ADR-0001 §3.3). It writes one INTENT row in the
 // group's scope and one MATERIALIZED binding per child organization — each
 // with the org's scope, the subject's home tenant, and the RoleMap-translated
 // role — inside a single atomic Apply.
+//
+// Every row it writes carries GroupOrigin(group), so revoking the grant removes
+// only its own contribution and leaves a direct grant on the same binding in
+// place (the store's per-origin ref count, slice 9a-1).
 type Provisioner struct {
-	src     BindingSource
+	writer  BindingWriter
 	hier    OrgHierarchy
 	roles   RoleMap
 	maxRows int
@@ -70,14 +62,14 @@ func WithMaxProvisionRows(n int) ProvisionerOption {
 
 // NewProvisioner returns a Provisioner.
 //
-// It errors on a nil source, a nil hierarchy, an empty RoleMap, or a
+// It errors on a nil writer, a nil hierarchy, an empty RoleMap, or a
 // non-positive cap. Tenancy misconfiguration fails at construction, never as
 // a per-request denial (standing rule 4). An empty RoleMap is refused for the
-// same reason the 9a-1 store refuses an unset scope: it is a silent lockout,
-// not a loud boot failure.
-func NewProvisioner(src BindingSource, h OrgHierarchy, roles RoleMap, opts ...ProvisionerOption) (*Provisioner, error) {
-	if src == nil {
-		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires a BindingSource")
+// same reason the store refuses an unset scope: it is a silent lockout, not a
+// loud boot failure.
+func NewProvisioner(w BindingWriter, h OrgHierarchy, roles RoleMap, opts ...ProvisionerOption) (*Provisioner, error) {
+	if w == nil {
+		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires a BindingWriter")
 	}
 	if h == nil {
 		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires an OrgHierarchy")
@@ -86,7 +78,7 @@ func NewProvisioner(src BindingSource, h OrgHierarchy, roles RoleMap, opts ...Pr
 		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires a non-empty RoleMap — " +
 			"an empty map would expand every tenant-group binding to nothing, which is a silent lockout")
 	}
-	p := &Provisioner{src: src, hier: h, roles: roles, maxRows: DefaultMaxProvisionRows}
+	p := &Provisioner{writer: w, hier: h, roles: roles, maxRows: DefaultMaxProvisionRows}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -119,12 +111,13 @@ func (p *Provisioner) GrantGroupAdmin(ctx context.Context, sub authz.Subject, gr
 		return fmt.Errorf("%w: grant needs %d rows, cap %d", ErrTooManyRows, n, p.maxRows)
 	}
 
-	return p.src.Apply(ctx, func(tx Tx) error {
-		if err := tx.Grant(ctx, intentBinding(sub, group, role)); err != nil {
+	origin := GroupOrigin(group)
+	return p.writer.Apply(ctx, func(tx Tx) error {
+		if err := tx.GrantFrom(ctx, intentBinding(sub, group, role), origin); err != nil {
 			return err
 		}
 		for _, orgID := range children {
-			if err := tx.Grant(ctx, materializedBinding(sub, orgID, mapped)); err != nil {
+			if err := tx.GrantFrom(ctx, materializedBinding(sub, orgID, mapped), origin); err != nil {
 				return err
 			}
 		}
@@ -132,15 +125,14 @@ func (p *Provisioner) GrantGroupAdmin(ctx context.Context, sub authz.Subject, gr
 	})
 }
 
-// RevokeGroupAdmin removes the intent row and every materialized binding the
-// subject holds under the group's children, in one atomic Apply.
+// RevokeGroupAdmin removes the group's contribution (GroupOrigin(group)) from
+// the intent row and every materialized binding the subject holds under the
+// group's children, in one atomic Apply.
 //
-// The materialized rows carry the translated org role, which the caller does
-// not supply, so the provisioner reads what the subject actually holds and
-// revokes each row by its key. (A SQL adapter reads inside the same
-// transaction; the in-memory store reads just before Apply. The single
-// provisioning path the design mandates is what keeps that sound — there is
-// one writer.)
+// It reads inside the Apply, so the read and the removal are one atomic step —
+// a concurrent grant cannot slip a row past the revoke. Because each row's
+// removal is by origin, a direct grant on the same binding is left in place;
+// only rows the group alone justified disappear.
 func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, group tenant.ID) error {
 	if err := p.gate(sub, group); err != nil {
 		return err
@@ -150,32 +142,32 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
 		return fmt.Errorf("tenanthierarchy: children of %s: %w", group, err)
 	}
 
-	var keys []BindingKey
-	intents, err := p.src.BindingsOnResource(ctx, group, authz.Resource{Type: ResourceTenantGroup, ID: group.String()})
-	if err != nil {
-		return fmt.Errorf("tenanthierarchy: read intent rows of %s: %w", group, err)
-	}
-	for _, b := range intents {
-		if b.Subject == sub {
-			keys = append(keys, keyOf(b))
-		}
-	}
-	for _, orgID := range children {
-		bs, err := p.src.BindingsForSubject(ctx, tenant.New(orgID), sub, ResourceOrganization)
+	origin := GroupOrigin(group)
+	return p.writer.Apply(ctx, func(tx Tx) error {
+		var keys []BindingKey
+		intents, err := tx.BindingsOnResource(ctx, group, authz.Resource{Type: ResourceTenantGroup, ID: group.String()})
 		if err != nil {
-			return fmt.Errorf("tenanthierarchy: read bindings in %s: %w", orgID, err)
+			return fmt.Errorf("tenanthierarchy: read intent rows of %s: %w", group, err)
 		}
-		for _, b := range bs {
-			keys = append(keys, keyOf(b))
+		for _, b := range intents {
+			if b.Subject == sub {
+				keys = append(keys, keyOf(b))
+			}
 		}
-	}
-	if len(keys) > p.maxRows {
-		return fmt.Errorf("%w: revoke needs %d deletes, cap %d", ErrTooManyRows, len(keys), p.maxRows)
-	}
-
-	return p.src.Apply(ctx, func(tx Tx) error {
+		for _, orgID := range children {
+			bs, err := tx.BindingsForSubject(ctx, tenant.New(orgID), sub, ResourceOrganization)
+			if err != nil {
+				return fmt.Errorf("tenanthierarchy: read bindings in %s: %w", orgID, err)
+			}
+			for _, b := range bs {
+				keys = append(keys, keyOf(b))
+			}
+		}
+		if len(keys) > p.maxRows {
+			return fmt.Errorf("%w: revoke needs %d deletes, cap %d", ErrTooManyRows, len(keys), p.maxRows)
+		}
 		for _, k := range keys {
-			if err := tx.Revoke(ctx, k); err != nil {
+			if err := tx.RevokeFrom(ctx, k, origin); err != nil {
 				return err
 			}
 		}

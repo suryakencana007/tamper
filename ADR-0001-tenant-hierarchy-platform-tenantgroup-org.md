@@ -346,9 +346,11 @@ single-resource.
 - **Mekanisme re-sync konkret** (event, outbox, job) — keputusan implementasi,
   bukan ADR.
 - **`MembershipsFor(userID)` tanpa home tenant.** Port identitas hanya menerima
-  `userID`, padahal id unik hanya di dalam satu tenant. Implementasi membership
-  harus mendisambiguasi lintas grup (mis. hanya grup yang diketahui app, atau
-  home tenant disimpan di intent row). Belum diputuskan.
+  `userID`, tetapi `identity.Store.UserByID` juga me-resolve per id tanpa
+  tenant — deployment sudah mengasumsikan id user unik global. Diselesaikan di
+  manifest (keputusan 4): membership di-key `(userID, target)`; id yang
+  bertabrakan antar-tenant adalah batasan yang didokumentasikan, bukan
+  perubahan port.
 - **Lifecycle tenant** (TD-05), **suspensi** (TD-06), **impersonasi** (TD-07).
 
 ## 9. Kapan ditinjau ulang

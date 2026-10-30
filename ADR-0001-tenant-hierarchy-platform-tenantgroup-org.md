@@ -7,8 +7,7 @@
 - **Pengambil keputusan:** Nanang (product), didiskusikan bersama Claude
 - **Terkait:** `PHASE8-PLATFORM-ADMIN-SKETCH.md`, `PHASE8B-AUTHZ-TENANT-SKETCH.md` (TD-03),
   `tech-debt.md` TD-04, `tenant.Descriptor.ParentID` (reserved, sketch Phase7 §8 item 3),
-  `espresso/tenantgate.go`, `espresso/decision.go`, `authz/store.go`, `authz/tenanttest`,
-  implementasi: [`TENANT-HIERARCHY-MANIFEST.md`](TENANT-HIERARCHY-MANIFEST.md) (draft review)
+  `espresso/tenantgate.go`, `espresso/decision.go`, `authz/store.go`, `authz/tenanttest`
 
 ## Ringkasan keputusan
 

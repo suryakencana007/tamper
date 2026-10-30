@@ -369,7 +369,7 @@ id: 9b-1
 milestone: M2
 risk: HIGH
 depends_on: [9a-1, 9a-2]
-design_ref: "ADR §3.2, §5; PHASE8 §4"
+design_ref: "ADR §3.2, §3.3, §3.5; PHASE8 §4"
 ```
 
 **Goal.** A tenant-group admin can enter a child org. Membership is **derived**
@@ -467,27 +467,48 @@ over the plain store. No wrapper, no cross-scope OR.
 - `examples/tenanthierarchy/main.go` — router, policies, handlers
 - `examples/tenanthierarchy/httptest_test.go` — the integration suite
 
+**new symbols**
+
+```go
+// routeTenant resolves the ORGANIZATION the route is scoped to, from the
+// path. The tenant gate pins what this returns. Passing
+// TenantFromRoutedContext to the gate would be circular: nothing has pinned
+// the tenant yet, so it would resolve (zero, false) and 401 every request.
+func routeTenant(r *http.Request) (tenant.ID, bool) {
+    id := r.PathValue("org_id")
+    if id == "" {
+        return tenant.ID{}, false
+    }
+    return tenant.New(id), true
+}
+```
+
 **wiring rules**
 
 ```go
-router.Use(
-  tamperespresso.RequireAuth(jwtSvc),
-  tamperespresso.RequireTenantAllowEntered(tamperespresso.TenantFromRoutedContext),
+router.Use(tamperespresso.RequireAuth(jwtSvc))
+org.Use(
+  tamperespresso.RequireTenantAllowEntered(routeTenant),       // pins the org
+  tamperespresso.RequireDecision(tamperespresso.DecisionGate{
+    Authorizer:       engine,                                  // authz.RBAC over Store
+    Tenant:           tamperespresso.TenantFromRoutedContext,  // reads the pinned org
+    AllowEntered:     true,                                    // group admin is a guest
+    SubjectType:      "user",
+    ResourceType:     "organization",
+    ResourceIDFrom:   "org_id",
+    Action:           "org:manage",
+    VisibilityAction: "org:view",
+    WriteNotVisible:  notFound,                                // 404
+    WriteDenied:      forbidden,                               // 403
+  }),
 )
-org.Use(tamperespresso.RequireDecision(tamperespresso.DecisionGate{
-  Authorizer:       engine,                                   // authz.RBAC over Store
-  Tenant:           tamperespresso.TenantFromRoutedContext,   // SCOPE = org
-  AllowEntered:     true,                                     // group admin is a guest
-  SubjectType:      "user",
-  ResourceType:     "organization",
-  ResourceIDFrom:   "org_id",
-  Action:           "org:manage",
-  VisibilityAction: "org:view",
-  WriteNotVisible:  notFound,                                 // 404
-  WriteDenied:      forbidden,                                // 403
-}))
 ```
 
+- `TenantFromRoutedContext` belongs on the **DecisionGate** (it reads the
+  tenant the gate pinned), never on the gate itself. A gate fed with its own
+  output refuses every request: nothing has pinned the tenant when it runs.
+- The `/enter` route is the Phase 8 flow (`examples/multitenant/enter.go`); it
+  is reused, not redesigned here.
 - The org route MUST NOT call `Authorizer.Check` itself with a second scope.
 - No type in this package may satisfy `authz.BindingStore` except `Store`
   (9a-1) — a wrapper returning ancestor bindings is the failure this whole
@@ -513,14 +534,16 @@ org.Use(tamperespresso.RequireDecision(tamperespresso.DecisionGate{
 - A visible-but-under-ranked role → 403.
 - A `Single`/unentered platform-admin token on an org route → 401.
 - `ListSubjects(org)` includes the group admin (via the materialized binding).
+- A spy `Authorizer` records the scope of every `Check`: exactly one is made,
+  in the org scope.
 
 **mutation**
 - Set `AllowEntered: false`. The cross-org 200 tests MUST go red.
 - Point `DecisionGate.Tenant` at the **group** instead of the org. The scope
   assertions and the audit-scope test MUST go red.
-- Add a `Check` in the handler with the group scope and OR it. The
-  "cross-scope OR forbidden" test (a store read in the org scope only) MUST go
-  red — if no test distinguishes it, add one that fails on a second `Check`.
+- Wrap the `Authorizer` in a spy that records each `Check` scope, and add a
+  second `Check` with the group scope in the handler OR'd into the response.
+  The test asserting the recorded scopes are exactly `[org-1]` MUST go red.
 
 **verify**
 ```sh
@@ -531,7 +554,7 @@ go test -race ./examples/tenanthierarchy/...
 - [ ] One entered token reaches all three child orgs; sibling group is 401
 - [ ] 404/403/401 discipline asserted at the wire
 - [ ] Mutation proofs recorded with failing tests named
-- [ ] `grep` shows no second `Authorizer.Check` outside `DecisionGate`
+- [ ] A spy test proves exactly one `Authorizer.Check`, in the org scope
 
 ---
 
@@ -646,6 +669,10 @@ chain.
 - `examples/tenanthierarchy/audit.go` — the provisioning sink
 - `examples/tenanthierarchy/audit_test.go`
 
+The example has no audit DB (Phase 8's note), so the proof uses a fake
+`audit.Logger` that captures events. There is no chain-of-hash assertion here —
+only the event's scope, actor tenant, and type.
+
 **rules**
 - A provisioning operation emits an event whose actor is the **operator** (the
   subject performing the grant), and whose scope is the **group** being granted
@@ -661,7 +688,8 @@ chain.
 - Revoke → one event.
 - A group-admin mutation on an org route → event scope = org, actor tenant = group
   (assert via the example's audit sink).
-- The example does not create a second chain.
+- Provisioning and org-mutation events go to the **same** sink instance (assert
+  one sink is constructed, not one per group).
 
 **mutation**
 - Set the org-mutation event scope to the group. The scope assertion test MUST

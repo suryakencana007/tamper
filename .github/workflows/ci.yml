@@ -15,14 +15,60 @@ concurrency:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    # Self-hosted ARC runner in the homelab k3s cluster, defined in
+    # suryakencana007/homelabs (infrastructure/actions-runner-controller/
+    # runner-tamper.yaml). ARC registers a scale set against ONE repository,
+    # so this name is specific to tamper; it is not a shared pool.
+    #
+    # Expect this to be SLOWER than ubuntu-latest, not faster. jagad, the other
+    # Go repo on these runners, measured 10-16 min/job here against 4-8 min
+    # GitHub-hosted. tamper is public, so GitHub-hosted minutes were free; what
+    # the move buys is builds on own hardware and independence from GitHub's
+    # runner queue. The scale set mounts hostPath caches for the Go toolchain
+    # and the module cache to close part of that gap.
+    runs-on: tamper
+    # 45 min, the same ceiling jagad uses on these runners. The default 360 is
+    # far more than this pipeline should ever need, and a hung job holds one of
+    # only two runner slots. Not tighter than 45: the `go test` step alone is
+    # allowed 15 min, and a COLD run (empty hostPath caches) first pulls two Go
+    # toolchains, the module set and golangci-lint over a ~1.4 MB/s uplink.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # cache: false on the homelab runner. Uploading and downloading the
+          # GitHub-hosted cache over a home uplink costs more than it saves,
+          # and it is redundant here: the scale set mounts a persistent
+          # hostPath at GOMODCACHE, so modules (and the `toolchain go1.26.6`
+          # pin, which Go fetches AS A MODULE) survive between jobs already.
+          # Same decision, same reason, as jagad's workflow.
+          cache: false
+
+      # The ARC runner image (ghcr.io/actions/actions-runner) is minimal and
+      # ships neither gcc nor libc6-dev, unlike ubuntu-latest. `go test -race`
+      # requires cgo, so without this step it fails with
+      # "-race requires cgo" rather than anything that points at the runner.
+      #
+      # The check tests for a C HEADER, not just for gcc: gcc alone is not
+      # enough, because the headers the race runtime needs (stdio.h,
+      # pthread.h) live in libc6-dev. That is a lesson already paid for twice
+      # in this cluster — see .github/actions/alat-build in kubuskotak/jagad,
+      # which records the same finding for the resi runner.
+      #
+      # Idempotent and retried: one apt call only when something is missing,
+      # so a transient mirror hiccup does not redden the job outright.
+      - name: Build tooling not present in the ARC runner image
+        run: |
+          set -u
+          missing=()
+          { command -v gcc >/dev/null 2>&1 && [ -e /usr/include/stdio.h ]; } || missing+=(gcc libc6-dev)
+          if [ ${#missing[@]} -gt 0 ]; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends "${missing[@]}"
+          fi
 
       - name: Build
         run: go build ./...

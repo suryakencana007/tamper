@@ -60,6 +60,9 @@ For every slice, in this order:
 - **Scope is the organization.** The tenant-group is the subject's **home
   tenant**, never a route scope.
 - Every store this app adds runs `authz/tenanttest.RunBindingStoreLeakSuite`.
+- Every slice's `verify` also runs `go build ./...` at the repo root: the new
+  package imports `espresso`/`identity`, so a cross-package break must fail here,
+  not in a later slice.
 - **Rule 6:** every guard ships with a test that makes it fire.
 - **Rule 7:** an improvement spotted en route is a separate change.
 - **Deny discipline:** 401 at the tenant gate, 404 for an in-group invisible
@@ -343,11 +346,9 @@ func (p *Provisioner) GroupAdmins(ctx context.Context, group tenant.ID) ([]authz
 **mutation**
 - In `MoveOrg`, skip the "remove from `from`" half. The leak test (from-admin
   still has access) MUST go red.
-- In `AddOrg`, extend only admins whose role is in `RoleMap` **without**
-  failing on unmapped ones (silently skip). A test that an admin with an
-  unmapped role causes the whole `AddOrg` to fail, or is deliberately absent,
-  MUST distinguish this — pick the contract in 9a-2 (fail the op) and make the
-  test assert it.
+- In `AddOrg`, silently skip an admin whose role is unmapped (`continue`
+  instead of failing the operation). The 9a-2 contract test "an unmapped role
+  fails the op", extended to `AddOrg`, MUST go red.
 
 **verify**
 ```sh
@@ -665,9 +666,10 @@ chain.
 **mutation**
 - Set the org-mutation event scope to the group. The scope assertion test MUST
   go red.
-- Derive the admin level from `actor.subject_type`. A test asserting the actor
-  type is `"user"` for all three levels MUST go red / fail to compile against a
-  non-`ActorType` value.
+- Stamp the admin level into `Actor.Type` (e.g.
+  `audit.ActorType("tenant_group_admin")`). The test asserting
+  `Actor.Type == audit.ActorTypeUser` for a tenant-group admin's org mutation
+  MUST go red.
 
 **verify**
 ```sh

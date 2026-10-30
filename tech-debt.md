@@ -304,8 +304,11 @@ AND-gates (`authz/policy.go:49`).
 **Workaround in the application.** The engine leaves all indirection to the
 store, but since Phase 8b (`authz` tenant-scoped) a store must return a binding
 in the scope asked for (`authz/store.go`, "A binding returned has Tenant set to
-tenantID"). A store may **not** return an ancestor's binding in a child's
-scope — `authz/tenanttest.RunBindingStoreLeakSuite` catches it. So for **roles**
+tenantID"), and the RBAC engine drops any binding whose scope is not the one
+asked. A store may **not** return an ancestor's binding in a child's scope; a
+wrapper that instead re-stamps `Tenant` to the child scope only fabricates a
+row that was never written, and `authz/tenanttest.RunBindingStoreLeakSuite`
+tests the adapter, not a wrapper, so it will not catch that. So for **roles**
 the application must **materialize** the inherited grant as real per-child
 bindings at provisioning time (eager provisioning): a tenant-group admin holds
 a binding in each child org scope, with the tenant-group as its home tenant.

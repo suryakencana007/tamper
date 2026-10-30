@@ -66,7 +66,11 @@ Ini bukan preferensi; ini batas keras yang sudah settled.
   subjek memakai home tenant dari `htid`.
 - **`authz/store.go`:** *"A binding returned has Tenant set to tenantID."*
 - **`authz/tenanttest.RunBindingStoreLeakSuite`:** sebuah store yang
-  mengembalikan binding leluhur di scope anak **gagal** suite ini.
+  mengembalikan binding dengan `Tenant` **bukan** scope yang ditanya gagal
+  suite ini. (Suite ini menguji adapter, bukan wrapper, dan menyemai resource
+  bertipe `"thing"` tanpa hierarchy — jadi ia **tidak** menangkap wrapper
+  re-stamp yang mengarang baris ber-stempel scope anak. Alasan wrapper itu gugur
+  ada di Alternatif D.)
 - **`CLAUDE.md`:** standing rule 1 (tanpa compatibility code), 2 (deny-by-default),
   3 (cross-tenant miss 404, bukan 403), 4 (misconfig gagal di `New`), 6 (guard +
   test yang membuktikan guard menyala).
@@ -117,22 +121,31 @@ berbeda hanya cara grant-nya di-provision (§3.3).
 `grant "admin tenant-group X"` adalah **operasi provisioning**, bukan sekadar
 satu baris:
 
-- menulis satu `Binding` nyata per organisasi anak X (dan membership
-  `EnterTenant` yang sesuai bila app memakai jalur masuk Phase 8);
-- di dalam **satu transaksi** bersama catatan niat grant-nya;
+- menulis satu `Binding` nyata per organisasi anak X; membership `EnterTenant`
+  **tidak** dimaterialisasi — ia dibaca dari intent + parentage saat `IsMember`
+  dipanggil (lihat `TENANT-HIERARCHY-MANIFEST.md` 9b-1), sehingga tidak ada
+  set turunan kedua yang bisa drift;
+- di dalam **satu transaksi** bersama baris niat grant-nya (intent row, scope =
+  grup — lihat paragraf di bawah);
 - role ditranslasi lewat `RoleMap` (fail-closed): role grup yang tidak punya
-  padanan org **tidak** mengembang — grants nothing, bukan diteruskan mentah;
+  padanan org membuat **seluruh grant gagal** — nol baris ditulis, bukan
+  diteruskan mentah dan bukan intent tanpa ekspansi (intent yatim akan
+  dilaporkan guard selamanya);
 - `revoke` menghapus seluruh baris turunannya dalam satu transaksi.
 
 Perubahan keanggotaan organisasi juga memicu re-sync di transaksi yang sama:
 org **ditambah** ke grup → perluas setiap grant grup yang ada; org **dipindah**
 → hapus baris di grup lama, tulis di grup baru; org **dihapus** → hapus barisnya.
 
-**Tidak ada penyimpanan grant "level grup" yang terpisah sebagai sumber
-otoritas.** Baris per-organisasi adalah sumber kebenarannya; "admin grup"
-hanyalah nama untuk sekumpulan baris yang ditulis/dihapus bersama. Ini yang
-membuat `ListSubjects(org-1)` mengembalikan group admin sebagai subjek nyata
-dengan home tenant-nya (Phase 8b §3).
+**Intent row (scope = grup) adalah sumber kebenaran; baris per-organisasi
+adalah proyeksi.** Grant "admin tenant-group X" disimpan sebagai satu baris
+niat di scope X — `Resource{tenant_group, X}` — dan baris per-organisasi
+diturunkan darinya. Guard rekonsiliasi (§3.7) membandingkan keduanya: binding
+tanpa niat pendukung = *orphan*; niat tanpa binding di salah satu anaknya =
+*missing*. Baris per-organisasi yang nyata inilah yang membuat
+`ListSubjects(org-1)` mengembalikan group admin sebagai subjek nyata dengan
+home tenant-nya (Phase 8b §3) — tanpa itu, group admin hanya terlihat di scope
+grup dan access-review org under-report.
 
 ### 3.4 Batas scope — apa yang boleh dan tidak
 
@@ -258,9 +271,16 @@ resolves it, inherits through it, or branches on it") dan
 khusus di gate.
 
 ### D. Re-stamp lintas scope (draft pra-revisi)
-**Ditolak secara struktural.** Mengembalikan binding yang `Tenant`-nya bukan
-scope yang ditanya; engine membuangnya, `authz/store.go` melarangnya, dan leak
-suite menangkapnya. Ini bukan bug kecil — ia melanggar inti Phase 8b §3/§5.1.
+**Ditolak secara struktural**, karena tiga hal sekaligus: (1) `authz/store.go`
+mewajibkan binding yang dikembalikan ber-`Tenant` sama dengan scope yang
+ditanya; (2) `authz/rbac.go` membuang binding scope salah di `effective`,
+`ListResources`, dan `ListSubjects`; (3) kalau wrapper menuliskan `Tenant =
+scope anak` untuk lolos (1) dan (2), ia **mengarang baris tanpa backing
+write** — `ListSubjects`/access-review dan guard drift pasti salah, dan tidak
+ada baris nyata yang bisa direkonsiliasi. Leak suite **tidak** menangkap kasus
+(3) karena ia menguji adapter dengan resource bertipe `"thing"` tanpa
+hierarchy; jangan mengandalkannya sebagai bukti. Ini melanggar inti Phase 8b
+§3/§5.1.
 
 ### E. Dua scoped-check di-OR di app layer (opsi a)
 **Ditolak sebagai penentu otorisasi.** Secara mekanik tiap `Check` satu scope,
@@ -326,6 +346,10 @@ single-resource.
   ("apakah IdP parent melayani anak?") tetap terbuka.
 - **Mekanisme re-sync konkret** (event, outbox, job) — keputusan implementasi,
   bukan ADR.
+- **`MembershipsFor(userID)` tanpa home tenant.** Port identitas hanya menerima
+  `userID`, padahal id unik hanya di dalam satu tenant. Implementasi membership
+  harus mendisambiguasi lintas grup (mis. hanya grup yang diketahui app, atau
+  home tenant disimpan di intent row). Belum diputuskan.
 - **Lifecycle tenant** (TD-05), **suspensi** (TD-06), **impersonasi** (TD-07).
 
 ## 9. Kapan ditinjau ulang

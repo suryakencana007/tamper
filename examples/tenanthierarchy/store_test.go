@@ -264,3 +264,89 @@ func TestStore_ConcurrentUse(t *testing.T) {
 		t.Fatalf("rows = %d, want %d", got, goroutines*2)
 	}
 }
+
+// ---------------------------------------------------------------------
+// Provenance: a row can have several origins, and goes only when the last
+// one does. This is what stops a group revoke from removing a direct grant
+// that happens to land on the same binding.
+// ---------------------------------------------------------------------
+
+func TestProvenance_DirectSurvivesGroupOriginRevoke(t *testing.T) {
+	s := newStore()
+	group := GroupOrigin(tg)
+
+	if err := s.Grant(ctx, bobOrg1); err != nil {
+		t.Fatalf("direct Grant: %v", err)
+	}
+	if err := s.GrantFrom(ctx, bobOrg1, group); err != nil {
+		t.Fatalf("group GrantFrom: %v", err)
+	}
+	if len(s.rows) != 1 {
+		t.Fatalf("rows = %d, want 1 — both origins name the same key", len(s.rows))
+	}
+	if got := len(s.origins[keyOf(bobOrg1)]); got != 2 {
+		t.Fatalf("origins = %d, want 2", got)
+	}
+
+	if err := s.RevokeFrom(ctx, keyOf(bobOrg1), group); err != nil {
+		t.Fatalf("RevokeFrom(group): %v", err)
+	}
+	if _, ok := s.rows[keyOf(bobOrg1)]; !ok {
+		t.Fatal("revoking the group origin removed the direct grant")
+	}
+
+	if err := s.Revoke(ctx, keyOf(bobOrg1)); err != nil {
+		t.Fatalf("Revoke(direct): %v", err)
+	}
+	if _, ok := s.rows[keyOf(bobOrg1)]; ok {
+		t.Fatal("the row survived its last origin")
+	}
+}
+
+func TestProvenance_GrantFromIsIdempotent(t *testing.T) {
+	s := newStore()
+	group := GroupOrigin(tg)
+	for i := 0; i < 2; i++ {
+		if err := s.GrantFrom(ctx, bobOrg1, group); err != nil {
+			t.Fatalf("GrantFrom #%d: %v", i+1, err)
+		}
+	}
+	if len(s.rows) != 1 || len(s.origins[keyOf(bobOrg1)]) != 1 {
+		t.Fatalf("rows=%d origins=%d, want 1 and 1", len(s.rows), len(s.origins[keyOf(bobOrg1)]))
+	}
+}
+
+func TestProvenance_RevokeFromAbsentOriginIsNoOp(t *testing.T) {
+	s := newStore()
+	if err := s.Grant(ctx, bobOrg1); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if err := s.RevokeFrom(ctx, keyOf(bobOrg1), GroupOrigin(tg)); err != nil {
+		t.Fatalf("RevokeFrom(absent origin): %v", err)
+	}
+	if _, ok := s.rows[keyOf(bobOrg1)]; !ok {
+		t.Fatal("an absent origin must not remove the row")
+	}
+}
+
+// A Tx sees its own staged writes: provisioning reads inside Apply, which is
+// what closes the read-then-apply race.
+func TestTx_ReadsSeeStagedWrites(t *testing.T) {
+	s := newStore()
+	err := s.Apply(ctx, func(tx Tx) error {
+		if err := tx.Grant(ctx, bobOrg1); err != nil {
+			return err
+		}
+		got, err := tx.BindingsFor(ctx, org1, bob, resOrg1)
+		if err != nil {
+			return err
+		}
+		if len(got) != 1 {
+			t.Fatalf("staged read = %d, want 1", len(got))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+}

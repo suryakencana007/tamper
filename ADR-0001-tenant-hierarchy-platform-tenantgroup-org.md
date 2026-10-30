@@ -1,9 +1,52 @@
 # ADR-0001: Hierarki tenant 3-tingkat (platform → tenant-group → organization) di atas tamper, lewat espresso
 
-- **Status:** Proposed (direvisi setelah review — pin level + disiplin deny dua lapis dikoreksi; lihat §2 dan §6)
+- **Status:** Proposed — **BLOCKED sejak 2026-10-30 sore, lihat "Catatan blocking" sebelum membaca lebih jauh**
 - **Tanggal:** 2026-10-30 (revisi: 2026-10-31)
 - **Pengambil keputusan:** Nanang (product), didiskusikan bersama Claude
-- **Terkait:** `tenant.Descriptor.ParentID` (reserved, sketch Phase7 §8 item 3), `PHASE7-MULTITENANCY-SKETCH.md`, `PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md`, `espresso/tenantgate.go`, `espresso/decision.go`, implementasi referensi `examples/tenanthierarchy/`
+- **Terkait:** `tenant.Descriptor.ParentID` (reserved, sketch Phase7 §8 item 3), `PHASE7-MULTITENANCY-SKETCH.md`, `PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md`, `espresso/tenantgate.go`, `espresso/decision.go`, implementasi referensi `examples/tenanthierarchy/`, **`PHASE8-PLATFORM-ADMIN-SKETCH.md`/`PHASE8B-AUTHZ-TENANT-SKETCH.md` (TD-03, decided 2026-10-05 — SETELAH draft ini ditulis)**
+
+## Catatan blocking (2026-10-30 sore, saat menyiapkan PR)
+
+Saat rebase ke `origin/main` untuk PR, ketemu bahwa `main` sudah maju lewat
+**Phase 8** (platform-admin native: `identity.MembershipStore` +
+`Core.EnterTenant`, token `tid`/`htid`) dan **Phase 8b** ("TD-03",
+authz jadi tenant-scoped di semua port) — keduanya diputuskan 2026-10-05,
+tanpa draft ini menyadarinya.
+
+**Dampak: build pecah, bukan cosmetic.** Phase 8b menambah `Tenant
+tenant.ID` ke `authz.Binding`/`authz.Subject`, dan setiap method
+`Authorizer`/`BindingStore` sekarang wajib ambil `tenantID tenant.ID`
+sebagai SCOPE, dengan keputusan keras #2: *"There is no binding that spans
+tenants."* `RBAC.effective`/`ListResources`/`ListSubjects` semua membuang
+binding yang `Tenant`-nya tidak sama dengan scope yang ditanya.
+
+**Ini meruntuhkan mekanisme inti §4a/§4b di bawah** — "re-stamp" binding
+`tenant_group` jadi binding `organization` lintas resource-type (jantung
+diagram 3) tidak lagi valid: scope sekarang flat 1 `tenant.ID` per
+pertanyaan, dan engine menolak baca lintas-scope apa pun secara struktural.
+
+**Yang menenangkan:** Phase 8b sendiri mendaftarkan "Tenant hierarchy"
+sebagai **TD-04, belum diselesaikan** (§6 PHASE8B-AUTHZ-TENANT-SKETCH.md:
+*"A membership names one tenant. It does not flow to child tenants."*) —
+ADR ini mengisi gap yang sudah diakui ada, tapi mekanismenya harus
+ditulis ulang agar konsisten dengan Phase 8b, bukan menerobosnya. Dua
+arah yang konsisten, BELUM diputuskan:
+
+- **(a) Dua scoped-check di-OR di app layer** — tenant-group jadi
+  `tenant.ID` sendiri; gate app panggil `Check(ctx, orgScope, ...)` DAN
+  `Check(ctx, tenantGroupScope, ...)`, OR hasilnya, tidak pernah
+  memalsukan binding lintas scope.
+- **(b) Eager provisioning** — grant tenant-group-admin menulis N
+  `Binding` row nyata, satu per org anak, persis cost yang Phase 8 sendiri
+  terima untuk platform admin ("a binding in each").
+
+**Status kerja:** kode draft (`examples/tenanthierarchy/*.go`) dan test
+suite di branch `feat/adr-0001-tenant-hierarchy` **tidak build** di atas
+`origin/main` terbaru (7 compile error, semua soal parameter `tenantID`
+yang kurang). PR belum dibuka. Body ADR di bawah ini (Konteks s.d. Kapan
+ditinjau ulang, dan diagram) masih merepresentasikan desain PRA-Phase-8b —
+baca sebagai sejarah keputusan, BUKAN target implementasi saat ini, sampai
+(a)/(b) diputuskan dan ADR ini direvisi ulang.
 
 ## Konteks
 

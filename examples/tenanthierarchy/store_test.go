@@ -3,6 +3,8 @@ package tenanthierarchy
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/suryakencana007/tamper/authz"
@@ -220,5 +222,45 @@ func TestReads_AreScopedAndExact(t *testing.T) {
 	}
 	if len(globals) != 1 || globals[0].Subject != bob {
 		t.Fatalf("BindingsOnResource(org1, tenant_group) = %+v, want bob's intent row", globals)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Concurrency: reads, single-row writes and Apply all serialize on one lock.
+// ---------------------------------------------------------------------
+
+func TestStore_ConcurrentUse(t *testing.T) {
+	s := newStore()
+
+	const goroutines, perGoroutine = 8, 50
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			sub := authz.Subject{Tenant: tg, Type: "user", ID: fmt.Sprintf("u-%d", g)}
+			for i := 0; i < perGoroutine; i++ {
+				if err := s.Grant(ctx, authz.Binding{Tenant: org1, Subject: sub, Resource: resOrg1, Role: "org_admin"}); err != nil {
+					t.Errorf("goroutine %d Grant: %v", g, err)
+					return
+				}
+				if err := s.Apply(ctx, func(tx Tx) error {
+					return tx.Grant(ctx, authz.Binding{Tenant: org2, Subject: sub, Resource: resOrg1, Role: "org_admin"})
+				}); err != nil {
+					t.Errorf("goroutine %d Apply: %v", g, err)
+					return
+				}
+				if _, err := s.BindingsFor(ctx, org1, sub, resOrg1); err != nil {
+					t.Errorf("goroutine %d BindingsFor: %v", g, err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Each goroutine writes exactly two rows, idempotent across its 50 passes.
+	if got := len(s.rows); got != goroutines*2 {
+		t.Fatalf("rows = %d, want %d", got, goroutines*2)
 	}
 }

@@ -28,11 +28,6 @@ func keyOf(b authz.Binding) BindingKey {
 	return BindingKey{Scope: b.Tenant, Subject: b.Subject, Res: b.Resource, Role: b.Role}
 }
 
-// bindingOf rebuilds the binding a key names.
-func bindingOf(k BindingKey) authz.Binding {
-	return authz.Binding{Tenant: k.Scope, Subject: k.Subject, Resource: k.Res, Role: k.Role}
-}
-
 // Store is an authz.BindingStore (read) plus atomic, idempotent writes. It
 // holds both kinds of row the hierarchy needs — the group-scope INTENT row
 // and the org-scope MATERIALIZED rows — in one keyed set, the in-memory
@@ -89,7 +84,7 @@ type BindingWriter interface {
 // storing it quietly would turn a forgotten field into "everyone lost
 // access" with no error anywhere. The same rule the reference authz stores
 // apply.
-func (s *Store) Grant(ctx context.Context, b authz.Binding) error {
+func (s *Store) Grant(_ context.Context, b authz.Binding) error {
 	if err := gate(b.Tenant, b.Subject); err != nil {
 		return err
 	}
@@ -99,13 +94,13 @@ func (s *Store) Grant(ctx context.Context, b authz.Binding) error {
 	return nil
 }
 
-// Revoke removes the binding key names. Revoking an absent key is a no-op,
-// not an error — a re-sync may revoke a row that a previous pass already
-// removed.
+// Revoke removes the binding the key names. Revoking an absent key is a
+// no-op, not an error — a re-sync may revoke a row that a previous pass
+// already removed.
 //
 // ErrTenantRequired, like Grant, for a key without a scope or a subject with
 // no home tenant.
-func (s *Store) Revoke(ctx context.Context, key BindingKey) error {
+func (s *Store) Revoke(_ context.Context, key BindingKey) error {
 	if err := gate(key.Scope, key.Subject); err != nil {
 		return err
 	}
@@ -120,7 +115,12 @@ func (s *Store) Revoke(ctx context.Context, key BindingKey) error {
 // exactly as it was. This is the all-or-nothing boundary provisioning uses: a
 // grant writes its intent row and every materialized row in one Apply, so a
 // failure can never leave an intent without its expansion.
-func (s *Store) Apply(ctx context.Context, fn func(tx Tx) error) error {
+//
+// The cost is O(total rows), not O(rows changed): the staged copy is a full
+// map copy. Fine for the example; a SQL adapter stages in the transaction
+// instead. ctx is accepted for that adapter, which can honour cancellation —
+// the in-memory implementation has nothing to cancel.
+func (s *Store) Apply(_ context.Context, fn func(tx Tx) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

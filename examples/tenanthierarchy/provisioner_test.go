@@ -10,10 +10,6 @@ import (
 	"github.com/suryakencana007/tamper/tenant"
 )
 
-// org3 completes the three-child group the fixtures use. org1/org2 and the
-// subjects come from store_test.go.
-var org3 = tenant.New("org-3")
-
 // fakeHierarchy is an in-memory OrgHierarchy: the app-owned port tamper's
 // tenant.Store deliberately does not provide.
 type fakeHierarchy struct {

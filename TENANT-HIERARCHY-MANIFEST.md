@@ -25,12 +25,17 @@
 
 | Milestone | Slices | State |
 |---|---|---|
-| M1 — storage + provisioning | 9a-1, 9a-2, 9a-3 | not started |
+| M1 — storage + provisioning | 9a-1, 9a-2, 9a-3 | 9a-1 done (#65), 9a-2 done (#66), 9a-3 not started |
 | M2 — request path | 9b-1, 9b-2 | not started |
 | M3 — integrity | 9c-1, 9c-2 | not started |
 
-Nothing is implemented. `examples/tenanthierarchy` was deleted (the pre-Phase-8b
-draft); 9a-1 recreates it around the new mechanism.
+`examples/tenanthierarchy` exists again from 9a-1 (the pre-Phase-8b draft was
+deleted in #63). Slices after 9a-2 are not implemented.
+
+Two review-driven amendments landed with 9a-1 and 9a-2 and are folded into the
+blocks below: **per-origin provenance** (a row is deleted only when its last
+origin goes) and **`Tx` reads** (an `Apply` callback reads and writes
+atomically). Both came out of the code review of those slices.
 
 ## How to use this file
 
@@ -111,39 +116,66 @@ type BindingKey struct {
     Role    authz.Role
 }
 
-// Store is an authz.BindingStore (read) plus atomic, idempotent writes.
-type Store struct { /* ... */ }
+// Origin names what justifies a row. A row can have several: a direct grant
+// and a group grant can produce the identical binding, and revoking one must
+// not remove the other. The row goes only when its last origin does.
+// (Review amendment B1; ADR-0001 decision 1's side table.)
+type Origin string
+const OriginDirect Origin = "direct"
+func GroupOrigin(group tenant.ID) Origin
+
+// Store is an authz.BindingStore (read) plus atomic, idempotent, per-origin
+// writes. It holds the group-scope INTENT row and the org-scope MATERIALIZED
+// rows in one keyed set, with a per-row origin set.
+type Store struct { /* rows + per-row origin sets */ }
 
 func NewStore() *Store
 
-// authz.BindingStore (read) — delegate or implement directly.
+// authz.BindingStore (read)
 func (s *Store) BindingsFor(ctx context.Context, scope tenant.ID, sub authz.Subject, res authz.Resource) ([]authz.Binding, error)
 func (s *Store) BindingsForSubject(ctx context.Context, scope tenant.ID, sub authz.Subject, resourceType string) ([]authz.Binding, error)
 func (s *Store) BindingsOnResource(ctx context.Context, scope tenant.ID, res authz.Resource) ([]authz.Binding, error)
 
-// Writes. Grant twice with the same key = one row. Revoke of an absent key
-// is a no-op. Apply is all-or-nothing.
+// Writes. Grant/Revoke are the OriginDirect convenience over
+// GrantFrom/RevokeFrom, which touch a named origin. A second identical
+// (key, origin) is idempotent; the row is removed when its last origin goes.
 func (s *Store) Grant(ctx context.Context, b authz.Binding) error
+func (s *Store) GrantFrom(ctx context.Context, b authz.Binding, origin Origin) error
 func (s *Store) Revoke(ctx context.Context, key BindingKey) error
+func (s *Store) RevokeFrom(ctx context.Context, key BindingKey, origin Origin) error
 func (s *Store) Apply(ctx context.Context, fn func(tx Tx) error) error
 
+// Tx is the read+write view an Apply callback works against. Reads see the
+// staged view, so a callback can read-then-write atomically.
+// (Review amendment M1.)
 type Tx interface {
     Grant(ctx context.Context, b authz.Binding) error
+    GrantFrom(ctx context.Context, b authz.Binding, origin Origin) error
     Revoke(ctx context.Context, key BindingKey) error
+    RevokeFrom(ctx context.Context, key BindingKey, origin Origin) error
+    BindingsFor(ctx context.Context, scope tenant.ID, sub authz.Subject, res authz.Resource) ([]authz.Binding, error)
+    BindingsForSubject(ctx context.Context, scope tenant.ID, sub authz.Subject, resourceType string) ([]authz.Binding, error)
+    BindingsOnResource(ctx context.Context, scope tenant.ID, res authz.Resource) ([]authz.Binding, error)
 }
 
 // BindingWriter is what the Provisioner (9a-2) depends on, so a SQL adapter
 // can replace the in-memory store without touching provisioning logic.
 type BindingWriter interface {
     Grant(ctx context.Context, b authz.Binding) error
+    GrantFrom(ctx context.Context, b authz.Binding, origin Origin) error
     Revoke(ctx context.Context, key BindingKey) error
+    RevokeFrom(ctx context.Context, key BindingKey, origin Origin) error
     Apply(ctx context.Context, fn func(tx Tx) error) error
 }
 ```
 
 **invariants**
 - `Grant` is idempotent on `BindingKey`: the same key twice is one row.
+- A row carries a set of **origins**, and is deleted only when its last origin
+  goes. A direct grant and a group grant on the same binding coexist; revoking
+  one leaves the other. Revoking an origin a row does not carry is a no-op.
 - `Apply` is atomic: an error inside `fn` leaves the store exactly as it was.
+- A `Tx` read sees the callback's own staged writes.
 - Reads satisfy the `authz/store.go` isolation contract: only rows whose
   `Tenant == scope`, and only for the exact subject asked.
 - An unset scope (`!tenant.ID.Valid()`) is `authz.ErrTenantRequired`, matching
@@ -155,11 +187,17 @@ type BindingWriter interface {
 - Revoke of an absent key: no error, no change.
 - `Apply` rollback: a `fn` that grants then returns an error leaves no row.
 - Unset scope → `ErrTenantRequired` on read and write.
+- Provenance: a direct grant survives a group-origin revoke, and goes when its
+  own origin does; `GrantFrom` is idempotent; a revoke of an absent origin is a
+  no-op.
+- A `Tx` sees its own staged writes.
 
 **mutation**
 - Make `Grant` append without keying on `BindingKey`. The idempotence test
   MUST go red.
 - Make `Apply` write through instead of staging. The rollback test MUST go red.
+- Remove the per-origin ref count (revoke deletes the row outright). The
+  "direct survives a group-origin revoke" test MUST go red.
 
 **verify**
 ```sh
@@ -168,10 +206,15 @@ go vet ./examples/tenanthierarchy/...
 ```
 
 **dod**
-- [ ] Leak suite green against `Store`
-- [ ] Both mutation proofs recorded in the PR body with the failing test named
-- [ ] No tamper file outside `examples/tenanthierarchy/` changed
-- [ ] Package doc states the app-layer scope and cites ADR-0001
+- [x] Leak suite green against `Store`
+- [x] Both mutation proofs recorded in the PR body with the failing test named
+- [x] No tamper file outside `examples/tenanthierarchy/` changed
+- [x] Package doc states the app-layer scope and cites ADR-0001
+- [x] Provenance tests: direct survives group-origin revoke; absent-origin no-op
+- [x] `Tx` reads see staged writes
+
+**Landed:** #65 (commit `8185786`). Provenance and `Tx` reads were added during
+the review of that PR.
 
 ---
 
@@ -239,8 +282,12 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
   `{Scope: o, Subject: sub, Resource: {organization, o}, Role: translate(role)}`.
   If `translate` fails, the **whole apply fails** — never an intent without its
   expansion.
-- `RevokeGroupAdmin`: in one `Apply`, remove every materialized binding for
-  `sub` under every child of `group`, plus the intent row.
+- `RevokeGroupAdmin`: in one `Apply`, read the subject's rows through the `Tx`
+  (so the read and the removal are one atomic step) and call
+  `RevokeFrom(key, GroupOrigin(group))` for the intent row and every
+  materialized binding under the group's children. Removing by origin leaves a
+  **direct** grant on the same binding in place; only rows the group alone
+  justified disappear.
 - The materialized binding is **concrete**: `{organization, <org>}` in the
   org's scope — the exact shape a direct org-admin grant has (decision 2). A
   global binding in the org scope satisfies nothing the org route checks.
@@ -266,6 +313,8 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
 - Reverse query: `BindingsForSubject(childScope, sub, "organization")` returns
   the materialized binding; `BindingsFor(childScope, sub, {organization, child})`
   returns it; the intent row is **not** visible in `childScope`.
+- A **direct** grant on the same binding survives a group revoke, both for an
+  org binding and for a grant on the group resource itself (review B1).
 
 **mutation**
 - In `GrantGroupAdmin`, skip `translate` and pass the group role through. The
@@ -280,10 +329,16 @@ go test -race ./examples/tenanthierarchy/...
 ```
 
 **dod**
-- [ ] All three mutation proofs recorded in the PR body with failing tests named
-- [ ] `NewProvisioner` rejects nil writer / nil hierarchy / empty `RoleMap`
-- [ ] No cross-scope row: a child-scope read never returns the intent row
-- [ ] RoleMap fail-closed proven by a test
+- [x] All three mutation proofs recorded in the PR body with failing tests named
+- [x] `NewProvisioner` rejects nil writer / nil hierarchy / empty `RoleMap`
+- [x] No cross-scope row: a child-scope read never returns the intent row
+- [x] RoleMap fail-closed proven by a test
+- [x] Direct grant survives a group revoke on the same binding (B1)
+- [x] `RevokeGroupAdmin` reads inside `Apply` (M1)
+
+**Landed:** #66 (commit `838f898`). The revoke semantics were tightened during
+the review of that PR: `NewProvisioner` takes a `BindingWriter` (reads are on
+the `Tx`), and the revoke removes by origin.
 
 ---
 

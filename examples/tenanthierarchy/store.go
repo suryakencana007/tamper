@@ -293,19 +293,20 @@ func (s *Store) GroupAdmins(ctx context.Context, group tenant.ID) ([]authz.Bindi
 	return s.BindingsFrom(ctx, group, GroupOrigin(group))
 }
 
-// IntentGroupsForSubject returns the tenant-groups in which userID holds an
-// intent row: a row in the group's own scope, on a {tenant_group, group}
-// resource, carrying GroupOrigin(group). It is the cross-scope read a derived
-// membership needs for MembershipsFor, where the groups are not known in
-// advance. A direct binding on the group resource is not an intent and is
-// skipped.
-func (s *Store) IntentGroupsForSubject(_ context.Context, userID string) ([]tenant.ID, error) {
+// IntentGroupsForSubject returns the tenant-groups in which the subject
+// (subjectType, userID) holds an intent row: a row in the group's own scope,
+// on a {tenant_group, group} resource, carrying GroupOrigin(group). It is the
+// cross-scope read a derived membership needs for MembershipsFor, where the
+// groups are not known in advance. The subject type is matched so a
+// service_account named "bob" is not a user membership. A direct binding on the
+// group resource is not an intent and is skipped.
+func (s *Store) IntentGroupsForSubject(_ context.Context, subjectType, userID string) ([]tenant.ID, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	seen := make(map[tenant.ID]bool)
 	var out []tenant.ID
 	for k, b := range s.rows {
-		if b.Subject.ID != userID || b.Resource.Type != ResourceTenantGroup {
+		if b.Subject.Type != subjectType || b.Subject.ID != userID || b.Resource.Type != ResourceTenantGroup {
 			continue
 		}
 		if _, ok := s.origins[k][GroupOrigin(k.Scope)]; !ok {

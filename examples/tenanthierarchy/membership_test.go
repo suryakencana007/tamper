@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/suryakencana007/tamper/authz"
 	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/tenant"
@@ -206,4 +207,52 @@ func TestEnterTenant_DoesNotMintOnHierarchyError(t *testing.T) {
 	if _, err := core.EnterTenant(ctx, claims, org1); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the hierarchy error (no mint)", err)
 	}
+}
+
+// ---------------------------------------------------------------------
+// Membership is user-scoped: a subject of another type that shares the id
+// is not a user membership, and the user type is configurable.
+// ---------------------------------------------------------------------
+
+func TestIsMember_MatchesTheUserSubjectTypeOnly(t *testing.T) {
+	h := newHierarchy()
+	s := newStore()
+	sa := authz.Subject{Tenant: tg, Type: "service_account", ID: "bob"}
+	if err := s.GrantFrom(ctx, intentBinding(sa, tg, groupRole()), GroupOrigin(tg)); err != nil {
+		t.Fatalf("seed service-account intent: %v", err)
+	}
+
+	m := NewMembership(s, h)
+	if ok, err := m.IsMember(ctx, "bob", org1); err != nil || ok {
+		t.Fatalf("IsMember(bob) = (%v, %v) — a service_account named bob is not a user membership", ok, err)
+	}
+	if got, err := m.MembershipsFor(ctx, "bob"); err != nil || len(got) != 0 {
+		t.Fatalf("MembershipsFor(bob) = (%v, %v), want empty", ids(got), err)
+	}
+
+	// The app's own taxonomy may name users something else.
+	m2 := NewMembership(s, h, WithUserSubjectType("staff"))
+	staff := authz.Subject{Tenant: tg, Type: "staff", ID: "bob"}
+	if err := s.GrantFrom(ctx, intentBinding(staff, tg, groupRole()), GroupOrigin(tg)); err != nil {
+		t.Fatalf("seed staff intent: %v", err)
+	}
+	if ok, err := m2.IsMember(ctx, "bob", org1); err != nil || !ok {
+		t.Fatalf("IsMember(bob) with staff user type = (%v, %v), want true", ok, err)
+	}
+}
+
+func TestNewMembership_PanicsOnMisconfiguration(t *testing.T) {
+	mustPanic := func(name string, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("%s: want panic, got none", name)
+			}
+		}()
+		fn()
+	}
+
+	mustPanic("nil store", func() { NewMembership(nil, newHierarchy()) })
+	mustPanic("nil hierarchy", func() { NewMembership(newStore(), nil) })
+	mustPanic("empty user type", func() { NewMembership(newStore(), newHierarchy(), WithUserSubjectType("")) })
 }

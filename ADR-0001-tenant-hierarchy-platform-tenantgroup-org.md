@@ -1,9 +1,11 @@
 # ADR-0001: Hierarki tenant (tenant-group → organization) lewat grant per-tenant
 
-- **Status:** Proposed — mekanisme **dikunci ke eager per-tenant provisioning (opsi b)**.
+- **Status:** **Accepted** — mekanisme eager per-tenant provisioning (opsi b).
   Body pra-Phase-8b (re-stamp lintas scope) dihapus; lihat "Riwayat" di akhir.
-  Menunggu review sebelum ada implementasi.
-- **Tanggal:** 2026-10-30 (revisi mekanisme: 2026-10-30, setelah Phase 8b ditemukan saat rebase)
+  Diimplementasikan dan terbukti di [`examples/tenanthierarchy/`](examples/tenanthierarchy/)
+  (#65, #66, #69, #70, #71, #72, #73); rencana per slice ada di
+  [`TENANT-HIERARCHY-MANIFEST.md`](TENANT-HIERARCHY-MANIFEST.md).
+- **Tanggal:** 2026-10-30 (revisi mekanisme: 2026-10-30, setelah Phase 8b ditemukan saat rebase; diterima: 2026-10-30)
 - **Pengambil keputusan:** Nanang (product), didiskusikan bersama Claude
 - **Terkait:** `PHASE8-PLATFORM-ADMIN-SKETCH.md`, `PHASE8B-AUTHZ-TENANT-SKETCH.md` (TD-03),
   `tech-debt.md` TD-04, `tenant.Descriptor.ParentID` (reserved, sketch Phase7 §8 item 3),
@@ -377,3 +379,8 @@ single-resource.
   provisioning (opsi b)**. §4a dan diagram re-stamp dihapus. Opsi (a) ditolak
   sebagai penentu otorisasi, diizinkan hanya sebagai read helper. Batas scope,
   model guest, syarat sync/rekonsiliasi ditulis di §3.
+- **2026-10-30 (diterima):** status menjadi **Accepted**. Ketujuh slice manifest
+  sudah merge dan hijau (M1 #65/#66/#69, M2 #70/#71, M3 #72/#73), dan DoD
+  manifest tercentang kecuali baris status ini. Yang tetap TERBUKA dan tidak
+  diklaim oleh penerimaan ini: sumbu IdP/entitlement/domain (§8) serta
+  TD-05/TD-06/TD-07.

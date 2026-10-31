@@ -293,6 +293,31 @@ func (s *Store) GroupAdmins(ctx context.Context, group tenant.ID) ([]authz.Bindi
 	return s.BindingsFrom(ctx, group, GroupOrigin(group))
 }
 
+// IntentGroups returns every tenant-group that holds an intent row: a scope
+// whose {tenant_group, group} resource carries GroupOrigin(that scope).
+// Reconciliation uses it to enumerate the groups without being told which they
+// are. A direct binding on the group resource is not an intent and is skipped.
+func (s *Store) IntentGroups(_ context.Context) ([]tenant.ID, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := make(map[tenant.ID]bool)
+	var out []tenant.ID
+	for k, b := range s.rows {
+		if k.Res.Type != ResourceTenantGroup {
+			continue
+		}
+		if _, ok := s.origins[k][GroupOrigin(k.Scope)]; !ok {
+			continue
+		}
+		if !seen[b.Tenant] {
+			seen[b.Tenant] = true
+			out = append(out, b.Tenant)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out, nil
+}
+
 // IntentGroupsForSubject returns the tenant-groups in which the subject
 // (subjectType, userID) holds an intent row: a row in the group's own scope,
 // on a {tenant_group, group} resource, carrying GroupOrigin(group). It is the

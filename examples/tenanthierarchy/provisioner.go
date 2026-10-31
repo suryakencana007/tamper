@@ -33,6 +33,9 @@ var (
 	// ErrTooManyRows — the operation's projected row count exceeds the cap
 	// (ADR-0001 decision 3). Nothing is written.
 	ErrTooManyRows = errors.New("tenanthierarchy: provisioning would write too many rows")
+	// ErrBadMembership — a membership change (AddOrg/MoveOrg/RemoveOrg) names
+	// an unset tenant, or names the same tenant as both org and group.
+	ErrBadMembership = errors.New("tenanthierarchy: invalid org/group membership change")
 )
 
 // Provisioner turns "grant this subject admin of this tenant-group" into real
@@ -173,6 +176,117 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
 		}
 		return nil
 	})
+}
+
+// AddOrg extends every grant of group onto org: one materialized binding in
+// org's scope per intent row of group, carrying GroupOrigin(group). Atomic and
+// idempotent.
+//
+// The caller has already attached org to group in its own tenant table; this
+// makes the bindings match. The two writes are one transaction in a SQL
+// adapter; in the in-memory example they are separate, and a crash in between
+// leaves drift the reconciliation guard (slice 9c-1) reports.
+func (p *Provisioner) AddOrg(ctx context.Context, group, org tenant.ID) error {
+	if err := membershipGate(org, group); err != nil {
+		return err
+	}
+	origin := GroupOrigin(group)
+	return p.writer.Apply(ctx, func(tx Tx) error {
+		admins, err := tx.BindingsFrom(ctx, group, origin)
+		if err != nil {
+			return fmt.Errorf("tenanthierarchy: read intent rows of %s: %w", group, err)
+		}
+		if len(admins) > p.maxRows {
+			return fmt.Errorf("%w: AddOrg needs %d rows, cap %d", ErrTooManyRows, len(admins), p.maxRows)
+		}
+		return p.extendOnto(ctx, tx, group, org, admins)
+	})
+}
+
+// MoveOrg detaches org from `from`'s grants and attaches it to `to`'s, in one
+// atomic Apply: the from-group's contribution in org's scope is removed, and
+// every grant of `to` is materialized onto org. Both halves, or neither.
+func (p *Provisioner) MoveOrg(ctx context.Context, org, from, to tenant.ID) error {
+	if err := membershipGate(org, from, to); err != nil {
+		return err
+	}
+	return p.writer.Apply(ctx, func(tx Tx) error {
+		fromRows, err := tx.BindingsFrom(ctx, org, GroupOrigin(from))
+		if err != nil {
+			return fmt.Errorf("tenanthierarchy: read %s bindings in %s: %w", from, org, err)
+		}
+		toAdmins, err := tx.BindingsFrom(ctx, to, GroupOrigin(to))
+		if err != nil {
+			return fmt.Errorf("tenanthierarchy: read intent rows of %s: %w", to, err)
+		}
+		if n := len(fromRows) + len(toAdmins); n > p.maxRows {
+			return fmt.Errorf("%w: MoveOrg needs %d rows, cap %d", ErrTooManyRows, n, p.maxRows)
+		}
+		for _, b := range fromRows {
+			if err := tx.RevokeFrom(ctx, keyOf(b), GroupOrigin(from)); err != nil {
+				return err
+			}
+		}
+		return p.extendOnto(ctx, tx, to, org, toAdmins)
+	})
+}
+
+// RemoveOrg removes group's contribution (GroupOrigin(group)) from org's scope,
+// in one atomic Apply. A direct grant on the same binding is left in place;
+// rows only the group justified disappear.
+func (p *Provisioner) RemoveOrg(ctx context.Context, org, group tenant.ID) error {
+	if err := membershipGate(org, group); err != nil {
+		return err
+	}
+	origin := GroupOrigin(group)
+	return p.writer.Apply(ctx, func(tx Tx) error {
+		rows, err := tx.BindingsFrom(ctx, org, origin)
+		if err != nil {
+			return fmt.Errorf("tenanthierarchy: read %s bindings in %s: %w", group, org, err)
+		}
+		if len(rows) > p.maxRows {
+			return fmt.Errorf("%w: RemoveOrg needs %d deletes, cap %d", ErrTooManyRows, len(rows), p.maxRows)
+		}
+		for _, b := range rows {
+			if err := tx.RevokeFrom(ctx, keyOf(b), origin); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// extendOnto materializes every intent row of group into org's scope, with the
+// RoleMap-translated role and GroupOrigin(group). An unmapped role fails the
+// whole operation (fail closed), leaving no partial state.
+func (p *Provisioner) extendOnto(ctx context.Context, tx Tx, group, org tenant.ID, admins []authz.Binding) error {
+	for _, b := range admins {
+		mapped, ok := p.roles.translate(b.Role)
+		if !ok {
+			return fmt.Errorf("%w: %q held on %s", ErrUnmappedRole, b.Role, group)
+		}
+		if err := tx.GrantFrom(ctx, materializedBinding(b.Subject, org.String(), mapped), GroupOrigin(group)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// membershipGate refuses a membership change that names an unset tenant, or the
+// same tenant as both org and group.
+func membershipGate(org tenant.ID, groups ...tenant.ID) error {
+	if !org.Valid() {
+		return fmt.Errorf("%w: the org is unset", ErrBadMembership)
+	}
+	for _, g := range groups {
+		if !g.Valid() {
+			return fmt.Errorf("%w: a group is unset", ErrBadMembership)
+		}
+		if g == org {
+			return fmt.Errorf("%w: %s cannot be its own group", ErrBadMembership, org)
+		}
+	}
+	return nil
 }
 
 // gate refuses a grant/revoke whose group is unset, whose subject has no home

@@ -102,6 +102,7 @@ type Tx interface {
 	BindingsFor(ctx context.Context, scope tenant.ID, sub authz.Subject, res authz.Resource) ([]authz.Binding, error)
 	BindingsForSubject(ctx context.Context, scope tenant.ID, sub authz.Subject, resourceType string) ([]authz.Binding, error)
 	BindingsOnResource(ctx context.Context, scope tenant.ID, res authz.Resource) ([]authz.Binding, error)
+	BindingsFrom(ctx context.Context, scope tenant.ID, origin Origin) ([]authz.Binding, error)
 }
 
 // BindingWriter is what provisioning depends on, so a SQL adapter can
@@ -227,6 +228,13 @@ func (t *tx) BindingsOnResource(_ context.Context, scope tenant.ID, res authz.Re
 	return scanOnResource(t.rows, scope, res), nil
 }
 
+func (t *tx) BindingsFrom(_ context.Context, scope tenant.ID, origin Origin) ([]authz.Binding, error) {
+	if err := scopeGate(scope); err != nil {
+		return nil, err
+	}
+	return scanFrom(t.rows, t.origins, scope, origin), nil
+}
+
 // BindingsFor implements authz.BindingStore: the bindings sub holds on
 // exactly res, in the scope asked for.
 func (s *Store) BindingsFor(_ context.Context, scope tenant.ID, sub authz.Subject, res authz.Resource) ([]authz.Binding, error) {
@@ -261,6 +269,29 @@ func (s *Store) BindingsOnResource(_ context.Context, scope tenant.ID, res authz
 	return scanOnResource(s.rows, scope, res), nil
 }
 
+// BindingsFrom returns the bindings in scope that carry origin. It is the
+// origin-scoped read a group-materialization pass needs: in the group's own
+// scope, GroupOrigin(group) selects exactly that group's INTENT rows, and a
+// direct grant on the same resource — which carries OriginDirect — is not
+// swept in.
+func (s *Store) BindingsFrom(_ context.Context, scope tenant.ID, origin Origin) ([]authz.Binding, error) {
+	if err := scopeGate(scope); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return scanFrom(s.rows, s.origins, scope, origin), nil
+}
+
+// GroupAdmins returns the intent rows of a tenant-group: the bindings in the
+// group's scope that carry GroupOrigin(group). It is the read a membership
+// change uses to know whose grants to extend. A direct grant on the group
+// resource (OriginDirect) is not included — that is the provenance guard, not
+// a convenience.
+func (s *Store) GroupAdmins(ctx context.Context, group tenant.ID) ([]authz.Binding, error) {
+	return s.BindingsFrom(ctx, group, GroupOrigin(group))
+}
+
 func scanFor(rows map[BindingKey]authz.Binding, scope tenant.ID, sub authz.Subject, res authz.Resource) []authz.Binding {
 	var out []authz.Binding
 	for k, b := range rows {
@@ -285,6 +316,19 @@ func scanOnResource(rows map[BindingKey]authz.Binding, scope tenant.ID, res auth
 	var out []authz.Binding
 	for k, b := range rows {
 		if k.Scope == scope && k.Res == res {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+func scanFrom(rows map[BindingKey]authz.Binding, origins map[BindingKey]map[Origin]struct{}, scope tenant.ID, origin Origin) []authz.Binding {
+	var out []authz.Binding
+	for k, b := range rows {
+		if k.Scope != scope {
+			continue
+		}
+		if _, ok := origins[k][origin]; ok {
 			out = append(out, b)
 		}
 	}

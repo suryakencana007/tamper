@@ -82,3 +82,51 @@ func OrgGate(
 				gate(next)))
 	}
 }
+
+// ResourceSystem is the resource type of the platform (system) scope.
+const ResourceSystem = "system"
+
+// PlatformGate is the UNTENANTED platform surface: RequireAuth plus a
+// system-scope DecisionGate. This is where "grant a tenant-group admin" lives —
+// decision 6: only a platform admin may change a group's grant list, because a
+// group admin manages org resources, not its own grant list.
+//
+// There is no RequireTenant: a platform admin's token is for the platform tenant
+// and is not a guest anywhere. A tenant token (home or entered) does not fit the
+// platform tenant, so it gets the 401 a wrong tenant always gets; a platform
+// admin without the system role gets the 403.
+func PlatformGate(
+	jwt *crypto.JWTService,
+	engine authz.Authorizer,
+	platform tenant.ID,
+	action authz.Action,
+	denied tamperespresso.DenyWriter,
+	opts ...OrgGateOption,
+) func(http.Handler) http.Handler {
+	cfg := orgGateConfig{subjectType: DefaultUserSubjectType}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.subjectType == "" {
+		panic("tenanthierarchy: PlatformGate requires a non-empty subject type")
+	}
+	if !platform.Valid() || platform.IsSingle() {
+		panic("tenanthierarchy: PlatformGate requires a real platform tenant — " +
+			"a gate fixed to no tenant would refuse every request")
+	}
+
+	gate := tamperespresso.RequireDecision(tamperespresso.DecisionGate{
+		Authorizer:     engine,
+		Label:          "platform role",
+		SubjectType:    cfg.subjectType,
+		ResourceType:   ResourceSystem,
+		ResourceIDFrom: "", // singleton / system scope
+		Action:         action,
+		WriteDenied:    denied,
+		Tenant:         tamperespresso.FixedRequestTenant(platform),
+		AllowEntered:   false,
+	})
+	return func(next http.Handler) http.Handler {
+		return tamperespresso.RequireAuth(jwt)(gate(next))
+	}
+}

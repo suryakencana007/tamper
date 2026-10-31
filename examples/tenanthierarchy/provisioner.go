@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/suryakencana007/tamper/authz"
 	"github.com/suryakencana007/tamper/tenant"
@@ -73,6 +76,11 @@ type Provisioner struct {
 	hier    OrgHierarchy
 	roles   RoleMap
 	maxRows int
+	// audit, when set, records every provisioning operation on the single
+	// chain. nil disables emission (WithAudit enables it).
+	audit EventLogger
+	now   func() time.Time
+	newID func() string
 }
 
 // ProvisionerOption configures a Provisioner.
@@ -102,7 +110,8 @@ func NewProvisioner(w BindingSource, h OrgHierarchy, roles RoleMap, opts ...Prov
 		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires a non-empty RoleMap — " +
 			"an empty map would expand every tenant-group binding to nothing, which is a silent lockout")
 	}
-	p := &Provisioner{src: w, hier: h, roles: roles, maxRows: DefaultMaxProvisionRows}
+	p := &Provisioner{src: w, hier: h, roles: roles, maxRows: DefaultMaxProvisionRows,
+		now: time.Now, newID: uuid.NewString}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -136,7 +145,7 @@ func (p *Provisioner) GrantGroupAdmin(ctx context.Context, sub authz.Subject, gr
 	}
 
 	origin := GroupOrigin(group)
-	return p.src.Apply(ctx, func(tx Tx) error {
+	if err := p.src.Apply(ctx, func(tx Tx) error {
 		if err := tx.GrantFrom(ctx, intentBinding(sub, group, role), origin); err != nil {
 			return err
 		}
@@ -146,7 +155,11 @@ func (p *Provisioner) GrantGroupAdmin(ctx context.Context, sub authz.Subject, gr
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	p.recordProvisioning(ctx, ActionGrantGroupAdmin, group, sub.ID)
+	return nil
 }
 
 // RevokeGroupAdmin removes the group's contribution (GroupOrigin(group)) from
@@ -167,7 +180,7 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
 	}
 
 	origin := GroupOrigin(group)
-	return p.src.Apply(ctx, func(tx Tx) error {
+	if err := p.src.Apply(ctx, func(tx Tx) error {
 		var keys []BindingKey
 		intents, err := tx.BindingsOnResource(ctx, group, authz.Resource{Type: ResourceTenantGroup, ID: group.String()})
 		if err != nil {
@@ -196,7 +209,11 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	p.recordProvisioning(ctx, ActionRevokeGroupAdmin, group, sub.ID)
+	return nil
 }
 
 // AddOrg extends every grant of group onto org: one materialized binding in
@@ -215,7 +232,7 @@ func (p *Provisioner) AddOrg(ctx context.Context, group, org tenant.ID) error {
 		return err
 	}
 	origin := GroupOrigin(group)
-	return p.src.Apply(ctx, func(tx Tx) error {
+	if err := p.src.Apply(ctx, func(tx Tx) error {
 		admins, err := tx.BindingsFrom(ctx, group, origin)
 		if err != nil {
 			return fmt.Errorf("tenanthierarchy: read intent rows of %s: %w", group, err)
@@ -224,7 +241,11 @@ func (p *Provisioner) AddOrg(ctx context.Context, group, org tenant.ID) error {
 			return fmt.Errorf("%w: AddOrg needs %d rows, cap %d", ErrTooManyRows, len(admins), p.maxRows)
 		}
 		return p.extendOnto(ctx, tx, group, org, admins)
-	})
+	}); err != nil {
+		return err
+	}
+	p.recordProvisioning(ctx, ActionAddOrg, group, org.String())
+	return nil
 }
 
 // MoveOrg detaches org from `from`'s grants and attaches it to `to`'s, in one
@@ -243,7 +264,7 @@ func (p *Provisioner) MoveOrg(ctx context.Context, org, from, to tenant.ID) erro
 	if err := p.requireParent(ctx, org, to, "MoveOrg"); err != nil {
 		return err
 	}
-	return p.src.Apply(ctx, func(tx Tx) error {
+	if err := p.src.Apply(ctx, func(tx Tx) error {
 		fromRows, err := tx.BindingsFrom(ctx, org, GroupOrigin(from))
 		if err != nil {
 			return fmt.Errorf("tenanthierarchy: read %s bindings in %s: %w", from, org, err)
@@ -261,7 +282,11 @@ func (p *Provisioner) MoveOrg(ctx context.Context, org, from, to tenant.ID) erro
 			}
 		}
 		return p.extendOnto(ctx, tx, to, org, toAdmins)
-	})
+	}); err != nil {
+		return err
+	}
+	p.recordProvisioning(ctx, ActionMoveOrg, to, org.String())
+	return nil
 }
 
 // RemoveOrg removes group's contribution (GroupOrigin(group)) from org's scope,
@@ -279,7 +304,7 @@ func (p *Provisioner) RemoveOrg(ctx context.Context, org, group tenant.ID) error
 		return err
 	}
 	origin := GroupOrigin(group)
-	return p.src.Apply(ctx, func(tx Tx) error {
+	if err := p.src.Apply(ctx, func(tx Tx) error {
 		rows, err := tx.BindingsFrom(ctx, org, origin)
 		if err != nil {
 			return fmt.Errorf("tenanthierarchy: read %s bindings in %s: %w", group, org, err)
@@ -293,7 +318,11 @@ func (p *Provisioner) RemoveOrg(ctx context.Context, org, group tenant.ID) error
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	p.recordProvisioning(ctx, ActionRemoveOrg, group, org.String())
+	return nil
 }
 
 // extendOnto materializes every intent row of group into org's scope, with the

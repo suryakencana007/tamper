@@ -39,6 +39,14 @@ func okHandler() http.Handler {
 // the dependencies a test needs to mint home and entered tokens.
 func newOrgStack(t *testing.T) (http.Handler, *crypto.JWTService, *identity.Core, authz.Authorizer, *Store, *fakeHierarchy) {
 	t.Helper()
+	return newOrgStackWith(t, okHandler())
+}
+
+// newOrgStackWith is newOrgStack with a caller-supplied terminal handler, so a
+// test can mount something INSIDE the gate (the audit middleware must run
+// after the tenant gate has pinned the scope).
+func newOrgStackWith(t *testing.T, terminal http.Handler) (http.Handler, *crypto.JWTService, *identity.Core, authz.Authorizer, *Store, *fakeHierarchy) {
+	t.Helper()
 	h := newHierarchy()
 	s := newStore()
 	p, err := NewProvisioner(s, h, roleMapTwo())
@@ -78,7 +86,7 @@ func newOrgStack(t *testing.T) (http.Handler, *crypto.JWTService, *identity.Core
 		t.Fatalf("identity.New: %v", err)
 	}
 
-	handler := OrgGate(jwt, engine, "org:manage", "org:view", statusWriter(http.StatusNotFound), statusWriter(http.StatusForbidden))(okHandler())
+	handler := OrgGate(jwt, engine, "org:manage", "org:view", statusWriter(http.StatusNotFound), statusWriter(http.StatusForbidden))(terminal)
 	return handler, jwt, core, engine, s, h
 }
 

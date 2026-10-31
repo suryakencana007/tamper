@@ -313,7 +313,13 @@ the application must **materialize** the inherited grant as real per-child
 bindings at provisioning time (eager provisioning): a tenant-group admin holds
 a binding in each child org scope, with the tenant-group as its home tenant.
 This is decided in
-[`ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md`](ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md).
+[`ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md`](ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md)
+(Accepted) and implemented in
+[`examples/tenanthierarchy/`](examples/tenanthierarchy/): `Store` +
+`Provisioner` materialize the grant,
+`Guard`/`SyncGroup` catch and repair drift, and `Membership` derives
+`EnterTenant` rights from the intent rows. Only the **roles** axis is closed by
+that; the IdP, entitlement and domain axes below are still open.
 
 Entitlements and the IdP registry are not `authz` bindings and are not covered
 by that rule, so they can still be wrapped by an adapter that walks up to the

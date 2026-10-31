@@ -822,9 +822,9 @@ orgs' resources, not its own grant list. The operation runs on the group's route
 - [x] `RunBindingStoreLeakSuite` green against `Store`
 - [x] Guard fires on both drift directions, and does not auto-repair
 - [x] No tamper core change; every PR touched only `examples/tenanthierarchy/` (plus `TENANT-HIERARCHY-MANIFEST.md` in the docs PRs)
-- [ ] **ADR-0001 moved from `Proposed` to `Accepted`** — owner decision, deliberately
-  left open. The mechanism is implemented and green; flipping the ADR status is a
-  product sign-off, not a code change, and should happen in its own one-line PR.
+- [x] **ADR-0001 moved from `Proposed` to `Accepted`** — done in its own
+  docs-only PR. Acceptance covers the **roles** axis only; the IdP, entitlement
+  and domain axes stay open per ADR §8.
 
 ## Follow-ups (not part of this manifest)
 

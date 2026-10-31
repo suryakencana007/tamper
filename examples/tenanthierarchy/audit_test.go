@@ -2,6 +2,7 @@ package tenanthierarchy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -83,8 +84,10 @@ func operatorCtx(user, home string) context.Context {
 
 func TestProvisioningAudit_GrantAndRevoke(t *testing.T) {
 	capture := &captureLogger{}
-	p, _ := newP(t, newHierarchy(), roleMap())
-	p.audit = capture
+	p, err := NewProvisioner(newStore(), newHierarchy(), roleMap(), WithAudit(capture))
+	if err != nil {
+		t.Fatalf("NewProvisioner: %v", err)
+	}
 
 	op := operatorCtx("ops", "platform")
 	if err := p.GrantGroupAdmin(op, bob, tg, groupRole()); err != nil {
@@ -124,8 +127,10 @@ func TestProvisioningAudit_GrantAndRevoke(t *testing.T) {
 
 func TestProvisioningAudit_MembershipChanges(t *testing.T) {
 	capture := &captureLogger{}
-	p, _ := newP(t, newHierarchy(), roleMap())
-	p.audit = capture
+	p, err := NewProvisioner(newStore(), newHierarchy(), roleMap(), WithAudit(capture))
+	if err != nil {
+		t.Fatalf("NewProvisioner: %v", err)
+	}
 	op := operatorCtx("ops", "platform")
 
 	if err := p.GrantGroupAdmin(op, bob, tg, groupRole()); err != nil {
@@ -304,5 +309,43 @@ func TestPlatformGate_OnlyPlatformAdmin(t *testing.T) {
 	}
 	if code := call(groupToken); code != http.StatusUnauthorized {
 		t.Fatalf("group admin on the platform surface = %d, want 401", code)
+	}
+}
+
+// failingLogger always fails to append.
+type failingLogger struct{}
+
+func (failingLogger) Log(context.Context, audit.Event) (audit.Event, error) {
+	return audit.Event{}, errors.New("audit store down")
+}
+
+// An audit failure must not undo a committed provisioning change: the store
+// write already happened, and reporting otherwise would be a lie.
+func TestProvisioningAudit_FailureDoesNotUndoTheGrant(t *testing.T) {
+	s := newStore()
+	p, err := NewProvisioner(s, newHierarchy(), roleMap(), WithAudit(failingLogger{}))
+	if err != nil {
+		t.Fatalf("NewProvisioner: %v", err)
+	}
+	if err := p.GrantGroupAdmin(operatorCtx("ops", "platform"), bob, tg, groupRole()); err != nil {
+		t.Fatalf("GrantGroupAdmin = %v — an audit failure must not fail the grant", err)
+	}
+	got, err := s.BindingsFor(ctx, org1, bob, resOrg1)
+	if err != nil {
+		t.Fatalf("BindingsFor: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("binding = %d, want 1 — the grant must survive an audit failure", len(got))
+	}
+}
+
+// Audit off (no WithAudit) is a supported configuration: no emission, no panic.
+func TestProvisioningAudit_DisabledIsSupported(t *testing.T) {
+	p, s := newP(t, newHierarchy(), roleMap())
+	if err := p.GrantGroupAdmin(operatorCtx("ops", "platform"), bob, tg, groupRole()); err != nil {
+		t.Fatalf("GrantGroupAdmin: %v", err)
+	}
+	if len(s.rows) != 4 {
+		t.Fatalf("rows = %d, want 4", len(s.rows))
 	}
 }

@@ -18,6 +18,8 @@ const (
 	// organization is the scope a request is authorized in.
 	ResourceTenantGroup  = "tenant_group"
 	ResourceOrganization = "organization"
+	// ResourceSystem is the resource type of the platform (system) scope.
+	ResourceSystem = "system"
 
 	// DefaultMaxProvisionRows caps a single provisioning operation (ADR-0001
 	// decision 3). It is a loud stop, never a silent split: an operation whose

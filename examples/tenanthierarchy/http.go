@@ -29,7 +29,7 @@ type OrgGateOption func(*orgGateConfig)
 
 type orgGateConfig struct{ subjectType string }
 
-// WithOrgSubjectType sets the authz subject type the org gate builds. It must be
+// WithOrgSubjectType sets the authz subject type OrgGate and PlatformGate build. It must be
 // the same type the bindings were granted with, and the same type Membership is
 // configured with (WithUserSubjectType) — otherwise the gate asks about
 // {user, id} while the store holds a grant for {staff, id}, and the
@@ -82,9 +82,6 @@ func OrgGate(
 				gate(next)))
 	}
 }
-
-// ResourceSystem is the resource type of the platform (system) scope.
-const ResourceSystem = "system"
 
 // PlatformGate is the UNTENANTED platform surface: RequireAuth plus a
 // system-scope DecisionGate. This is where "grant a tenant-group admin" lives —

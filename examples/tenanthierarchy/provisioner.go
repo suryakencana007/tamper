@@ -43,6 +43,22 @@ var (
 	ErrParentMismatch = errors.New("tenanthierarchy: org parent does not match the membership change")
 )
 
+// BindingSource is the read+write surface the Provisioner needs: the write ports
+// plus the reads that reconciliation compares against. Revokes read through the
+// Tx; reconciliation reads OUTSIDE a transaction, because it reports drift rather
+// than acting inside one. *Store implements it.
+type BindingSource interface {
+	authz.BindingStore
+	BindingWriter
+	// BindingsFrom returns the bindings in scope that carry origin.
+	BindingsFrom(ctx context.Context, scope tenant.ID, origin Origin) ([]authz.Binding, error)
+	// IntentGroups lists every tenant-group holding an intent row.
+	IntentGroups(ctx context.Context) ([]tenant.ID, error)
+	// GroupOrigins lists every tenant-group some row's origin names, so a group
+	// whose intent row was lost is still reconciled.
+	GroupOrigins(ctx context.Context) ([]tenant.ID, error)
+}
+
 // Provisioner turns "grant this subject admin of this tenant-group" into real
 // bindings, at provision time (ADR-0001 §3.3). It writes one INTENT row in the
 // group's scope and one MATERIALIZED binding per child organization — each
@@ -53,7 +69,7 @@ var (
 // only its own contribution and leaves a direct grant on the same binding in
 // place (the store's per-origin ref count, slice 9a-1).
 type Provisioner struct {
-	writer  BindingWriter
+	src     BindingSource
 	hier    OrgHierarchy
 	roles   RoleMap
 	maxRows int
@@ -75,9 +91,9 @@ func WithMaxProvisionRows(n int) ProvisionerOption {
 // a per-request denial (standing rule 4). An empty RoleMap is refused for the
 // same reason the store refuses an unset scope: it is a silent lockout, not a
 // loud boot failure.
-func NewProvisioner(w BindingWriter, h OrgHierarchy, roles RoleMap, opts ...ProvisionerOption) (*Provisioner, error) {
+func NewProvisioner(w BindingSource, h OrgHierarchy, roles RoleMap, opts ...ProvisionerOption) (*Provisioner, error) {
 	if w == nil {
-		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires a BindingWriter")
+		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires a BindingSource")
 	}
 	if h == nil {
 		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires an OrgHierarchy")
@@ -86,7 +102,7 @@ func NewProvisioner(w BindingWriter, h OrgHierarchy, roles RoleMap, opts ...Prov
 		return nil, fmt.Errorf("tenanthierarchy: NewProvisioner requires a non-empty RoleMap — " +
 			"an empty map would expand every tenant-group binding to nothing, which is a silent lockout")
 	}
-	p := &Provisioner{writer: w, hier: h, roles: roles, maxRows: DefaultMaxProvisionRows}
+	p := &Provisioner{src: w, hier: h, roles: roles, maxRows: DefaultMaxProvisionRows}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -120,7 +136,7 @@ func (p *Provisioner) GrantGroupAdmin(ctx context.Context, sub authz.Subject, gr
 	}
 
 	origin := GroupOrigin(group)
-	return p.writer.Apply(ctx, func(tx Tx) error {
+	return p.src.Apply(ctx, func(tx Tx) error {
 		if err := tx.GrantFrom(ctx, intentBinding(sub, group, role), origin); err != nil {
 			return err
 		}
@@ -151,7 +167,7 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
 	}
 
 	origin := GroupOrigin(group)
-	return p.writer.Apply(ctx, func(tx Tx) error {
+	return p.src.Apply(ctx, func(tx Tx) error {
 		var keys []BindingKey
 		intents, err := tx.BindingsOnResource(ctx, group, authz.Resource{Type: ResourceTenantGroup, ID: group.String()})
 		if err != nil {
@@ -199,7 +215,7 @@ func (p *Provisioner) AddOrg(ctx context.Context, group, org tenant.ID) error {
 		return err
 	}
 	origin := GroupOrigin(group)
-	return p.writer.Apply(ctx, func(tx Tx) error {
+	return p.src.Apply(ctx, func(tx Tx) error {
 		admins, err := tx.BindingsFrom(ctx, group, origin)
 		if err != nil {
 			return fmt.Errorf("tenanthierarchy: read intent rows of %s: %w", group, err)
@@ -227,7 +243,7 @@ func (p *Provisioner) MoveOrg(ctx context.Context, org, from, to tenant.ID) erro
 	if err := p.requireParent(ctx, org, to, "MoveOrg"); err != nil {
 		return err
 	}
-	return p.writer.Apply(ctx, func(tx Tx) error {
+	return p.src.Apply(ctx, func(tx Tx) error {
 		fromRows, err := tx.BindingsFrom(ctx, org, GroupOrigin(from))
 		if err != nil {
 			return fmt.Errorf("tenanthierarchy: read %s bindings in %s: %w", from, org, err)
@@ -263,7 +279,7 @@ func (p *Provisioner) RemoveOrg(ctx context.Context, org, group tenant.ID) error
 		return err
 	}
 	origin := GroupOrigin(group)
-	return p.writer.Apply(ctx, func(tx Tx) error {
+	return p.src.Apply(ctx, func(tx Tx) error {
 		rows, err := tx.BindingsFrom(ctx, org, origin)
 		if err != nil {
 			return fmt.Errorf("tenanthierarchy: read %s bindings in %s: %w", group, org, err)

@@ -130,14 +130,15 @@ func TestHTTP_GroupAdminReachesEveryChildOrg(t *testing.T) {
 	}
 }
 
-func TestHTTP_CrossGroupAndUnknownAre401(t *testing.T) {
+// Every entered token is for exactly ONE organization (ADR §3.1): a token
+// entered into org-1 must not work on its SIBLING org-2, on another group's
+// org-9, or on an unknown org.
+func TestHTTP_TokenForOneOrgIs401OnAnother(t *testing.T) {
 	h, jwt, core, _, _, _ := newOrgStack(t)
-	// bob's token is for org-1; org-9 belongs to another group, and the
-	// unknown org has no token that fits.
 	tok := enterAs(t, core, jwt, "bob", org1)
-	for _, id := range []string{"org-9", "org-unknown"} {
+	for _, id := range []string{"org-2", "org-9", "org-unknown"} {
 		if code := doOrg(t, h, tok, id); code != http.StatusUnauthorized {
-			t.Fatalf("token for org-1 on %s = %d, want 401", id, code)
+			t.Fatalf("a token entered into org-1 on %s = %d, want 401", id, code)
 		}
 	}
 }
@@ -202,7 +203,7 @@ func (s *scopeSpy) ListSubjects(ctx context.Context, tenantID tenant.ID, act aut
 	return s.inner.ListSubjects(ctx, tenantID, act, res)
 }
 
-func TestHTTP_ExactlyOneCheckInTheOrgScope(t *testing.T) {
+func TestHTTP_EveryCheckIsInTheOrgScope(t *testing.T) {
 	_, jwt, core, engine, _, _ := newOrgStack(t)
 	spy := &scopeSpy{inner: engine}
 	h := OrgGate(jwt, spy, "org:manage", "org:view", statusWriter(http.StatusNotFound), statusWriter(http.StatusForbidden))(okHandler())
@@ -241,4 +242,76 @@ func TestHTTP_ListSubjectsIncludesGroupAdmin(t *testing.T) {
 	if !found {
 		t.Fatalf("ListSubjects(org-1) = %+v, want bob (the group admin)", subs)
 	}
+}
+
+// ---------------------------------------------------------------------
+// The gate's subject type is configurable, and must match the type the
+// bindings were granted with (review N1).
+// ---------------------------------------------------------------------
+
+// subjectSpy records the subject type of every Check the gate asks.
+type subjectSpy struct {
+	inner authz.Authorizer
+	types []string
+}
+
+func (s *subjectSpy) record(sub authz.Subject) { s.types = append(s.types, sub.Type) }
+
+func (s *subjectSpy) Check(ctx context.Context, tenantID tenant.ID, sub authz.Subject, act authz.Action, res authz.Resource) (authz.Decision, error) {
+	s.record(sub)
+	return s.inner.Check(ctx, tenantID, sub, act, res)
+}
+func (s *subjectSpy) CheckBulk(ctx context.Context, tenantID tenant.ID, reqs []authz.CheckRequest) ([]authz.Decision, error) {
+	return s.inner.CheckBulk(ctx, tenantID, reqs)
+}
+func (s *subjectSpy) ListResources(ctx context.Context, tenantID tenant.ID, sub authz.Subject, act authz.Action, resourceType string) ([]authz.Resource, bool, error) {
+	return s.inner.ListResources(ctx, tenantID, sub, act, resourceType)
+}
+func (s *subjectSpy) ListSubjects(ctx context.Context, tenantID tenant.ID, act authz.Action, res authz.Resource) ([]authz.Subject, bool, error) {
+	return s.inner.ListSubjects(ctx, tenantID, act, res)
+}
+
+func TestOrgGate_SubjectTypeIsConfigurable(t *testing.T) {
+	_, jwt, core, engine, _, _ := newOrgStack(t)
+	tok := enterAs(t, core, jwt, "bob", org1)
+
+	writers := func() (tamperespresso.DenyWriter, tamperespresso.DenyWriter) {
+		return statusWriter(http.StatusNotFound), statusWriter(http.StatusForbidden)
+	}
+
+	// Default: the gate asks about {user, id} and bob's grant matches.
+	spy := &subjectSpy{inner: engine}
+	nv, d := writers()
+	h := OrgGate(jwt, spy, "org:manage", "org:view", nv, d)(okHandler())
+	if code := doOrg(t, h, tok, "org-1"); code != http.StatusOK {
+		t.Fatalf("default subject type: %d, want 200", code)
+	}
+	if len(spy.types) == 0 || spy.types[0] != DefaultUserSubjectType {
+		t.Fatalf("default subject type asked = %v, want %q", spy.types, DefaultUserSubjectType)
+	}
+
+	// Configured: the gate asks about {staff, id}. bob's grants are "user", so
+	// the exact-subject match denies — which is the coupling the option exists
+	// to make explicit.
+	staffSpy := &subjectSpy{inner: engine}
+	nv, d = writers()
+	h = OrgGate(jwt, staffSpy, "org:manage", "org:view", nv, d, WithOrgSubjectType("staff"))(okHandler())
+	if code := doOrg(t, h, tok, "org-1"); code != http.StatusNotFound {
+		t.Fatalf("staff subject type against user grants: %d, want 404 (no match)", code)
+	}
+	if len(staffSpy.types) == 0 || staffSpy.types[0] != "staff" {
+		t.Fatalf("configured subject type asked = %v, want staff", staffSpy.types)
+	}
+}
+
+func TestOrgGate_PanicsOnEmptySubjectType(t *testing.T) {
+	_, jwt, _, engine, _, _ := newOrgStack(t)
+	defer func() {
+		if recover() == nil {
+			t.Fatal("OrgGate with an empty subject type: want panic, got none")
+		}
+	}()
+	OrgGate(jwt, engine, "org:manage", "org:view",
+		statusWriter(http.StatusNotFound), statusWriter(http.StatusForbidden),
+		WithOrgSubjectType(""))
 }

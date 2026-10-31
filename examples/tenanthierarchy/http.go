@@ -24,6 +24,21 @@ func RouteTenant(r *http.Request) (tenant.ID, bool) {
 	return org, org.Valid()
 }
 
+// OrgGateOption configures OrgGate.
+type OrgGateOption func(*orgGateConfig)
+
+type orgGateConfig struct{ subjectType string }
+
+// WithOrgSubjectType sets the authz subject type the org gate builds. It must be
+// the same type the bindings were granted with, and the same type Membership is
+// configured with (WithUserSubjectType) — otherwise the gate asks about
+// {user, id} while the store holds a grant for {staff, id}, and the
+// exact-subject match in authz.RBAC denies. The default is
+// DefaultUserSubjectType.
+func WithOrgSubjectType(subjectType string) OrgGateOption {
+	return func(c *orgGateConfig) { c.subjectType = subjectType }
+}
+
 // OrgGate is the org-scoped HTTP surface: RequireAuth, then
 // RequireTenantAllowEntered(RouteTenant), then a DecisionGate whose scope is the
 // organization the gate pinned and which accepts a tenant-group admin entered
@@ -31,17 +46,27 @@ func RouteTenant(r *http.Request) (tenant.ID, bool) {
 // organization — with no cross-scope OR and no wrapper store.
 //
 // notVisible writes the 404 for an in-group org the subject cannot see; denied
-// writes the 403 for a visible but under-ranked role.
+// writes the 403 for a visible but under-ranked role. Panics on an empty subject
+// type: a gate that names none would deny every request (standing rule 4).
 func OrgGate(
 	jwt *crypto.JWTService,
 	engine authz.Authorizer,
 	action, visibility authz.Action,
 	notVisible, denied tamperespresso.DenyWriter,
+	opts ...OrgGateOption,
 ) func(http.Handler) http.Handler {
+	cfg := orgGateConfig{subjectType: DefaultUserSubjectType}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.subjectType == "" {
+		panic("tenanthierarchy: OrgGate requires a non-empty subject type")
+	}
+
 	gate := tamperespresso.RequireDecision(tamperespresso.DecisionGate{
 		Authorizer:       engine,
 		Label:            "organization role",
-		SubjectType:      "user",
+		SubjectType:      cfg.subjectType,
 		ResourceType:     ResourceOrganization,
 		ResourceIDFrom:   OrgParam,
 		Action:           action,

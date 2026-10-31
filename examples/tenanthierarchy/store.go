@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/suryakencana007/tamper/authz"
@@ -44,12 +45,25 @@ type Origin string
 // only origin a plain Revoke removes.
 const OriginDirect Origin = "direct"
 
+// groupOriginPrefix marks an origin produced by a tenant-group grant.
+const groupOriginPrefix = "group:"
+
 // GroupOrigin is the origin of every row a tenant-group grant materializes,
 // plus its intent row. A group grant contributes this origin; revoking the
 // grant removes only this origin, so a direct grant on the same binding
 // survives.
 func GroupOrigin(group tenant.ID) Origin {
-	return Origin("group:" + group.String())
+	return Origin(groupOriginPrefix + group.String())
+}
+
+// groupOfOrigin recovers the group an origin names, and reports whether the
+// origin was a group origin at all.
+func groupOfOrigin(o Origin) (tenant.ID, bool) {
+	s := string(o)
+	if !strings.HasPrefix(s, groupOriginPrefix) {
+		return tenant.ID{}, false
+	}
+	return tenant.New(strings.TrimPrefix(s, groupOriginPrefix)), true
 }
 
 // Store is an authz.BindingStore (read) plus atomic, idempotent writes with
@@ -291,6 +305,30 @@ func (s *Store) BindingsFrom(_ context.Context, scope tenant.ID, origin Origin) 
 // a convenience.
 func (s *Store) GroupAdmins(ctx context.Context, group tenant.ID) ([]authz.Binding, error) {
 	return s.BindingsFrom(ctx, group, GroupOrigin(group))
+}
+
+// GroupOrigins returns every tenant-group that some row's origin names —
+// including a group whose INTENT row has been lost while its materialized rows
+// remain. Reconciliation unions this with IntentGroups so that class of
+// orphan is reported too: enumerating only intent rows would miss it entirely,
+// which is exactly the drift the guard exists to catch.
+func (s *Store) GroupOrigins(_ context.Context) ([]tenant.ID, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := make(map[tenant.ID]bool)
+	var out []tenant.ID
+	for _, set := range s.origins {
+		for o := range set {
+			g, ok := groupOfOrigin(o)
+			if !ok || !g.Valid() || g.IsSingle() || seen[g] {
+				continue
+			}
+			seen[g] = true
+			out = append(out, g)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out, nil
 }
 
 // IntentGroups returns every tenant-group that holds an intent row: a scope

@@ -2,6 +2,7 @@ package tenanthierarchy
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/suryakencana007/tamper/authz"
@@ -200,5 +201,56 @@ func TestSyncGroup_RespectsTheCap(t *testing.T) {
 	}
 	if len(d.Missing) != 3 {
 		t.Fatalf("missing = %d, want 3 untouched by the capped SyncGroup", len(d.Missing))
+	}
+}
+
+// A group whose INTENT row was lost still gets reconciled: its materialized
+// rows are orphans, and enumerating intent rows alone would never look at that
+// group.
+func TestReconcile_DetectsOrphanAfterIntentLost(t *testing.T) {
+	p, s := seedClean(t)
+	if err := s.RevokeFrom(ctx, keyOf(intentBinding(bob, tg, groupRole())), GroupOrigin(tg)); err != nil {
+		t.Fatalf("drop intent: %v", err)
+	}
+
+	d, err := p.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(d.Orphan) != 3 || len(d.Missing) != 0 {
+		t.Fatalf("drift = %d missing / %d orphan, want 0/3 (the lost intent's rows are orphans)",
+			len(d.Missing), len(d.Orphan))
+	}
+	if err := Guard(ctx, p); !errors.Is(err, ErrDrift) {
+		t.Fatalf("Guard = %v, want ErrDrift", err)
+	}
+
+	// With no intent left, converging means removing the materialized rows.
+	if err := p.SyncGroup(ctx, tg); err != nil {
+		t.Fatalf("SyncGroup: %v", err)
+	}
+	after, err := p.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !after.Empty() {
+		t.Fatalf("drift after SyncGroup = %+v, want empty", after)
+	}
+}
+
+// The guard's message has to say WHICH org drifted, or an operator cannot act.
+func TestGuard_MessageNamesTheOrg(t *testing.T) {
+	p, s := seedClean(t)
+	if err := s.RevokeFrom(ctx, keyOf(materializedBinding(bob, "org-2", "org_admin")), GroupOrigin(tg)); err != nil {
+		t.Fatalf("seed missing: %v", err)
+	}
+	err := Guard(ctx, p)
+	if !errors.Is(err, ErrDrift) {
+		t.Fatalf("Guard = %v, want ErrDrift", err)
+	}
+	for _, want := range []string{"org-2", "bob", "org_admin", "tg-acme"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Guard message %q does not name %q", err.Error(), want)
+		}
 	}
 }

@@ -54,6 +54,9 @@ type BindingSource interface {
 	BindingsFrom(ctx context.Context, scope tenant.ID, origin Origin) ([]authz.Binding, error)
 	// IntentGroups lists every tenant-group holding an intent row.
 	IntentGroups(ctx context.Context) ([]tenant.ID, error)
+	// GroupOrigins lists every tenant-group some row's origin names, so a group
+	// whose intent row was lost is still reconciled.
+	GroupOrigins(ctx context.Context) ([]tenant.ID, error)
 }
 
 // Provisioner turns "grant this subject admin of this tenant-group" into real

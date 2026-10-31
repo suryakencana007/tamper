@@ -31,13 +31,17 @@ func (d Drift) Empty() bool { return len(d.Missing) == 0 && len(d.Orphan) == 0 }
 // Reconcile computes the drift of every tenant-group that holds an intent row.
 // It does not modify anything.
 func (p *Provisioner) Reconcile(ctx context.Context) (Drift, error) {
-	groups, err := p.src.IntentGroups(ctx)
+	groups, err := p.groups(ctx)
 	if err != nil {
-		return Drift{}, fmt.Errorf("tenanthierarchy: list intent groups: %w", err)
+		return Drift{}, err
 	}
 	var out Drift
 	for _, group := range groups {
-		d, err := p.reconcileGroup(ctx, group)
+		children, err := p.hier.ChildrenOf(ctx, group.String())
+		if err != nil {
+			return Drift{}, fmt.Errorf("tenanthierarchy: children of %s: %w", group, err)
+		}
+		d, err := p.reconcileGroup(ctx, p.src, group, children)
 		if err != nil {
 			return Drift{}, err
 		}
@@ -46,6 +50,33 @@ func (p *Provisioner) Reconcile(ctx context.Context) (Drift, error) {
 	}
 	sortBindings(out.Missing)
 	sortBindings(out.Orphan)
+	return out, nil
+}
+
+// groups is the union of the groups that hold an intent row and the groups some
+// row's origin names. The second half matters: if a group's intent row is lost
+// while its materialized rows remain, enumerating intent rows alone would never
+// look at that group, and its orphans would go unreported — exactly the drift
+// the guard exists to catch.
+func (p *Provisioner) groups(ctx context.Context) ([]tenant.ID, error) {
+	intents, err := p.src.IntentGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("tenanthierarchy: list intent groups: %w", err)
+	}
+	origins, err := p.src.GroupOrigins(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("tenanthierarchy: list group origins: %w", err)
+	}
+	seen := make(map[tenant.ID]bool, len(intents)+len(origins))
+	out := make([]tenant.ID, 0, len(intents)+len(origins))
+	for _, g := range append(intents, origins...) {
+		if seen[g] {
+			continue
+		}
+		seen[g] = true
+		out = append(out, g)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out, nil
 }
 
@@ -60,19 +91,26 @@ func (p *Provisioner) SyncGroup(ctx context.Context, group tenant.ID) error {
 	if !group.Valid() || group.IsSingle() {
 		return fmt.Errorf("%w: the group is unset or the single tenant", ErrBadMembership)
 	}
-	d, err := p.reconcileGroup(ctx, group)
+	children, err := p.hier.ChildrenOf(ctx, group.String())
 	if err != nil {
-		return err
+		return fmt.Errorf("tenanthierarchy: children of %s: %w", group, err)
 	}
-	if d.Empty() {
-		return nil
-	}
-	if n := len(d.Missing) + len(d.Orphan); n > p.maxRows {
-		return fmt.Errorf("%w: SyncGroup needs %d rows, cap %d", ErrTooManyRows, n, p.maxRows)
-	}
-
 	origin := GroupOrigin(group)
+
+	// Reconcile INSIDE the Apply, through the Tx: the drift it acts on and the
+	// writes that repair it are one atomic step, so a concurrent grant cannot
+	// slip a row past the repair.
 	return p.src.Apply(ctx, func(tx Tx) error {
+		d, err := p.reconcileGroup(ctx, tx, group, children)
+		if err != nil {
+			return err
+		}
+		if d.Empty() {
+			return nil
+		}
+		if n := len(d.Missing) + len(d.Orphan); n > p.maxRows {
+			return fmt.Errorf("%w: SyncGroup needs %d rows, cap %d", ErrTooManyRows, n, p.maxRows)
+		}
 		for _, b := range d.Orphan {
 			if err := tx.RevokeFrom(ctx, keyOf(b), origin); err != nil {
 				return err
@@ -108,16 +146,19 @@ func Guard(ctx context.Context, p *Provisioner) error {
 // matter — a suspended org still needs its bindings). Actual: the rows in each
 // child's scope carrying GroupOrigin(group). A direct grant carries another
 // origin, so it is neither expected nor actual here.
-func (p *Provisioner) reconcileGroup(ctx context.Context, group tenant.ID) (Drift, error) {
+// originReader is the origin-scoped read reconciliation needs. *Store and Tx
+// both satisfy it, so Reconcile reads the store and SyncGroup reads its own
+// staged view inside the transaction.
+type originReader interface {
+	BindingsFrom(ctx context.Context, scope tenant.ID, origin Origin) ([]authz.Binding, error)
+}
+
+func (p *Provisioner) reconcileGroup(ctx context.Context, src originReader, group tenant.ID, children []string) (Drift, error) {
 	origin := GroupOrigin(group)
 
-	intents, err := p.src.BindingsFrom(ctx, group, origin)
+	intents, err := src.BindingsFrom(ctx, group, origin)
 	if err != nil {
 		return Drift{}, fmt.Errorf("tenanthierarchy: intent rows of %s: %w", group, err)
-	}
-	children, err := p.hier.ChildrenOf(ctx, group.String())
-	if err != nil {
-		return Drift{}, fmt.Errorf("tenanthierarchy: children of %s: %w", group, err)
 	}
 
 	expected := make(map[BindingKey]authz.Binding, len(intents)*len(children))
@@ -140,7 +181,7 @@ func (p *Provisioner) reconcileGroup(ctx context.Context, group tenant.ID) (Drif
 		if !usableOrg(id) {
 			continue
 		}
-		rows, err := p.src.BindingsFrom(ctx, tenant.New(id), origin)
+		rows, err := src.BindingsFrom(ctx, tenant.New(id), origin)
 		if err != nil {
 			return Drift{}, fmt.Errorf("tenanthierarchy: %s bindings in %s: %w", group, id, err)
 		}
@@ -206,5 +247,6 @@ func first(bs []authz.Binding) string {
 }
 
 func describe(b authz.Binding) string {
-	return fmt.Sprintf("%s{%s:%s} %s", b.Resource.Type, b.Subject.Type, b.Subject.ID, b.Role)
+	return fmt.Sprintf("scope=%s res=%s:%s subject=%s:%s@%s role=%s",
+		b.Tenant, b.Resource.Type, b.Resource.ID, b.Subject.Type, b.Subject.ID, b.Subject.Tenant, b.Role)
 }

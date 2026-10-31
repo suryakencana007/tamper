@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"sort"
 	"sync"
 
 	"github.com/suryakencana007/tamper/authz"
@@ -290,6 +291,33 @@ func (s *Store) BindingsFrom(_ context.Context, scope tenant.ID, origin Origin) 
 // a convenience.
 func (s *Store) GroupAdmins(ctx context.Context, group tenant.ID) ([]authz.Binding, error) {
 	return s.BindingsFrom(ctx, group, GroupOrigin(group))
+}
+
+// IntentGroupsForSubject returns the tenant-groups in which userID holds an
+// intent row: a row in the group's own scope, on a {tenant_group, group}
+// resource, carrying GroupOrigin(group). It is the cross-scope read a derived
+// membership needs for MembershipsFor, where the groups are not known in
+// advance. A direct binding on the group resource is not an intent and is
+// skipped.
+func (s *Store) IntentGroupsForSubject(_ context.Context, userID string) ([]tenant.ID, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := make(map[tenant.ID]bool)
+	var out []tenant.ID
+	for k, b := range s.rows {
+		if b.Subject.ID != userID || b.Resource.Type != ResourceTenantGroup {
+			continue
+		}
+		if _, ok := s.origins[k][GroupOrigin(k.Scope)]; !ok {
+			continue
+		}
+		if !seen[b.Tenant] {
+			seen[b.Tenant] = true
+			out = append(out, b.Tenant)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out, nil
 }
 
 func scanFor(rows map[BindingKey]authz.Binding, scope tenant.ID, sub authz.Subject, res authz.Resource) []authz.Binding {

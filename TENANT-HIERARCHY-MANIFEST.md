@@ -23,19 +23,34 @@
 
 ## Status
 
+**All seven slices landed.** M1, M2 and M3 are complete.
+
 | Milestone | Slices | State |
 |---|---|---|
-| M1 — storage + provisioning | 9a-1, 9a-2, 9a-3 | 9a-1 done (#65), 9a-2 done (#66), 9a-3 not started |
-| M2 — request path | 9b-1, 9b-2 | not started |
-| M3 — integrity | 9c-1, 9c-2 | not started |
+| M1 — storage + provisioning | 9a-1, 9a-2, 9a-3 | done — #65, #66, #69 |
+| M2 — request path | 9b-1, 9b-2 | done — #70, #71 |
+| M3 — integrity | 9c-1, 9c-2 | done — #72, #73 |
 
-`examples/tenanthierarchy` exists again from 9a-1 (the pre-Phase-8b draft was
-deleted in #63). Slices after 9a-2 are not implemented.
+`examples/tenanthierarchy` holds the whole mechanism: store with per-origin
+provenance, provisioning, derived membership, the espresso-wired HTTP surface
+(`http.go`), reconciliation and audit.
 
-Two review-driven amendments landed with 9a-1 and 9a-2 and are folded into the
-blocks below: **per-origin provenance** (a row is deleted only when its last
-origin goes) and **`Tx` reads** (an `Apply` callback reads and writes
-atomically). Both came out of the code review of those slices.
+Amendments the code reviews produced, already folded into the blocks below:
+
+- **9a-1** — per-origin provenance (a row is deleted only when its last origin
+  goes) and `Tx` reads (an `Apply` callback reads and writes atomically).
+- **9a-2/9a-3** — the revoke and the membership changes read inside the `Apply`;
+  a parentage precondition (`ErrParentMismatch`) makes a misordered membership
+  change loud.
+- **9b-1** — membership takes an `IntentReader` (origin-scoped reads), not
+  `authz.BindingStore`; the subject type is configurable.
+- **9b-2** — **one entered token per organization** (the scope is the org, ADR
+  §3.1); the wiring lives in `http.go`, and the gate's subject type is an
+  option.
+- **9c-1** — `BindingSource` (read + write), `Store.IntentGroups` +
+  `Store.GroupOrigins`, and a guard message that names the org.
+- **9c-2** — `PlatformGate` for decision 6, and one audit sink for provisioning
+  and org mutations.
 
 ## How to use this file
 
@@ -433,76 +448,70 @@ design_ref: "ADR §3.2, §3.3, §3.5; PHASE8 §4"
 
 **Goal.** A tenant-group admin can enter a child org. Membership is **derived**
 from the intent rows plus parentage — no second materialized set, no drift.
-Keying per decision 4.
-
-**reads**
-- `identity/membership.go` — `MembershipStore`, `EnterTenant`, `EnterableTenants`
-- `identity/core.go` — how `IsMember` is called; error handling
-- `examples/multitenant/enter.go`, `enter_test.go` — the enter route precedent
-- `espresso/tenantgate.go` — `RequireTenantAllowEntered`, `EnteredFromContext`
-
-**writes**
-- `examples/tenanthierarchy/membership.go` — `MembershipStore`
-- `examples/tenanthierarchy/membership_test.go`
 
 **new symbols**
 
 ```go
-// Membership is an identity.MembershipStore backed by the intent rows and the
-// OrgHierarchy port. Nothing is materialized.
-type Membership struct { /* writer/store (read), hier */ }
+// IntentReader is the store surface a derived membership needs. It is NOT
+// authz.BindingStore: membership must read the INTENT rows, which only an
+// origin-scoped read exposes, and a direct grant on the group resource is not
+// a group grant. (*Store implements it.)
+type IntentReader interface {
+    BindingsFrom(ctx context.Context, scope tenant.ID, origin Origin) ([]authz.Binding, error)
+    IntentGroupsForSubject(ctx context.Context, subjectType, userID string) ([]tenant.ID, error)
+}
 
-func NewMembership(store authz.BindingStore, hier OrgHierarchy) *Membership
+type Membership struct { /* store IntentReader, hier OrgHierarchy, userType string */ }
+func NewMembership(store IntentReader, hier OrgHierarchy, opts ...MembershipOption) *Membership
+func WithUserSubjectType(subjectType string) MembershipOption // default "user"
 
 var _ identity.MembershipStore = (*Membership)(nil)
-
-// IsMember(userID, org) = an intent row exists in scope ParentOf(org) for
-// userID. ParentOf error or "no parent" = false (deny), never an error read
-// as allow.
 func (m *Membership) IsMember(ctx context.Context, userID string, target tenant.ID) (bool, error)
-
-// MembershipsFor lists every child of every group where userID has an intent.
 func (m *Membership) MembershipsFor(ctx context.Context, userID string) ([]tenant.ID, error)
+
+// Store, in addition:
+func (s *Store) IntentGroupsForSubject(ctx context.Context, subjectType, userID string) ([]tenant.ID, error)
 ```
 
 **invariants**
-- `IsMember` is true iff a group grant covers the org; it is never true from an
-  unrelated group.
-- A `OrgHierarchy` error is returned, and the caller (`EnterTenant`) treats it
-  as deny (Phase 8 §4 step 4).
+- `IsMember` is true iff a **user** intent row covers the org; never from an
+  unrelated group, and never from another subject type sharing the id.
+- A root org (no parent) and an unknown org have no group, so `false`.
+- A `OrgHierarchy` error is returned; `EnterTenant` treats it as deny.
 - No membership table exists; removing the intent immediately removes the
   ability to enter (the token window is Phase 8's `EnterTenant` TTL).
-- `MembershipsFor` never returns a tenant the user cannot actually enter.
 - Membership keys on the user id alone: the deployment relies on
-  globally-unique user ids, the same assumption `identity.Store.UserByID` makes
-  (decision 4).
+  globally-unique user ids (decision 4).
+- `NewMembership` panics on a nil store, a nil hierarchy, or an empty subject
+  type.
 
 **tests**
-- Admin of `tg-acme` → `IsMember(bob, org-1)` true for every child; false for
-  `org-4` (another group) and for an unknown org.
-- A user with no intent → false everywhere.
-- `EnterTenant` end-to-end: bob's home session (tid = group) enters `org-1`,
-  returns an access token with `tid=org-1`, `htid=tg-acme`.
-- `IsMember` error path: a hierarchy that errors → `IsMember` returns the
-  error, and `EnterTenant` does not mint.
-- Removing the group grant → `IsMember` false; a fresh `EnterTenant` is
-  refused.
+- `IsMember` true for every child; false for another group, an unknown org, and
+  a user with no intent.
+- A `service_account` sharing the id is not a membership; `WithUserSubjectType`
+  makes another type count.
+- `EnterTenant` end to end: bob's home session enters `org-1` → token
+  `tid=org-1`, `htid=tg-acme`; refused after revoke; no mint on a hierarchy
+  error.
 
 **mutation**
-- In `IsMember`, return true when `ParentOf` reports no parent (unknown/root
-  org). The "false for unknown org" test MUST go red.
-- In `IsMember`, read the intent from **any** scope rather than the resolved
-  group. The "false for org-4" test MUST go red.
+- Return true when `ParentOf` reports no parent → the unknown-org case goes red.
+- Answer from any scope instead of the resolved group → the other-group case
+  goes red.
 
 **verify**
 ```sh
 go test -race ./examples/tenanthierarchy/...
+go build ./...
 ```
 
 **dod**
-- [ ] No membership table introduced; membership is a read over intent rows
-- [ ] `EnterTenant` integration test asserts `htid=tg-acme` on the entered token
-- [ ] Both mutation proofs recorded with failing tests named
+- [x] No membership table; membership is a read over intent rows
+- [x] `EnterTenant` integration test asserts `htid=tg-acme` on the entered token
+- [x] Both mutation proofs recorded with failing tests named
+- [x] Subject type is matched, not just the id
+
+**Landed:** #70.
 
 ---
 
@@ -517,107 +526,62 @@ design_ref: "ADR §3.2, §3.4, §3.5, §4.2, §6"
 ```
 
 **Goal.** The whole stack on the wire: `RequireAuth → RequireTenantAllowEntered
-→ DecisionGate`, scope = organization, group admin accepted as a guest, `authz.RBAC`
-over the plain store. No wrapper, no cross-scope OR.
-
-**reads**
-- `espresso/decision.go` — `DecisionGate`, `Tenant`, `AllowEntered`, `TenantFromRoutedContext`
-- `espresso/tenantgate.go` — `RequireTenantAllowEntered`
-- `espresso/audit.go` — `Auditor.For`, `MutationContext`
-- `examples/multitenant/main.go` — router shape, store adapters
-
-**writes**
-- `examples/tenanthierarchy/main.go` — router, policies, handlers
-- `examples/tenanthierarchy/httptest_test.go` — the integration suite
+→ DecisionGate`, scope = organization, group admin accepted as a guest,
+`authz.RBAC` over the plain store. No wrapper store, no cross-scope OR.
 
 **new symbols**
 
 ```go
-// routeTenant resolves the ORGANIZATION the route is scoped to, from the
-// path. The tenant gate pins what this returns. Passing
-// TenantFromRoutedContext to the gate would be circular: nothing has pinned
-// the tenant yet, so it would resolve (zero, false) and 401 every request.
-func routeTenant(r *http.Request) (tenant.ID, bool) {
-    id := r.PathValue("org_id")
-    if id == "" {
-        return tenant.ID{}, false
-    }
-    return tenant.New(id), true
-}
+// RouteTenant resolves the ORGANIZATION from the org path parameter. It is the
+// resolver for the tenant gate; TenantFromRoutedContext there would be
+// circular (nothing has pinned the tenant when the gate runs).
+func RouteTenant(r *http.Request) (tenant.ID, bool)
+
+// OrgGate wires RequireAuth -> RequireTenantAllowEntered(RouteTenant) ->
+// DecisionGate{Tenant: TenantFromRoutedContext, AllowEntered: true}.
+func OrgGate(jwt *crypto.JWTService, engine authz.Authorizer,
+    action, visibility authz.Action,
+    notVisible, denied tamperespresso.DenyWriter,
+    opts ...OrgGateOption) func(http.Handler) http.Handler
+
+// WithOrgSubjectType sets the subject type OrgGate and PlatformGate build.
+func WithOrgSubjectType(subjectType string) OrgGateOption
 ```
 
-**wiring rules**
-
-```go
-router.Use(tamperespresso.RequireAuth(jwtSvc))
-org.Use(
-  tamperespresso.RequireTenantAllowEntered(routeTenant),       // pins the org
-  tamperespresso.RequireDecision(tamperespresso.DecisionGate{
-    Authorizer:       engine,                                  // authz.RBAC over Store
-    Tenant:           tamperespresso.TenantFromRoutedContext,  // reads the pinned org
-    AllowEntered:     true,                                    // group admin is a guest
-    SubjectType:      "user",
-    ResourceType:     "organization",
-    ResourceIDFrom:   "org_id",
-    Action:           "org:manage",
-    VisibilityAction: "org:view",
-    WriteNotVisible:  notFound,                                // 404
-    WriteDenied:      forbidden,                               // 403
-  }),
-)
-```
-
-- `TenantFromRoutedContext` belongs on the **DecisionGate** (it reads the
-  tenant the gate pinned), never on the gate itself. A gate fed with its own
-  output refuses every request: nothing has pinned the tenant when it runs.
-- The `/enter` route is the Phase 8 flow (`examples/multitenant/enter.go`); it
-  is reused, not redesigned here.
-- The org route MUST NOT call `Authorizer.Check` itself with a second scope.
-- No type in this package may satisfy `authz.BindingStore` except `Store`
-  (9a-1) — a wrapper returning ancestor bindings is the failure this whole
-  design exists to prevent.
-
-**invariants**
-- Scope at the gate is the **organization**; the entered subject carries home
-  tenant = group (`espresso/decision.go`).
-- Cross-group / unknown / root org → 401 at the tenant gate, byte-identical to
-  an invalid token.
-- In-group org the subject cannot see → 404; visible but under-ranked → 403.
-- Every `Authorizer` error → deny, never allow.
-- Group admin reaches **every** child org of the group with **one** entered
-  token; a sibling group's org is 401.
+**scope rule (amended during review)**
+- The scope is the **organization** (ADR §3.1). A Phase 8 entered token names
+  exactly one `tid`, so a group admin reaches every child org with **one entered
+  token per org**. The earlier "one token, many orgs" line was wrong and is
+  retracted.
 
 **tests**
-- Group admin (home `tg-acme`) enters `org-1` → `POST /orgs/org-1/...` 200.
-- Same token on `org-2`, `org-3` → 200 (one token, many orgs).
-- Same token on `org-4` (other group) → 401.
-- Same token on an unknown org and on a root org → 401.
-- Org admin (direct binding) on own org → 200; on sibling in the same group
-  without a binding → 404.
-- A visible-but-under-ranked role → 403.
-- A `Single`/unentered platform-admin token on an org route → 401.
-- `ListSubjects(org)` includes the group admin (via the materialized binding).
-- A spy `Authorizer` records the scope of every `Check`: exactly one is made,
-  in the org scope.
+- Group admin reaches `org-1`/`org-2`/`org-3`, each with its own entered token.
+- A token for `org-1` is 401 on its **sibling** `org-2`, on another group's org,
+  and on an unknown org.
+- A home (unentered) token on an org route is 401.
+- Direct org admin 200; an unbind org-2 user 404; a group viewer 403.
+- A scope spy proves every `Check` is in the org scope (two-check flow), never
+  in a group scope.
+- `ListSubjects(org)` lists the group admin.
 
 **mutation**
-- Set `AllowEntered: false`. The cross-org 200 tests MUST go red.
-- Point `DecisionGate.Tenant` at the **group** instead of the org. The scope
-  assertions and the audit-scope test MUST go red.
-- Wrap the `Authorizer` in a spy that records each `Check` scope, and add a
-  second `Check` with the group scope in the handler OR'd into the response.
-  The test asserting the recorded scopes are exactly `[org-1]` MUST go red.
+- `AllowEntered: false` → the group-admin reach test goes red.
+- `DecisionGate.Tenant` pointed at the group → the reach test goes red.
+- A second `Check` in the group scope → the scope-spy test goes red.
 
 **verify**
 ```sh
 go test -race ./examples/tenanthierarchy/...
+go build ./...
 ```
 
 **dod**
-- [ ] One entered token reaches all three child orgs; sibling group is 401
-- [ ] 404/403/401 discipline asserted at the wire
-- [ ] Mutation proofs recorded with failing tests named
-- [ ] A spy test proves exactly one `Authorizer.Check`, in the org scope
+- [x] One entered token per org reaches that org; a sibling org is 401
+- [x] 404/403/401 discipline asserted at the wire
+- [x] Mutation proofs recorded with failing tests named
+- [x] No `Authorizer.Check` outside the organization scope (scope spy)
+
+**Landed:** #71.
 
 ---
 
@@ -631,81 +595,69 @@ depends_on: [9a-3, 9b-2]
 design_ref: "ADR §3.7, §6, §7; CLAUDE.md rule 6"
 ```
 
-**Goal.** The guard that makes eager provisioning safe. `Reconcile` compares
-the intent rows (× parentage) against the materialized rows and reports **both**
-missing and orphan bindings. `SyncGroup` repairs, idempotently and explicitly.
-A boot guard fails loudly; a test proves the guard fires. Status per decision 5.
-
-**reads**
-- `examples/tenanthierarchy/provisioner.go` (9a-2, 9a-3)
-- `authz/tenanttest/tenanttest.go` — harness/seed conventions
-- `CLAUDE.md` rule 6 — guard plus a test that fires
-
-**writes**
-- `examples/tenanthierarchy/reconcile.go` — `Reconcile`, `SyncGroup`, `Drift`
-- `examples/tenanthierarchy/reconcile_test.go` — including a seeded-drift test
+**Goal.** The guard that makes eager provisioning safe: compare intent ×
+parentage against the materialized rows, report **both** missing and orphan
+drift, repair only on an explicit, idempotent call.
 
 **new symbols**
 
 ```go
-// Drift is the difference between what the intent + parentage require and what
-// the store holds.
-type Drift struct {
-    Missing []authz.Binding // intent covers it, no binding exists
-    Orphan  []authz.Binding // binding exists, no intent covers it
-}
+var ErrDrift = errors.New("tenanthierarchy: binding drift")
+
+type Drift struct { Missing, Orphan []authz.Binding }
 func (d Drift) Empty() bool
 
-// Reconcile computes drift, group by group. It reads the intent rows
-// (scope = group) and the materialized rows (scope = each child), and applies
-// RoleMap in Go (the map is not expressible in SQL).
 func (p *Provisioner) Reconcile(ctx context.Context) (Drift, error)
-
-// SyncGroup makes group's materialized rows match intent × children.
-// Idempotent. Explicit call only.
 func (p *Provisioner) SyncGroup(ctx context.Context, group tenant.ID) error
-
-// Guard is a boot-time check: a non-empty Drift is an error naming a few
-// offending rows.
 func Guard(ctx context.Context, p *Provisioner) error
+
+// BindingSource is what the Provisioner now takes: read + write. Reconciliation
+// reads OUTSIDE a transaction to report drift; the write paths read via the Tx.
+type BindingSource interface {
+    authz.BindingStore
+    BindingWriter
+    BindingsFrom(ctx context.Context, scope tenant.ID, origin Origin) ([]authz.Binding, error)
+    IntentGroups(ctx context.Context) ([]tenant.ID, error)
+    GroupOrigins(ctx context.Context) ([]tenant.ID, error)
+}
 ```
 
 **invariants**
-- `Reconcile` detects **both** directions: a missing binding (access gap) and
-  an orphan binding (access too broad). A guard that only checks one is not the
-  guard.
-- `SyncGroup` is idempotent and converges: `Reconcile` after `SyncGroup` is
-  empty.
-- `Guard` **fails** on non-empty drift. It does **not** auto-repair — silent
-  repair hides the bug that caused the drift.
-- The guard's "should exist" set accounts for suspended orgs (they still should
-  have bindings; suspension is a request gate, TD-06, not a binding change).
+- Drift has **two** directions; a guard that checks one is not the guard.
+- Groups are enumerated from intent rows **and** from the origins rows carry, so
+  a group whose intent row was lost is still reconciled.
+- A direct grant carries another origin, so it is neither expected nor actual.
+- Status does not matter: a suspended org still needs its bindings (decision 5).
+- `SyncGroup` reconciles **inside** the `Apply`, so the drift it acts on and the
+  repair are one atomic step; it is idempotent and capped.
+- `Guard` reports and stops. It never repairs: silent repair hides the cause.
+- The guard's message names the scope, resource, subject and role.
 
 **tests**
-- Clean state → `Reconcile` empty, `Guard` nil.
-- Seeded **missing** drift (delete a materialized row) → non-empty `Missing`;
-  `Guard` errors. **This is the rule-6 test.**
-- Seeded **orphan** drift (insert a binding with no intent) → non-empty
-  `Orphan`; `Guard` errors.
-- Role drift (materialized role ≠ translate(intent role)) → detected.
-- `SyncGroup` repairs both; `Reconcile` empty afterwards; running `SyncGroup`
-  twice converges.
+- Clean → empty drift, `Guard` nil.
+- Missing, orphan, role drift and orphan-after-intent-lost are each detected.
+- `SyncGroup` repairs both directions and is idempotent.
+- `Guard` does not repair (rule-6 witness).
+- `SyncGroup` past the cap refuses and repairs nothing.
 
 **mutation**
-- Make `Reconcile` check only `Missing`. The orphan test MUST go red.
-- Make `Guard` call `SyncGroup` and return nil. The seeded-drift test MUST go
-  red — a guard that repairs silently is not a guard.
+- Reconcile only `Missing` → the orphan tests go red.
+- `Guard` repairs silently → the guard witness goes red.
 
 **verify**
 ```sh
 go test -race ./examples/tenanthierarchy/...
+go build ./...
 ```
 
 **dod**
-- [ ] Guard fires on seeded missing drift (rule 6)
-- [ ] Guard fires on seeded orphan drift
-- [ ] Guard does not auto-repair; `SyncGroup` is explicit and idempotent
-- [ ] Both mutation proofs recorded with failing tests named
+- [x] Guard fires on seeded missing drift (rule 6)
+- [x] Guard fires on seeded orphan drift
+- [x] Guard does not auto-repair; `SyncGroup` is explicit and idempotent
+- [x] Both mutation proofs recorded with failing tests named
+
+**Landed:** #72 (the review of which added `GroupOrigins`, the scope-bearing
+guard message, and the in-transaction reconcile).
 
 ---
 
@@ -719,61 +671,71 @@ depends_on: [9b-2]
 design_ref: "ADR §3.6; PHASE8 §3"
 ```
 
-**Goal.** Provisioning (grant/revoke, org membership change) is recorded, and an
-org mutation by a group admin audits with the correct scope and actor tenant. One
-chain. Authority per decision 6.
+**Goal.** Provisioning is recorded on the single chain, and an org mutation by a
+group admin audits with the organization as scope and the tenant-group as the
+actor's home tenant.
 
-**reads**
-- `espresso/audit.go` — `Auditor.For`, `MutationContext`
-- `audit/audit.go` — `Event`, `Actor`, `ActorType`
-- `examples/multitenant/enter.go` — how the example records entry
+**new symbols**
 
-**writes**
-- `examples/tenanthierarchy/audit.go` — the provisioning sink
-- `examples/tenanthierarchy/audit_test.go`
+```go
+const (
+    ActionGrantGroupAdmin  audit.Action = "tenanthierarchy.group_admin.grant"
+    ActionRevokeGroupAdmin audit.Action = "tenanthierarchy.group_admin.revoke"
+    ActionAddOrg           audit.Action = "tenanthierarchy.org.add"
+    ActionMoveOrg          audit.Action = "tenanthierarchy.org.move"
+    ActionRemoveOrg        audit.Action = "tenanthierarchy.org.remove"
+)
 
-The example has no audit DB (Phase 8's note), so the proof uses a fake
-`audit.Logger` that captures events. There is no chain-of-hash assertion here —
-only the event's scope, actor tenant, and type.
+// EventLogger is the slice of audit.Logger provisioning needs.
+type EventLogger interface { Log(ctx context.Context, e audit.Event) (audit.Event, error) }
+func WithAudit(logger EventLogger) ProvisionerOption
+
+// PlatformGate is the untenanted system-scope surface; only a platform admin
+// passes (decision 6).
+func PlatformGate(jwt *crypto.JWTService, engine authz.Authorizer, platform tenant.ID,
+    action authz.Action, denied tamperespresso.DenyWriter,
+    opts ...OrgGateOption) func(http.Handler) http.Handler
+```
 
 **rules**
-- A provisioning operation emits an event whose actor is the **operator** (the
-  subject performing the grant), and whose scope is the **group** being granted
-  over.
-- An org mutation performed by a group admin audits with `Event.TenantID` = the
-  **organization** (the routed scope) and `Actor.TenantID` = the **tenant-group**
-  (the home tenant, from `htid`).
-- One chain. No per-group chain. Level (platform / tenant-group / org admin) is
-  read from scope + role, **never** from `actor.subject_type`.
+- A provisioning event's scope (`Event.TenantID`) is the **tenant-group** being
+  granted over; its actor is the **operator** from the context.
+- An org mutation performed by a group admin audits `Event.TenantID` = the
+  **organization** and `Actor.TenantID` = the **tenant-group**.
+- One chain, one sink. Level is read from scope + role, **never** stamped into
+  `Actor.Type`.
+- Emission is best-effort (the `espresso.Auditor` posture): the store write has
+  already committed, so an audit failure is reported, not undone.
 - Only a platform admin may grant/revoke a group admin or change an org's group
-  membership; a group admin manages org resources, not its own grant list
-  (decision 6).
+  membership (decision 6).
 
 **tests**
-- Grant group admin → one event, scope = group, actor = operator.
-- Revoke → one event.
-- A group-admin mutation on an org route → event scope = org, actor tenant = group
-  (assert via the example's audit sink).
-- Provisioning and org-mutation events go to the **same** sink instance (assert
-  one sink is constructed, not one per group).
+- Grant and revoke emit one event each: scope = group, actor = operator,
+  `Actor.Type = user`.
+- All five provisioning actions emit with the right scope and resource id.
+- A group-admin org mutation audits scope = org, actor tenant = group.
+- Provisioning and org mutations land in **one** sink.
+- An audit failure does not fail or undo the grant; audit off is supported.
+- `PlatformGate`: platform admin 200; a tenant-group admin's token 401.
 
 **mutation**
-- Set the org-mutation event scope to the group. The scope assertion test MUST
-  go red.
-- Stamp the admin level into `Actor.Type` (e.g.
-  `audit.ActorType("tenant_group_admin")`). The test asserting
-  `Actor.Type == audit.ActorTypeUser` for a tenant-group admin's org mutation
-  MUST go red.
+- Mount `Auditor.For` outside the tenant gate → the org-scope test goes red
+  (scope `""`).
+- Stamp the admin level into `Actor.Type` → the provisioning test goes red.
 
 **verify**
 ```sh
 go test -race ./examples/tenanthierarchy/...
+go build ./...
 ```
 
 **dod**
-- [ ] Org-mutation audit scope = org, actor tenant = group, asserted
-- [ ] Provisioning events audited; still one chain
-- [ ] Both mutation proofs recorded with failing tests named
+- [x] Org-mutation audit scope = org, actor tenant = group, asserted
+- [x] Provisioning events audited; still one chain (one sink)
+- [x] Both mutation proofs recorded with failing tests named
+- [x] Decision 6 has a gate (`PlatformGate`)
+
+**Landed:** #73.
 
 ---
 
@@ -855,9 +817,22 @@ orgs' resources, not its own grant list. The operation runs on the group's route
 
 ## Definition of done — whole manifest
 
-- [ ] Every slice merged one PR at a time, in order
-- [ ] Every mutation proof recorded with the failing test named
-- [ ] `RunBindingStoreLeakSuite` green against `Store`
-- [ ] Guard fires on both drift directions, and does not auto-repair
-- [ ] No tamper core change; `git diff --stat` touches only `examples/tenanthierarchy/` and docs
-- [ ] ADR-0001 moved from `Proposed` to `Accepted`
+- [x] Every slice merged one PR at a time, in order (#65, #66, #69, #70, #71, #72, #73)
+- [x] Every mutation proof recorded in its PR body with the failing test named
+- [x] `RunBindingStoreLeakSuite` green against `Store`
+- [x] Guard fires on both drift directions, and does not auto-repair
+- [x] No tamper core change; every PR touched only `examples/tenanthierarchy/` (plus `TENANT-HIERARCHY-MANIFEST.md` in the docs PRs)
+- [ ] **ADR-0001 moved from `Proposed` to `Accepted`** — owner decision, deliberately
+  left open. The mechanism is implemented and green; flipping the ADR status is a
+  product sign-off, not a code change, and should happen in its own one-line PR.
+
+## Follow-ups (not part of this manifest)
+
+- `tech-debt.md` TD-04 should point its roles workaround at the code as it now
+  stands (`Store` + `Provisioner` + `Guard`), and record that the **IdP,
+  entitlement and domain axes are still open** — this manifest decided roles only.
+- `Auditor.For` reads path params through espresso's `extractor`, while
+  `DecisionGate` reads `r.PathValue`. Harmless with an espresso router (it sets
+  both), but worth documenting beside the audit wiring.
+- A SQL adapter for `BindingSource` — the in-memory store is linear-scan by
+  design; a real deployment needs the indexed table and the same leak suite.

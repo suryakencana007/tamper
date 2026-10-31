@@ -308,3 +308,124 @@ func TestGroupAdmins_ReturnsIntentRowsOnly(t *testing.T) {
 		t.Fatalf("GroupAdmins = %+v, want only bob's intent row", admins)
 	}
 }
+
+// ---------------------------------------------------------------------
+// The row cap applies to membership changes too, and rolls back.
+// ---------------------------------------------------------------------
+
+func TestAddOrg_RespectsTheCap(t *testing.T) {
+	h := newHierarchy()
+	s := newStore()
+	p, err := NewProvisioner(s, h, roleMap(), WithMaxProvisionRows(2))
+	if err != nil {
+		t.Fatalf("NewProvisioner: %v", err)
+	}
+	// Three intent rows, cap two.
+	for _, id := range []string{"a", "b", "c"} {
+		sub := authz.Subject{Tenant: tg, Type: "user", ID: id}
+		if err := s.GrantFrom(ctx, intentBinding(sub, tg, groupRole()), GroupOrigin(tg)); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	h.setParent("org-4", "tg-acme")
+	newOrg := tenant.New("org-4")
+	if err := p.AddOrg(ctx, tg, newOrg); !errors.Is(err, ErrTooManyRows) {
+		t.Fatalf("err = %v, want ErrTooManyRows", err)
+	}
+	got, err := s.BindingsForSubject(ctx, newOrg, authz.Subject{Tenant: tg, Type: "user", ID: "a"}, ResourceOrganization)
+	if err != nil {
+		t.Fatalf("BindingsForSubject: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("org-4 got %+v despite the cap", got)
+	}
+}
+
+func TestMoveOrg_RespectsTheCap(t *testing.T) {
+	h := newHierarchy()
+	s := newStore()
+	if err := s.GrantFrom(ctx, materializedBinding(erin, "org-9", "org_admin"), GroupOrigin(tgOther)); err != nil {
+		t.Fatalf("seed from-binding: %v", err)
+	}
+	for _, id := range []string{"a", "b"} {
+		sub := authz.Subject{Tenant: tg, Type: "user", ID: id}
+		if err := s.GrantFrom(ctx, intentBinding(sub, tg, groupRole()), GroupOrigin(tg)); err != nil {
+			t.Fatalf("seed intent %s: %v", id, err)
+		}
+	}
+	p, err := NewProvisioner(s, h, roleMap(), WithMaxProvisionRows(2))
+	if err != nil {
+		t.Fatalf("NewProvisioner: %v", err)
+	}
+	h.setParent("org-9", "tg-acme")
+	// fromRows(1) + toAdmins(2) = 3 > cap 2.
+	if err := p.MoveOrg(ctx, org9, tgOther, tg); !errors.Is(err, ErrTooManyRows) {
+		t.Fatalf("err = %v, want ErrTooManyRows", err)
+	}
+	kept, err := s.BindingsForSubject(ctx, org9, erin, ResourceOrganization)
+	if err != nil {
+		t.Fatalf("BindingsForSubject(erin): %v", err)
+	}
+	if len(kept) != 1 {
+		t.Fatalf("org-9 = %+v, want erin's binding untouched by the failed move", kept)
+	}
+}
+
+func TestRemoveOrg_RespectsTheCap(t *testing.T) {
+	h := newHierarchy()
+	s := newStore()
+	seed, err := NewProvisioner(s, h, roleMap())
+	if err != nil {
+		t.Fatalf("NewProvisioner(seed): %v", err)
+	}
+	carol := authz.Subject{Tenant: tg, Type: "user", ID: "carol"}
+	if err := seed.GrantGroupAdmin(ctx, bob, tg, groupRole()); err != nil {
+		t.Fatalf("grant bob: %v", err)
+	}
+	if err := seed.GrantGroupAdmin(ctx, carol, tg, groupRole()); err != nil {
+		t.Fatalf("grant carol: %v", err)
+	}
+
+	p, err := NewProvisioner(s, h, roleMap(), WithMaxProvisionRows(1))
+	if err != nil {
+		t.Fatalf("NewProvisioner: %v", err)
+	}
+	if err := p.RemoveOrg(ctx, org1, tg); !errors.Is(err, ErrTooManyRows) {
+		t.Fatalf("err = %v, want ErrTooManyRows", err)
+	}
+	kept, err := s.BindingsOnResource(ctx, org1, resOrg1)
+	if err != nil {
+		t.Fatalf("BindingsOnResource(org-1): %v", err)
+	}
+	if len(kept) != 2 {
+		t.Fatalf("org-1 = %d rows, want 2 untouched by the failed remove", len(kept))
+	}
+}
+
+// ---------------------------------------------------------------------
+// A hierarchy read that errors fails the membership change, never a silent
+// success.
+// ---------------------------------------------------------------------
+
+func TestMembership_HierarchyErrorPropagates(t *testing.T) {
+	h := newHierarchy()
+	p, _ := newP(t, h, roleMap())
+	boom := errors.New("hierarchy down")
+	h.err = boom
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"AddOrg", func() error { return p.AddOrg(ctx, tg, tenant.New("org-4")) }},
+		{"MoveOrg", func() error { return p.MoveOrg(ctx, org9, tgOther, tg) }},
+		{"RemoveOrg", func() error { return p.RemoveOrg(ctx, org1, tg) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); !errors.Is(err, boom) {
+				t.Fatalf("err = %v, want the hierarchy error", err)
+			}
+		})
+	}
+}

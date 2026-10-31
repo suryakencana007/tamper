@@ -20,8 +20,7 @@ func roleMapTwo() RoleMap {
 }
 
 // newHierarchy is the two-group fixture: tg-acme owns org-1/2/3, tg-other owns
-// org-9. Org membership changes are driven by the caller (here, the test), so
-// a fresh org like org-4 needs no hierarchy entry.
+// org-9.
 func newHierarchy() *fakeHierarchy {
 	return &fakeHierarchy{
 		parent: map[string]string{
@@ -33,6 +32,10 @@ func newHierarchy() *fakeHierarchy {
 		},
 	}
 }
+
+// setParent simulates the app's own parentage change, which must precede the
+// provisioner call (AddOrg/MoveOrg/RemoveOrg verify it).
+func (f *fakeHierarchy) setParent(org, group string) { f.parent[org] = group }
 
 func newP(t *testing.T, h OrgHierarchy, roles RoleMap) (*Provisioner, *Store) {
 	t.Helper()
@@ -51,7 +54,8 @@ func orgRes(id string) authz.Resource { return authz.Resource{Type: ResourceOrga
 // ---------------------------------------------------------------------
 
 func TestAddOrg_ExtendsEveryGroupAdminWithItsOwnRole(t *testing.T) {
-	p, s := newP(t, newHierarchy(), roleMapTwo())
+	h := newHierarchy()
+	p, s := newP(t, h, roleMapTwo())
 	carol := authz.Subject{Tenant: tg, Type: "user", ID: "carol"}
 	if err := p.GrantGroupAdmin(ctx, bob, tg, "tenant_group_admin"); err != nil {
 		t.Fatalf("grant bob: %v", err)
@@ -61,6 +65,7 @@ func TestAddOrg_ExtendsEveryGroupAdminWithItsOwnRole(t *testing.T) {
 	}
 
 	newOrg := tenant.New("org-4")
+	h.setParent("org-4", "tg-acme") // the app attaches first
 	if err := p.AddOrg(ctx, tg, newOrg); err != nil {
 		t.Fatalf("AddOrg: %v", err)
 	}
@@ -82,7 +87,9 @@ func TestAddOrg_ExtendsEveryGroupAdminWithItsOwnRole(t *testing.T) {
 }
 
 func TestAddOrg_NoAdminsIsANoOp(t *testing.T) {
-	p, s := newP(t, newHierarchy(), roleMapTwo())
+	h := newHierarchy()
+	p, s := newP(t, h, roleMapTwo())
+	h.setParent("org-4", "tg-acme")
 	if err := p.AddOrg(ctx, tg, tenant.New("org-4")); err != nil {
 		t.Fatalf("AddOrg: %v", err)
 	}
@@ -92,11 +99,13 @@ func TestAddOrg_NoAdminsIsANoOp(t *testing.T) {
 }
 
 func TestAddOrg_IsIdempotent(t *testing.T) {
-	p, s := newP(t, newHierarchy(), roleMap())
+	h := newHierarchy()
+	p, s := newP(t, h, roleMap())
 	if err := p.GrantGroupAdmin(ctx, bob, tg, groupRole()); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	newOrg := tenant.New("org-4")
+	h.setParent("org-4", "tg-acme")
 	for i := 0; i < 2; i++ {
 		if err := p.AddOrg(ctx, tg, newOrg); err != nil {
 			t.Fatalf("AddOrg #%d: %v", i+1, err)
@@ -112,12 +121,15 @@ func TestAddOrg_IsIdempotent(t *testing.T) {
 }
 
 func TestAddOrg_UnmappedRoleFailsClosed(t *testing.T) {
-	p, s := newP(t, newHierarchy(), roleMap()) // only admin -> org_admin
+	h := newHierarchy()
+	p, s := newP(t, h, roleMap()) // only admin -> org_admin
 	// Seed an intent whose role the map cannot translate.
 	if err := s.GrantFrom(ctx, intentBinding(bob, tg, "tenant_group_viewer"), GroupOrigin(tg)); err != nil {
 		t.Fatalf("seed intent: %v", err)
 	}
 	newOrg := tenant.New("org-4")
+	h.setParent("org-4", "tg-acme")
+
 	if err := p.AddOrg(ctx, tg, newOrg); !errors.Is(err, ErrUnmappedRole) {
 		t.Fatalf("err = %v, want ErrUnmappedRole", err)
 	}
@@ -130,9 +142,32 @@ func TestAddOrg_UnmappedRoleFailsClosed(t *testing.T) {
 	}
 }
 
+func TestAddOrg_RejectsWrongParent(t *testing.T) {
+	p, _ := newP(t, newHierarchy(), roleMap())
+	// org-9's parent is tg-other; AddOrg names tg-acme.
+	if err := p.AddOrg(ctx, tg, org9); !errors.Is(err, ErrParentMismatch) {
+		t.Fatalf("err = %v, want ErrParentMismatch", err)
+	}
+}
+
 func TestAddOrg_RejectsSameTenant(t *testing.T) {
 	p, _ := newP(t, newHierarchy(), roleMap())
 	if err := p.AddOrg(ctx, tg, tg); !errors.Is(err, ErrBadMembership) {
+		t.Fatalf("err = %v, want ErrBadMembership", err)
+	}
+}
+
+func TestAddOrg_RejectsUnsetOrg(t *testing.T) {
+	p, _ := newP(t, newHierarchy(), roleMap())
+	if err := p.AddOrg(ctx, tg, tenant.ID{}); !errors.Is(err, ErrBadMembership) {
+		t.Fatalf("err = %v, want ErrBadMembership", err)
+	}
+}
+
+func TestAddOrg_RejectsSingleTenantGroup(t *testing.T) {
+	p, _ := newP(t, newHierarchy(), roleMap())
+	err := p.AddOrg(ctx, tenant.Single, org1)
+	if !errors.Is(err, ErrBadMembership) {
 		t.Fatalf("err = %v, want ErrBadMembership", err)
 	}
 }
@@ -142,13 +177,15 @@ func TestAddOrg_RejectsSameTenant(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestMoveOrg_LosesFromAndGainsTo(t *testing.T) {
-	p, s := newP(t, newHierarchy(), roleMap())
+	h := newHierarchy()
+	p, s := newP(t, h, roleMap())
 	if err := p.GrantGroupAdmin(ctx, bob, tg, groupRole()); err != nil {
 		t.Fatalf("grant bob: %v", err)
 	}
 	if err := p.GrantGroupAdmin(ctx, erin, tgOther, groupRole()); err != nil {
 		t.Fatalf("grant erin: %v", err)
 	}
+	h.setParent("org-9", "tg-acme") // the app reparents first
 
 	if err := p.MoveOrg(ctx, org9, tgOther, tg); err != nil {
 		t.Fatalf("MoveOrg: %v", err)
@@ -167,6 +204,21 @@ func TestMoveOrg_LosesFromAndGainsTo(t *testing.T) {
 	}
 	if len(lost) != 0 {
 		t.Fatalf("from-group admin still has access: %+v", lost)
+	}
+}
+
+func TestMoveOrg_RejectsWrongParent(t *testing.T) {
+	p, _ := newP(t, newHierarchy(), roleMap())
+	// org-9's parent is still tg-other, not the destination tg-acme.
+	if err := p.MoveOrg(ctx, org9, tgOther, tg); !errors.Is(err, ErrParentMismatch) {
+		t.Fatalf("err = %v, want ErrParentMismatch", err)
+	}
+}
+
+func TestMoveOrg_RejectsSameGroup(t *testing.T) {
+	p, _ := newP(t, newHierarchy(), roleMap())
+	if err := p.MoveOrg(ctx, org9, tg, tg); !errors.Is(err, ErrBadMembership) {
+		t.Fatalf("err = %v, want ErrBadMembership", err)
 	}
 }
 
@@ -221,6 +273,14 @@ func TestRemoveOrg_KeepsDirectGrantOnSameBinding(t *testing.T) {
 	}
 	if len(kept) != 1 {
 		t.Fatalf("org-2 scope = %+v, want bob's group binding untouched", kept)
+	}
+}
+
+func TestRemoveOrg_RejectsWrongParent(t *testing.T) {
+	p, _ := newP(t, newHierarchy(), roleMap())
+	// org-9's parent is tg-other; RemoveOrg names tg-acme.
+	if err := p.RemoveOrg(ctx, org9, tg); !errors.Is(err, ErrParentMismatch) {
+		t.Fatalf("err = %v, want ErrParentMismatch", err)
 	}
 }
 

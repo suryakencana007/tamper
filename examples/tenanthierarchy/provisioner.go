@@ -34,8 +34,13 @@ var (
 	// (ADR-0001 decision 3). Nothing is written.
 	ErrTooManyRows = errors.New("tenanthierarchy: provisioning would write too many rows")
 	// ErrBadMembership — a membership change (AddOrg/MoveOrg/RemoveOrg) names
-	// an unset tenant, or names the same tenant as both org and group.
+	// an unset tenant, the single tenant, or the same tenant as both org and
+	// group.
 	ErrBadMembership = errors.New("tenanthierarchy: invalid org/group membership change")
+	// ErrParentMismatch — AddOrg/MoveOrg/RemoveOrg requires the org's parent to
+	// already be the group the change names. The caller changes parentage (its
+	// own tenant table) first; a mismatch means a misordered call.
+	ErrParentMismatch = errors.New("tenanthierarchy: org parent does not match the membership change")
 )
 
 // Provisioner turns "grant this subject admin of this tenant-group" into real
@@ -182,12 +187,15 @@ func (p *Provisioner) RevokeGroupAdmin(ctx context.Context, sub authz.Subject, g
 // org's scope per intent row of group, carrying GroupOrigin(group). Atomic and
 // idempotent.
 //
-// The caller has already attached org to group in its own tenant table; this
-// makes the bindings match. The two writes are one transaction in a SQL
-// adapter; in the in-memory example they are separate, and a crash in between
-// leaves drift the reconciliation guard (slice 9c-1) reports.
+// The caller attaches org to group FIRST (its own tenant table); this
+// precondition is checked against OrgHierarchy and a mismatch is
+// ErrParentMismatch, so a misordered call fails loud instead of granting the
+// group's admins access to an org that is not its child.
 func (p *Provisioner) AddOrg(ctx context.Context, group, org tenant.ID) error {
 	if err := membershipGate(org, group); err != nil {
+		return err
+	}
+	if err := p.requireParent(ctx, org, group, "AddOrg"); err != nil {
 		return err
 	}
 	origin := GroupOrigin(group)
@@ -206,8 +214,17 @@ func (p *Provisioner) AddOrg(ctx context.Context, group, org tenant.ID) error {
 // MoveOrg detaches org from `from`'s grants and attaches it to `to`'s, in one
 // atomic Apply: the from-group's contribution in org's scope is removed, and
 // every grant of `to` is materialized onto org. Both halves, or neither.
+//
+// The caller reparents org to `to` FIRST; the precondition is checked against
+// OrgHierarchy (ErrParentMismatch). `from` must differ from `to`.
 func (p *Provisioner) MoveOrg(ctx context.Context, org, from, to tenant.ID) error {
 	if err := membershipGate(org, from, to); err != nil {
+		return err
+	}
+	if from == to {
+		return fmt.Errorf("%w: MoveOrg needs distinct from/to groups", ErrBadMembership)
+	}
+	if err := p.requireParent(ctx, org, to, "MoveOrg"); err != nil {
 		return err
 	}
 	return p.writer.Apply(ctx, func(tx Tx) error {
@@ -234,8 +251,15 @@ func (p *Provisioner) MoveOrg(ctx context.Context, org, from, to tenant.ID) erro
 // RemoveOrg removes group's contribution (GroupOrigin(group)) from org's scope,
 // in one atomic Apply. A direct grant on the same binding is left in place;
 // rows only the group justified disappear.
+//
+// The caller detaches org from group AFTER this call, so the bindings go before
+// the parentage does (an under-access window, never an over-access one). The
+// precondition is checked against OrgHierarchy (ErrParentMismatch).
 func (p *Provisioner) RemoveOrg(ctx context.Context, org, group tenant.ID) error {
 	if err := membershipGate(org, group); err != nil {
+		return err
+	}
+	if err := p.requireParent(ctx, org, group, "RemoveOrg"); err != nil {
 		return err
 	}
 	origin := GroupOrigin(group)
@@ -272,19 +296,41 @@ func (p *Provisioner) extendOnto(ctx context.Context, tx Tx, group, org tenant.I
 	return nil
 }
 
-// membershipGate refuses a membership change that names an unset tenant, or the
-// same tenant as both org and group.
+// membershipGate refuses a membership change that names an unset tenant, the
+// single tenant, or the same tenant as both org and group.
 func membershipGate(org tenant.ID, groups ...tenant.ID) error {
 	if !org.Valid() {
 		return fmt.Errorf("%w: the org is unset", ErrBadMembership)
+	}
+	if org.IsSingle() {
+		return fmt.Errorf("%w: the org cannot be the single tenant", ErrBadMembership)
 	}
 	for _, g := range groups {
 		if !g.Valid() {
 			return fmt.Errorf("%w: a group is unset", ErrBadMembership)
 		}
+		if g.IsSingle() {
+			return fmt.Errorf("%w: a group cannot be the single tenant", ErrBadMembership)
+		}
 		if g == org {
 			return fmt.Errorf("%w: %s cannot be its own group", ErrBadMembership, org)
 		}
+	}
+	return nil
+}
+
+// requireParent asserts the org's current parent is group. It turns a
+// misordered membership change into a loud error: AddOrg needs the org already
+// attached, MoveOrg needs it reparented to the destination, RemoveOrg needs it
+// still attached.
+func (p *Provisioner) requireParent(ctx context.Context, org, group tenant.ID, op string) error {
+	got, ok, err := p.hier.ParentOf(ctx, org.String())
+	if err != nil {
+		return fmt.Errorf("tenanthierarchy: resolve parent of %s: %w", org, err)
+	}
+	if !ok || got != group.String() {
+		return fmt.Errorf("%w: %s requires %s to be a child of %s, but its parent is %q",
+			ErrParentMismatch, op, org, group, got)
 	}
 	return nil
 }

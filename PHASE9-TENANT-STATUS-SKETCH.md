@@ -65,8 +65,9 @@ Proposals for review. Each is stated with the invariant it protects.
 
 5. **The tenant comes from the pin, not from a resolver.** The gate reads
    `TenantFromContext`, so it cannot disagree with the tenant the route is
-   using. Nothing pinned is a wiring error — a 500 with the app's config error
-   code, matching `RequireDecision`'s misconfiguration branch — never a pass.
+   using. Nothing pinned is a wiring error — the framework's own 500
+   `CONFIG_ERROR` envelope, written where `RequireDecision` writes its
+   misconfiguration branch, never the app's miss writer — and never a pass.
 
 6. **Any status but `StatusActive` denies**, including a status this version of
    the library does not know. Deny-by-default extends to status: an unknown
@@ -81,6 +82,16 @@ Proposals for review. Each is stated with the invariant it protects.
    or an empty label panics at construction — the posture
    `RequireTenant`/`PinTenant` already take on a nil resolver (`CLAUDE.md`
    standing rule 4). A gate that cannot check status must not exist.
+
+9. **A single-tenant deployment has nothing to suspend.** `tenant.Single` is
+   the empty id, and the port states that an empty lookup key never resolves:
+   `""` is *"precisely the deployment with no tenant row to find"*
+   (`tenant/store.go:45-48`). Looking it up would return `ErrNotFound` and turn
+   this gate into a 404 for **every** request in a single-tenant deployment. So
+   the gate passes `tenant.Single` straight through and is a no-op there.
+   Denying instead would break that deployment for a control that has no
+   meaning in it: "suspend the only tenant" is an operator decision about the
+   whole deployment, not a row in a tenants table.
 
 ---
 
@@ -97,6 +108,7 @@ PinTenant(resolve)  or  RequireTenant(resolve)      ← the tenant is pinned
   ▼
 RequireActiveTenant(ActiveTenantGate{...})
   │
+  ├── pinned tenant is tenant.Single ......... next handler  (decision 9)
   ├── tenant not pinned ..................... 500 CONFIG_ERROR (wiring bug)
   ├── Store.ByID error
   │     ├── ErrNotFound ..................... WriteNotActive   (miss)
@@ -109,10 +121,11 @@ RequireActiveTenant(ActiveTenantGate{...})
   └── StatusActive .......................... next handler
 ```
 
-`tenant.Single` is looked up like any other tenant. Since v0.4.0 it is a real
-tenant id with a real row, and the single-tenant deployment has a row like
-everyone else. A deployment that does not want a status check does not mount
-the gate; there is no special case for `""`.
+`tenant.Single` is **not** looked up (decision 9). It is the empty id, and the
+store's own contract says an empty lookup key never resolves — a lookup would
+return `ErrNotFound`, which this gate maps to the miss writer, and every request
+in a single-tenant deployment would be a 404. The branch comes first for that
+reason.
 
 **Where status is written is out of scope.** Today the application sets it in
 its own table (TD-05's proposal would add a port). The gate reads whatever the
@@ -134,8 +147,8 @@ runbook rather than discovered.
 type ActiveTenantGate struct {
     // Store resolves the status. Required — nil panics at construction.
     Store tenant.Store
-    // Label names the gate in the 500 message ("tenant status"),
-    // so operator logs keep their grep-ability.
+    // Label names the gate in the 500 message ("tenant status"), so operator
+    // logs keep their grep-ability. Required: empty panics with the rest.
     Label string
     // WriteNotActive writes the app's miss response. Required. It is used
     // for an unknown tenant AND for a non-active one, so the two are
@@ -187,6 +200,8 @@ a tenant's existence.
    per-method configuration, and no way to say "suspended but allowed here".
 7. **A build-time mistake fails at build time**: nil store, nil writer, empty
    label panic before the first request.
+8. **A single-tenant deployment is not refused**: `tenant.Single` never reaches
+   the store and never reaches the miss writer.
 
 ---
 
@@ -212,8 +227,8 @@ a tenant's existence.
 
 ## 7. Proof obligations
 
-Mutation proofs, each failing a named test. All four are required for the slice
-to count as done.
+Mutation proofs, each failing a named test. **All six** are required for the
+slice to count as done.
 
 | Mutant | Test that must go red |
 |---|---|
@@ -223,11 +238,12 @@ to count as done.
 | Treat a store error as allow | the same outage test, allow side |
 | Read the tenant from a resolver instead of the pin | the mismatch test (a route pinned to `acme` must not be answered by another tenant) |
 | Remove the construction guard | the panic test (rule 6: the guard ships with a test that fires) |
+| Look `tenant.Single` up instead of passing it through | the single-tenant test (it must pass, not 404) |
 
 Plus, not mutation-based:
 
-- `tenant.Single` is looked up like any tenant and resolves through the same
-  path.
+- `tenant.Single` passes without touching the store, and a store whose `ByID`
+  would return `ErrNotFound` for it never sees the call.
 - A status the library does not know refuses (a literal `tenant.Status("held")`
   seeded in the store).
 

@@ -1,7 +1,7 @@
 # Phase 10 — tenant lifecycle: a write port and one `Suspend`
 
 Status: **accepted 2026-11-01; implemented in #85** (`tenant/admin.go`,
-`admin.go`; 16 tests; nine mutation proofs, all red before being reverted). The
+`admin.go`; 17 tests; nine mutation proofs, all red before being reverted). The
 four open questions in §8 were answered as they were proposed; they are recorded
 there.
 

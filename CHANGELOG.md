@@ -346,6 +346,24 @@ no home tenant. Backfill that column before the upgrade.
 - **`authz/tenanttest`** (#56, TD-03). Leak suites for `BindingStore` and
   `PermissionStore`, the `authz` sibling of `identity/tenanttest`.
 
+- **Tenant lifecycle: a write port and one `Suspend`** (#85, TD-05). Opt-in; a
+  deployment that does not implement the port is unchanged. Design:
+  `PHASE10-TENANT-LIFECYCLE-SKETCH.md`.
+  - `tenant.AdminStore` (`List`, `Create`, `SetStatus`) is the console's half of
+    tenancy. `tenant.Store` stays read-only, so a routing surface can hold a
+    tenant port without holding permission to change one. `tenant.MemStore`
+    implements it.
+  - New sentinels: `tenant.ErrConflict`, `tenant.ErrInvalidDescriptor`,
+    `tenant.ErrSingleTenant`. Every refusal writes nothing.
+  - `tamper.NewAdmin(admin, core, log)` composes the tenant table, the identity
+    side and the audit chain; it panics on a nil piece. `Admin.Suspend` sets the
+    status **first** and revokes the tenant's refresh sessions **second**, and a
+    partial state is reported rather than swallowed — the tenant is suspended and
+    the error says which half is missing.
+  - The suspension's audit row is scoped to the **suspended** tenant with the
+    operator's home tenant on the actor, so it lands in that tenant's export even
+    though a console is usually untenanted.
+
 - **`examples/tenanthierarchy`** (#63 to #75). A runnable three-level access
   model — platform admin → tenant-group admin → organization admin — written
   entirely in application code: Tamper core is unchanged and

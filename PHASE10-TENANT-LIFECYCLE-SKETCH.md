@@ -170,8 +170,9 @@ type AdminStore interface {
     List(ctx context.Context) ([]Descriptor, error)
 
     // Create provisions one tenant. ErrConflict for an existing id or slug;
-    // ErrInvalidDescriptor for an empty id or an unknown Status; ErrSingleTenant
-    // for tenant.Single. Nothing is written on any error.
+    // ErrSingleTenant when the id is empty — which IS the single tenant, its
+    // string form — and ErrInvalidDescriptor for an unknown Status. Nothing is
+    // written on any error.
     //
     // A non-empty ParentID is stored as given and nothing more: tamper does not
     // resolve it, inherit through it, or branch on it. This is where a hierarchy

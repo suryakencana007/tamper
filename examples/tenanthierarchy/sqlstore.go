@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 
@@ -79,15 +80,38 @@ var (
 	_ IntentReader       = (*SQLStore)(nil)
 )
 
-// OpenSQLStore opens dsn with the "sqlite" driver and creates [Schema] if it is
-// missing. Pass ":memory:" for an ephemeral store — note that a pooled
-// *sql.DB may hold several connections, so a memory database needs
-// "file:name?mode=memory&cache=shared" to be shared across them.
+// sqlitePragmas are the per-connection settings this adapter needs:
+//
+//   - busy_timeout — SQLite defaults to 0, so a second writer fails immediately
+//     with SQLITE_BUSY instead of waiting. The ports promise concurrency safety
+//     (the in-memory Store has it, and provisioning may run from HTTP handlers),
+//     so a writer waits for the lock rather than erroring.
+//   - journal_mode=WAL — readers do not block the writer. On a memory database
+//     SQLite keeps journal_mode "memory" and the setting is a no-op.
+//
+// They travel in the DSN because a PRAGMA statement is per connection and
+// database/sql keeps a pool: db.Exec would only reach whichever connection
+// served it, leaving every other connection on the default.
+const sqlitePragmas = "_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)"
+
+// withPragmas appends sqlitePragmas to a DSN, respecting an existing query.
+func withPragmas(dsn string) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + sqlitePragmas
+}
+
+// OpenSQLStore opens dsn with the "sqlite" driver, applies [sqlitePragmas], and
+// creates [Schema] if it is missing. Pass ":memory:" for an ephemeral store —
+// note that a pooled *sql.DB may hold several connections, so a memory database
+// needs "file:name?mode=memory&cache=shared" to be shared across them.
 func OpenSQLStore(dsn string) (*SQLStore, error) {
 	if dsn == "" {
 		return nil, fmt.Errorf("tenanthierarchy: OpenSQLStore requires a dsn")
 	}
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", withPragmas(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("tenanthierarchy: open %q: %w", dsn, err)
 	}
@@ -134,6 +158,11 @@ func (s *SQLStore) RevokeFrom(ctx context.Context, key BindingKey, origin Origin
 }
 
 // Apply runs fn in one transaction: commit on nil, rollback on any error.
+//
+// Do not call the store's own methods from inside fn. In memory that is a
+// self-deadlock on the mutex; here it begins a SECOND transaction on another
+// pooled connection, which on SQLite means waiting for this one's write lock
+// until busy_timeout expires. Go through the Tx.
 func (s *SQLStore) Apply(ctx context.Context, fn func(tx Tx) error) error {
 	dbtx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -282,7 +311,14 @@ func (s *SQLStore) groupQuery(ctx context.Context, query string, args ...any) ([
 		if err := rows.Scan(&id); err != nil {
 			return nil, fmt.Errorf("tenanthierarchy: scan group: %w", err)
 		}
-		out = append(out, tenant.FromStored(id))
+		g := tenant.FromStored(id)
+		// A tenant-group is a real tenant. An empty id here would read as
+		// tenant.Single through FromStored; GroupOrigins drops it, so this
+		// read does too.
+		if !g.Valid() || g.IsSingle() {
+			continue
+		}
+		out = append(out, g)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("tenanthierarchy: iterate groups: %w", err)

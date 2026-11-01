@@ -197,7 +197,9 @@ on the router:
 ```go
 // Single-tenant: one line. Pooled: resolve from subdomain, path or header —
 // this resolver is the only line that changes when you go pooled.
-r.Use(tamperespresso.PinTenant(func(*http.Request) string { return "" }))
+r.Use(tamperespresso.PinTenant(
+	func(*http.Request) (tenant.ID, bool) { return tenant.Single, true },
+))
 ```
 
 (`PinTenant` is for routes *before* login; `RequireTenant` additionally
@@ -222,6 +224,23 @@ func TestMyStoreIsolation(t *testing.T) {
 }
 ```
 
+`authz` carries the same obligation. Every `BindingStore` and `PermissionStore`
+method takes the scope, and the RBAC engine drops a binding whose tenant is not
+that scope — but only the suite proves the query never produced one:
+
+```go
+// import authztest "github.com/suryakencana007/tamper/authz/tenanttest"
+func TestMyBindingStoreIsolation(t *testing.T) {
+    authztest.RunBindingStoreLeakSuite(t, func() authztest.BindingHarness {
+        s := newMyStore(t) // fresh and empty on every call
+        return authztest.BindingHarness{
+            Store: s,
+            Grant: func(b authz.Binding) error { return s.Grant(context.Background(), b) },
+        }
+    })
+}
+```
+
 [`examples/multitenant`](./examples/multitenant) is the runnable proving
 ground: two tenants over one store in one process, `bob@acme.com` and
 `bob@globex.com` as separate people, and a test asserting that a token minted
@@ -231,6 +250,41 @@ for one tenant is refused on the other's route.
 go run  ./examples/multitenant      # serves both tenants on :8080
 go test ./examples/multitenant/...  # drives both tenants end to end
 ```
+
+## Organisation hierarchy — tenant-group above organization
+
+[`examples/tenanthierarchy`](./examples/tenanthierarchy) shows a three-level
+access model on top of the two-level primitive: **platform admin** →
+**tenant-group admin** (a reseller) → **organization admin**. It is entirely
+application code — Tamper core is unchanged and
+`tenant.Descriptor.ParentID` stays RESERVED, read only by the app's own port.
+
+The mechanism, decided in
+[`ADR-0001`](./ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md) and
+planned slice by slice in
+[`TENANT-HIERARCHY-MANIFEST.md`](./TENANT-HIERARCHY-MANIFEST.md):
+
+- a tenant-group admin is a **guest** of each child organization: a real
+  binding in that org's scope, with the tenant-group as the subject's home
+  tenant. Expansion happens at **provisioning**, never at query time;
+- the authorization scope is always the **organization**. An entered token
+  names exactly one tenant, so a group admin holds **one entered token per
+  org** — not a wildcard over the children;
+- bindings carry **per-origin provenance**, so revoking a group grant cannot
+  remove a direct grant that landed on the same binding;
+- a reconciliation **guard** reports drift in both directions (a required
+  binding missing, a binding no grant justifies) and never repairs itself;
+  provisioning repairs, explicitly and idempotently.
+
+```sh
+go test ./examples/tenanthierarchy/...  # the whole mechanism, guards included
+```
+
+Two sharp edges the example documents: `espresso.Auditor.For` reads path
+params through Espresso's `extractor` while `DecisionGate` reads
+`r.PathValue` (a router sets both; a hand-built handler must), and eager
+provisioning costs O(children × admins) rows per grant — which is why the
+drift guard is not optional.
 
 ## What your app supplies
 

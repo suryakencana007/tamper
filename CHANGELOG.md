@@ -343,6 +343,18 @@ no home tenant. Backfill that column before the upgrade.
 - **`authz/tenanttest`** (#56, TD-03). Leak suites for `BindingStore` and
   `PermissionStore`, the `authz` sibling of `identity/tenanttest`.
 
+- **`examples/tenanthierarchy`** (#63 to #75). A runnable three-level access
+  model — platform admin → tenant-group admin → organization admin — written
+  entirely in application code: Tamper core is unchanged and
+  `tenant.Descriptor.ParentID` stays reserved. A tenant-group admin is a guest
+  of each child org (a real binding in that org's scope, expanded at
+  provisioning), the authorization scope is always the organization, bindings
+  carry per-origin provenance, and a reconciliation guard reports drift in
+  both directions without repairing itself. Design:
+  [`ADR-0001-…`](./ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md)
+  (Accepted); per-slice plan:
+  [`TENANT-HIERARCHY-MANIFEST.md`](./TENANT-HIERARCHY-MANIFEST.md).
+
 - **A TOTP-pending token carries a `tid` claim** (#40, TD-10). Verification
   pins it the same way `VerifyAccess` pins an access token, so a pending
   token minted in one tenant cannot be finished in another. The functions

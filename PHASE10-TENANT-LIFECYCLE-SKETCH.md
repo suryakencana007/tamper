@@ -94,8 +94,10 @@ Proposals for review, each stated with what it protects.
    and, as Phase 9 records, the deployment with no tenant row to find. There is
    nothing to create, and no row to change.
 
-9. **Misconfiguration fails when it is built**, per standing rule 4, and each
-   guard ships with a test that fires (rule 6).
+9. **Misconfiguration fails when the composer is built**, per standing rule 4,
+   and the guard ships with a test that fires (rule 6). `NewAdmin` is the thing
+   that can be wired wrong — a plain function cannot fail at build time, which is
+   why the composer is a type with a constructor rather than one exported func.
 
 ---
 
@@ -105,7 +107,7 @@ Proposals for review, each stated with what it protects.
 console (platform admin)
   │
   ▼
-tamper.SuspendTenant(ctx, admin, core, acme)
+admin.Suspend(ctx, acme)
   │
   ├── 1. AdminStore.SetStatus(acme, suspended)
   │        └── error -> return; nothing else happened
@@ -121,6 +123,11 @@ Phase 9's RequireActiveTenant now refuses acme on every request.
 Reads do not change: `tenant.Store.ByID`/`BySlug` still answer, and the gate
 still reads whatever the row says. Nothing in Phase 9 needs to change for this
 phase to land, which is the point of having split them.
+
+**Resuming is the easy direction.** `SetStatus(ctx, id, tenant.StatusActive)`
+needs no composer and revokes nothing: the gate stops refusing on the next
+request, and the sessions that were revoked at suspension are simply gone. There
+is therefore no `Unsuspend`, and there is nothing to get out of order.
 
 **What a suspension does and does not close.** The status write takes effect on
 the next request; the revocation takes effect on the next refresh. An access
@@ -143,13 +150,16 @@ type AdminStore interface {
     List(ctx context.Context) ([]Descriptor, error)
 
     // Create provisions one tenant. ErrConflict for an existing id or slug;
-    // ErrInvalidDescriptor for an empty id, tenant.Single, or an unknown
-    // Status. Nothing is written on any error.
+    // ErrInvalidDescriptor for an empty id or an unknown Status; ErrSingleTenant
+    // for tenant.Single. Nothing is written on any error.
     Create(ctx context.Context, d Descriptor) error
 
     // SetStatus moves one tenant to status. ErrNotFound for an unknown id;
     // ErrInvalidDescriptor for an unknown Status; ErrSingleTenant for
     // tenant.Single. Nothing is written on any error.
+    //
+    // Idempotent: setting the status a tenant already has succeeds and writes
+    // nothing new. A retried suspension must not fail — see Suspend below.
     SetStatus(ctx context.Context, id tenant.ID, status Status) error
 }
 ```
@@ -159,15 +169,25 @@ The composer, because it needs both stores:
 ```go
 package tamper
 
-// SuspendTenant suspends a tenant and revokes its refresh sessions, IN THAT
-// ORDER. It is the one supported way to do both: the status write stops the
-// tenant serving (espresso.RequireActiveTenant), and the revocation closes the
-// token window.
+// Admin holds the two stores a lifecycle write needs. Both are required.
+type Admin struct { /* admin tenant.AdminStore; core *identity.Core */ }
+
+// NewAdmin returns an Admin.
 //
-// Two tenants per question, deliberately: admin is the tenant table, core is
-// the identity side. A framework cannot atomically write both, so it reports a
+// It panics on a nil AdminStore or a nil *identity.Core: a composer missing half
+// its stores would either set a status and revoke nothing, or revoke sessions for
+// a tenant it never suspended. That is a wiring bug, so it fails when the composer
+// is built (standing rule 4), and the guard ships with a test that fires (rule 6).
+func NewAdmin(admin tenant.AdminStore, core *identity.Core) *Admin
+
+// Suspend suspends a tenant and revokes its refresh sessions, IN THAT ORDER. It
+// is the one supported way to do both: the status write stops the tenant serving
+// (espresso.RequireActiveTenant), and the revocation closes the token window.
+//
+// Two stores per call, deliberately: admin is the tenant table, core is the
+// identity side. A framework cannot atomically write both, so it reports a
 // partial failure instead of pretending to prevent one.
-func SuspendTenant(ctx context.Context, admin tenant.AdminStore, core *identity.Core, id tenant.ID) error
+func (a *Admin) Suspend(ctx context.Context, id tenant.ID) error
 ```
 
 New sentinels, so a caller can tell the cases apart on its own surface:
@@ -202,9 +222,9 @@ var (
 2. **An unknown status is never stored**, and neither is an empty id or the
    single tenant.
 3. **A duplicate is `ErrConflict`**, never an overwrite.
-4. **`SuspendTenant` writes the status before it revokes.** After any failure,
+4. **`Suspend` writes the status before it revokes.** After any failure,
    the tenant is not serving; at worst its sessions outlive the call.
-5. **A partial `SuspendTenant` is reported**, with both facts in the error.
+5. **A partial `Suspend` is reported**, with both facts in the error.
 6. **There is no `Delete`**, and offboarding removes no row.
 7. **Reads are unaffected**: `tenant.Store` is unchanged and Phase 9's gate
    needs no change.
@@ -238,15 +258,15 @@ Mutation proofs, each failing a named test.
 | `Create` overwrites an existing id or slug instead of `ErrConflict` | the duplicate test |
 | `SetStatus` accepts an unknown status | the unknown-status test |
 | `SetStatus` returns nil for an unknown tenant | the not-found test |
-| `SuspendTenant` revokes before it sets the status | the ordering test (a failing status write must leave sessions untouched; a failing revoke must leave the tenant suspended) |
-| `SuspendTenant` swallows the revocation error | the partial-failure test |
-| Remove a construction guard | the panic test (rule 6) |
+| `Suspend` revokes before it sets the status | the ordering test (a failing status write must leave sessions untouched; a failing revoke must leave the tenant suspended) |
+| `Suspend` swallows the revocation error | the partial-failure test |
+| `NewAdmin` accepts a nil store | the panic test (rule 6: the guard ships with a test that fires) |
 
 Plus, not mutation-based:
 
 - `ErrConflict` is returned for a duplicate slug even when the id is new, and the
   reverse.
-- `SuspendTenant` on an already-suspended tenant succeeds and still revokes (an
+- `Suspend` on an already-suspended tenant succeeds and still revokes (an
   idempotent suspension is a normal retry).
 - A refused `SetStatus` leaves the previous status readable through `ByID`.
 
@@ -261,7 +281,7 @@ enforcement; it adds the write and the pairing.
 When this lands, one sentence in Phase 9 changes and nothing else: the
 "accepted window" moves from *"a suspension still leaves valid access tokens
 until they expire"* to *"until the next refresh cycle, at the moment of
-`SuspendTenant`"*.
+`Suspend`"*.
 
 **Open questions for the owner:**
 
@@ -270,7 +290,7 @@ until they expire"* to *"until the next refresh cycle, at the moment of
   non-active status, so a `StatusDisabled` would be additive and needs no gate
   change. Proposal: add it when offboarding gets a real retention policy, not
   before.
-- **Who may call `SuspendTenant`?** The framework cannot answer this; the
+- **Who may call `Suspend`?** The framework cannot answer this; the
   console's own authorization does. For a tenant-hierarchy deployment, ADR-0001
   decision 6 (only a platform admin grants) is the nearest recorded answer.
 - **Does `List` need pagination?** A platform console with thousands of tenants

@@ -3,7 +3,9 @@ package tenanthierarchy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/suryakencana007/tamper/authz"
@@ -141,8 +143,12 @@ func TestSQLStore_ApplyRollsBack(t *testing.T) {
 	if got := countRows(t, s); got != 1 {
 		t.Fatalf("rows = %d, want 1 — the failed Apply must leave the store as it was", got)
 	}
-	if _, err := s.BindingsFor(ctx, org1, bob, resOrg1); err != nil {
-		t.Fatalf("BindingsFor: %v", err)
+	// The pre-existing row survives and the staged one is gone.
+	if rows, err := s.BindingsFor(ctx, org2, erin, resOrg1); err != nil || len(rows) != 1 {
+		t.Fatalf("pre-existing row = %d, %v; want 1 row and no error", len(rows), err)
+	}
+	if rows, err := s.BindingsFor(ctx, org1, bob, resOrg1); err != nil || len(rows) != 0 {
+		t.Fatalf("staged row = %d, %v; want 0 rows (rolled back)", len(rows), err)
 	}
 }
 
@@ -281,5 +287,73 @@ func TestSQLStore_AddOrg(t *testing.T) {
 	}
 	if got := countRows(t, s); got != 5 {
 		t.Fatalf("rows = %d, want 5", got)
+	}
+}
+
+// The ports promise concurrency safety; SQLite gives it only when a writer
+// waits for the lock instead of failing. Without the DSN's busy_timeout this
+// test fails with SQLITE_BUSY.
+func TestSQLStore_ConcurrentUse(t *testing.T) {
+	s := newSQLStore(t)
+
+	const goroutines, perGoroutine = 8, 20
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			sub := authz.Subject{Tenant: tg, Type: "user", ID: fmt.Sprintf("u-%d", g)}
+			for i := 0; i < perGoroutine; i++ {
+				if err := s.Grant(ctx, authz.Binding{Tenant: org1, Subject: sub, Resource: resOrg1, Role: "org_admin"}); err != nil {
+					t.Errorf("goroutine %d Grant: %v", g, err)
+					return
+				}
+				if err := s.Apply(ctx, func(tx Tx) error {
+					return tx.Grant(ctx, authz.Binding{Tenant: org2, Subject: sub, Resource: resOrg1, Role: "org_admin"})
+				}); err != nil {
+					t.Errorf("goroutine %d Apply: %v", g, err)
+					return
+				}
+				if _, err := s.BindingsFor(ctx, org1, sub, resOrg1); err != nil {
+					t.Errorf("goroutine %d BindingsFor: %v", g, err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Two rows per goroutine, idempotent across the 20 passes.
+	if got := countRows(t, s); got != goroutines*2 {
+		t.Fatalf("rows = %d, want %d", got, goroutines*2)
+	}
+}
+
+// An empty group id cannot be produced through the public API — the gates
+// refuse the single tenant as a group — so seed one directly and pin the read's
+// defence. tenant.FromStored("") would otherwise read as tenant.Single and
+// surface a fake "group" to Reconcile or MembershipsFor.
+func TestSQLStore_IntentGroupsRejectsAMalformedGroupID(t *testing.T) {
+	s := newSQLStore(t)
+	for _, q := range []string{
+		`INSERT INTO authz_binding
+			(tenant_scope, subject_tenant, subject_type, subject_id, resource_type, resource_id, role)
+		 VALUES ('', '', 'user', 'bob', 'tenant_group', '', 'tenant_group_admin')`,
+		`INSERT INTO authz_binding_origin
+			(tenant_scope, subject_tenant, subject_type, subject_id, resource_type, resource_id, role, origin)
+		 VALUES ('', '', 'user', 'bob', 'tenant_group', '', 'tenant_group_admin', 'group:')`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("seed malformed row: %v", err)
+		}
+	}
+
+	// Counts, not ids: tenant.Single's string form is "", so a returned
+	// single tenant prints as an empty list and would read as failure-free.
+	if got, err := s.IntentGroups(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("IntentGroups: %d group(s), err %v; want 0 (an empty id is not a group)", len(got), err)
+	}
+	if got, err := s.IntentGroupsForSubject(ctx, "user", "bob"); err != nil || len(got) != 0 {
+		t.Fatalf("IntentGroupsForSubject: %d group(s), err %v; want 0", len(got), err)
 	}
 }

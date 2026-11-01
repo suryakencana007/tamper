@@ -10,10 +10,7 @@ import (
 	"github.com/suryakencana007/tamper/tenant"
 )
 
-var (
-	tidAcme   = tenant.New("acme")
-	tidGlobex = tenant.New("globex")
-)
+var tidAcme = tenant.New("acme")
 
 // statusStore is a tenant.Store whose answers the test controls.
 type statusStore struct {

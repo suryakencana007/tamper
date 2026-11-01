@@ -220,7 +220,7 @@ VerifyTOTPPendingInTenant(token, tid)       -> VerifyTOTPPending(token, tenant.I
 
 ---
 
-## 4. The one additive feature: entering a tenant
+## 4. The additive features: entering a tenant, and a lifecycle write
 
 A user is stored in one home tenant. A **membership** is the right to act
 inside another. Nothing happens unless you wire it.
@@ -248,6 +248,13 @@ tok, err := core.EnterTenant(ctx, sessionClaims, tenant.New("acme"))
   log of its own.
 - A removed membership keeps working until the entered token expires. That is
   the whole revocation window; keep the TTL short.
+
+**Tenant lifecycle (TD-05).** `tenant.AdminStore` (`List`, `Create`,
+`SetStatus`) is the write port for a console, and `tamper.NewAdmin(admin, core,
+log)` composes it with the identity side. `Admin.Suspend` sets the status and
+revokes the tenant's refresh sessions **in that order**, and reports a partial
+state rather than swallowing it. Also opt-in: a deployment that does not
+implement the port is unchanged. Nothing here is breaking.
 
 ---
 

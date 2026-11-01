@@ -834,5 +834,7 @@ orgs' resources, not its own grant list. The operation runs on the group's route
 - `Auditor.For` reads path params through espresso's `extractor`, while
   `DecisionGate` reads `r.PathValue`. Harmless with an espresso router (it sets
   both), but worth documenting beside the audit wiring.
-- A SQL adapter for `BindingSource` — the in-memory store is linear-scan by
-  design; a real deployment needs the indexed table and the same leak suite.
+- ~~A SQL adapter for `BindingSource`~~ — done: `examples/tenanthierarchy`
+  now ships `SQLStore` (two SQLite tables, the per-row origin set, and the
+  three indexes) behind the same ports, and runs the authz leak suite plus the
+  provisioning/reconciliation/membership suites against it.

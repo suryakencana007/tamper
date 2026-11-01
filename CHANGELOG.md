@@ -353,7 +353,8 @@ no home tenant. Backfill that column before the upgrade.
   of each child org (a real binding in that org's scope, expanded at
   provisioning), the authorization scope is always the organization, bindings
   carry per-origin provenance, and a reconciliation guard reports drift in
-  both directions without repairing itself. Design:
+  both directions without repairing itself. Ships an in-memory store and a
+  SQLite adapter behind the same ports. Design:
   [`ADR-0001-…`](./ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md)
   (Accepted); per-slice plan:
   [`TENANT-HIERARCHY-MANIFEST.md`](./TENANT-HIERARCHY-MANIFEST.md).

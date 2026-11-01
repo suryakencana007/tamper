@@ -276,7 +276,7 @@ section plus a small change in the gate.
   status. A pending tenant that must reach an onboarding route mounts that route
   without this gate.
 - **How long may the cache window be?** None: the gate does one `ByID` per
-  request and the reference deployments wrap nothing. A short TTL on the store
-  is still supported; the accepted window is the TTL.
+  request and nothing in this package wraps the store. A short TTL on the
+  application's own store is still supported; the accepted window is that TTL.
 - **Does a refusal deserve an audit row?** Not in tamper. The `WriteNotActive`
   writer is the application's hook if it wants one.

@@ -960,7 +960,7 @@ Suggested slice order if this work moves into Tamper:
    (#56).
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
 6. **TD-05** — tenant lifecycle. (TD-06, suspension enforcement, landed in #82;
-   its `Suspend` should still pair a status change with session revocation.)
+   TD-05's `Suspend` should still pair a status change with session revocation.)
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
    answered. For the roles axis the application-side mechanism is decided in
    `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md` (eager per-tenant

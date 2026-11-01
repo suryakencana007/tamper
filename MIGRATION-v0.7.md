@@ -99,20 +99,20 @@ the *type* rather than only the name.
 ### `authz`
 
 ```go
-Check(ctx, sub, act, res)                   -> Check(ctx, tenant.ID, sub, act, res)
-CheckBulk(ctx, reqs)                        -> CheckBulk(ctx, tenant.ID, reqs)
-ListResources(ctx, sub, act, type)          -> ListResources(ctx, tenant.ID, sub, act, type)
-ListSubjects(ctx, act, res)                 -> ListSubjects(ctx, tenant.ID, act, res)
+Check(ctx, sub, act, res)                            -> Check(ctx, tenant.ID, sub, act, res)
+CheckBulk(ctx, reqs)                                 -> CheckBulk(ctx, tenant.ID, reqs)
+ListResources(ctx, sub, act, type)                   -> ListResources(ctx, tenant.ID, sub, act, type)
+ListSubjects(ctx, act, res)                          -> ListSubjects(ctx, tenant.ID, act, res)
 
-BindingsFor(ctx, sub, res)                  -> BindingsFor(ctx, tenant.ID, sub, res)
-BindingsForSubject(ctx, sub, type)          -> BindingsForSubject(ctx, tenant.ID, sub, type)
-BindingsOnResource(ctx, res)                -> BindingsOnResource(ctx, tenant.ID, res)
+BindingsFor(ctx, sub, res)                           -> BindingsFor(ctx, tenant.ID, sub, res)
+BindingsForSubject(ctx, sub, type)                   -> BindingsForSubject(ctx, tenant.ID, sub, type)
+BindingsOnResource(ctx, res)                         -> BindingsOnResource(ctx, tenant.ID, res)
 
-PermissionsFor(ctx, sub, res)               -> PermissionsFor(ctx, tenant.ID, sub, res)
-ResourcesWithPermission(ctx, sub, key, t)   -> ResourcesWithPermission(ctx, tenant.ID, sub, key, t)
-SubjectsWithPermission(ctx, key, res)       -> SubjectsWithPermission(ctx, tenant.ID, key, res)
-MemPermissionStore.Grant(sub, res, keys...) -> Grant(tenant.ID, sub, res, keys...)
-MemPermissionStore.GrantSuperuser(sub)      -> GrantSuperuser(tenant.ID, sub)
+PermissionsFor(ctx, sub, res)                        -> PermissionsFor(ctx, tenant.ID, sub, res)
+ResourcesWithPermission(ctx, sub, key, resourceType) -> ResourcesWithPermission(ctx, tenant.ID, sub, key, resourceType)
+SubjectsWithPermission(ctx, key, res)                -> SubjectsWithPermission(ctx, tenant.ID, key, res)
+MemPermissionStore.Grant(sub, res, keys...)          -> Grant(tenant.ID, sub, res, keys...)
+MemPermissionStore.GrantSuperuser(sub)               -> GrantSuperuser(tenant.ID, sub)
 ```
 
 - `authz.Subject` gains `Tenant` (the subject's **home** tenant);

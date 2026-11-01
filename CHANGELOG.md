@@ -12,6 +12,9 @@ Fixes for sharp edges in pooled deployments, and one breaking change to the
 audit log. Each is a separate change (#39, #40, #43, #46 to #52) and is
 described in `tech-debt.md`.
 
+**Upgrading?** [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md) collects every
+breaking change below into one ordered checklist (version number not cut yet).
+
 ### ⚠️ Breaking — the audit log is `canonical_version=4` only (#46)
 
 Every audit row is now written and read at `canonical_version=4`: the tenant

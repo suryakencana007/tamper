@@ -405,8 +405,8 @@ designed in [`PHASE9-TENANT-STATUS-SKETCH.md`](PHASE9-TENANT-STATUS-SKETCH.md).
   request in a single-tenant deployment.
 
 What it does not close: a suspension still leaves valid access tokens until they
-expire. The gate shortens the window; pairing a suspension with
-`Core.RevokeAllSessionsForTenant` is TD-05's `Suspend`, and is still open.
+expire. The gate shortens the window; closing it is `Admin.Suspend` (TD-05,
+#85), which pairs the status change with session revocation.
 
 ### TD-07 — No impersonation
 

@@ -276,6 +276,13 @@ planned slice by slice in
   binding missing, a binding no grant justifies) and never repairs itself;
   provisioning repairs, explicitly and idempotently.
 
+The package ships **two stores behind the same ports** — an in-memory one for
+tests and small deployments, and a SQLite adapter (`OpenSQLStore`) with the
+table shape and indexes a real deployment needs. Everything above is written
+against the interfaces, so swapping one for the other changes no provisioning,
+reconciliation or membership code; the authz conformance suite runs against
+both.
+
 ```sh
 go test ./examples/tenanthierarchy/...  # the whole mechanism, guards included
 ```

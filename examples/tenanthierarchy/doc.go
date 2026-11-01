@@ -24,7 +24,13 @@
 // tamper — tenant.Store deliberately never walks it (Phase 7 sketch §8 item
 // 3).
 //
-// Slices land one at a time (TENANT-HIERARCHY-MANIFEST.md). This file set is
-// slice 9a-1: the store and its idempotent, atomic writer. Nothing provisions
-// yet.
+// Slices land one at a time (TENANT-HIERARCHY-MANIFEST.md); all seven are in.
+//
+// Two stores implement the same ports, so provisioning, reconciliation and
+// derived membership do not care which one an application uses:
+//
+//   - [Store], an in-memory store with linear scans (tests, small deployments);
+//   - [SQLStore], the same model in two SQLite tables with the indexes a real
+//     deployment needs. It is the adapter an application vendors: run
+//     authz/tenanttest against it, which the test suite here does.
 package tenanthierarchy

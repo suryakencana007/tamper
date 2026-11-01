@@ -241,14 +241,14 @@ func TestSuspend_RevokeFailureLeavesTenantSuspendedAndSaysSo(t *testing.T) {
 	mem := identity.NewMemStore()
 	broken := failingRevoker{MemStore: mem, err: errors.New("session table down")}
 	log := &captureLogger{}
-	a, admin := stack(t, mem, log)
+	_, admin := stack(t, mem, log)
 	// Rebuild the composer over a core whose store refuses the revocation.
 	jwt := crypto.NewJWTService(crypto.JWTConfig{Secret: "tamper-admin-test-secret", TTL: time.Hour, Issuer: "tamper-test"})
 	core, err := identity.New(broken, jwt)
 	if err != nil {
 		t.Fatalf("identity.New: %v", err)
 	}
-	a = NewAdmin(admin, core, log)
+	a := NewAdmin(admin, core, log)
 
 	err = a.Suspend(operatorCtx("ops", "platform"), acme)
 	if err == nil {

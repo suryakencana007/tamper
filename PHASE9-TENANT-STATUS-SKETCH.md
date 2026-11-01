@@ -1,7 +1,7 @@
 # Phase 9 — tenant status: refusing a suspended tenant on every request
 
 Status: **accepted 2026-11-01; implemented in #82** (`espresso/activetenant.go`,
-13 tests, seven mutation proofs). The four open questions in §8 were answered by
+12 tests, seven mutation proofs). The four open questions in §8 were answered by
 adopting this sketch's own proposals; they are recorded there.
 
 This sketch covers TD-06 from `tech-debt.md`. It is the first half of a pair;
@@ -230,7 +230,7 @@ a tenant's existence.
 
 ## 7. Proof obligations
 
-Mutation proofs, each failing a named test. **All six** are required for the
+Mutation proofs, each failing a named test. **All seven** are required for the
 slice to count as done.
 
 | Mutant | Test that must go red |

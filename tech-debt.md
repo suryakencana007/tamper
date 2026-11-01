@@ -20,7 +20,7 @@ chose these limits deliberately. Six items were found as **sharp edges that
 exist today**, with or without a platform admin: TD-08, TD-09, TD-10, TD-15,
 TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 
-**Fix status (2026-10-05).**
+**Fix status (latest 2026-11-01).**
 
 | Item | Pull request | State |
 |---|---|---|
@@ -353,7 +353,7 @@ status and revokes the sessions together.
 **Evidence.** `Descriptor.Status` is checked only in `StartLogin`
 (`espresso/startlogin.go:264`), and only when `WithStartLoginTenants` is set.
 `RequireTenant` takes no `tenant.Store` and does not check the status
-(`espresso/tenantgate.go:94`).
+(`espresso/tenantgate.go:125`).
 
 **Impact.** A suspended tenant is still served for access tokens that are still
 valid, and for password login, unless the application adds its own gate.

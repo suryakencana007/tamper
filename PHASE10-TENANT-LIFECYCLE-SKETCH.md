@@ -99,6 +99,26 @@ Proposals for review, each stated with what it protects.
    that can be wired wrong — a plain function cannot fail at build time, which is
    why the composer is a type with a constructor rather than one exported func.
 
+10. **A suspension is audited, and the row's scope is the tenant it suspends.**
+    A lifecycle write is exactly the action an auditor asks about, and the
+    console is an UNTENANTED surface: `espresso.Auditor.For` there derives the
+    scope from the pinned tenant (`espresso/audit.go`, `eventScope`), so it would
+    write `Event.TenantID = ""` and the row would be **absent from the suspended
+    tenant's per-tenant export**, because that export filters on `Event.TenantID`.
+
+    `Admin.Suspend` therefore emits its own event:
+
+    | Field | Value |
+    |---|---|
+    | `Event.TenantID` (the row's scope) | the **target** tenant |
+    | `Actor.TenantID` (the actor's home) | the operator's, from the claims in the context |
+    | `Action` / `ResourceType` / `ResourceID` | `tenant.suspend` / `tenant` / the target id |
+
+    That keeps the two facts apart exactly as Phase 8 §3 requires, and puts the
+    row where a customer's own export can see it. The logger is a required
+    argument to `NewAdmin`: a deployment that does not want audit says so with
+    `audit.NewNoopLogger()`, which is a decision rather than an omission.
+
 ---
 
 ## 3. The model
@@ -152,6 +172,10 @@ type AdminStore interface {
     // Create provisions one tenant. ErrConflict for an existing id or slug;
     // ErrInvalidDescriptor for an empty id or an unknown Status; ErrSingleTenant
     // for tenant.Single. Nothing is written on any error.
+    //
+    // A non-empty ParentID is stored as given and nothing more: tamper does not
+    // resolve it, inherit through it, or branch on it. This is where a hierarchy
+    // deployment writes the parentage ADR-0001 reads through its own port.
     Create(ctx context.Context, d Descriptor) error
 
     // SetStatus moves one tenant to status. ErrNotFound for an unknown id;
@@ -169,16 +193,19 @@ The composer, because it needs both stores:
 ```go
 package tamper
 
-// Admin holds the two stores a lifecycle write needs. Both are required.
-type Admin struct { /* admin tenant.AdminStore; core *identity.Core */ }
+// Admin holds what a lifecycle write needs: the tenant table, the identity side,
+// and the audit chain. All three are required.
+type Admin struct { /* admin tenant.AdminStore; core *identity.Core; log audit.Logger */ }
 
 // NewAdmin returns an Admin.
 //
-// It panics on a nil AdminStore or a nil *identity.Core: a composer missing half
-// its stores would either set a status and revoke nothing, or revoke sessions for
-// a tenant it never suspended. That is a wiring bug, so it fails when the composer
-// is built (standing rule 4), and the guard ships with a test that fires (rule 6).
-func NewAdmin(admin tenant.AdminStore, core *identity.Core) *Admin
+// It panics on a nil AdminStore, a nil *identity.Core, or a nil audit.Logger: a
+// composer missing a store would either set a status and revoke nothing, or
+// revoke sessions for a tenant it never suspended, and one missing the logger
+// would suspend a tenant silently. That is a wiring bug, so it fails when the
+// composer is built (standing rule 4), and the guard ships with a test that
+// fires (rule 6). A deployment that wants no audit passes audit.NewNoopLogger().
+func NewAdmin(admin tenant.AdminStore, core *identity.Core, log audit.Logger) *Admin
 
 // Suspend suspends a tenant and revokes its refresh sessions, IN THAT ORDER. It
 // is the one supported way to do both: the status write stops the tenant serving
@@ -187,6 +214,15 @@ func NewAdmin(admin tenant.AdminStore, core *identity.Core) *Admin
 // Two stores per call, deliberately: admin is the tenant table, core is the
 // identity side. A framework cannot atomically write both, so it reports a
 // partial failure instead of pretending to prevent one.
+//
+// Refusals come from the status write, before anything else happens:
+// ErrNotFound for an unknown tenant, ErrSingleTenant for tenant.Single,
+// ErrInvalidDescriptor for a status this version does not know, and the store's
+// own error otherwise. None of them revoke a session.
+//
+// The audit row (decision 10) is written after the status change. A failure to
+// log it is reported with the partial-state wording, not swallowed: the tenant
+// is suspended and the record is missing, which an operator must know.
 func (a *Admin) Suspend(ctx context.Context, id tenant.ID) error
 ```
 
@@ -244,6 +280,10 @@ var (
 - **Authorization of the console itself.** Who may suspend a tenant is the
   application's decision — the same posture as the audit-log read surface.
   For a hierarchy deployment, ADR-0001's decision 6 covers who may grant.
+- **The audit row is not the console's job** (decision 10). `Suspend` emits its
+  own, scoped to the suspended tenant, because the console's own scope would place
+  it outside that tenant's export. The console owns the authorization above, not
+  the record.
 - **Impersonation.** TD-07.
 
 ---
@@ -260,7 +300,9 @@ Mutation proofs, each failing a named test.
 | `SetStatus` returns nil for an unknown tenant | the not-found test |
 | `Suspend` revokes before it sets the status | the ordering test (a failing status write must leave sessions untouched; a failing revoke must leave the tenant suspended) |
 | `Suspend` swallows the revocation error | the partial-failure test |
-| `NewAdmin` accepts a nil store | the panic test (rule 6: the guard ships with a test that fires) |
+| `NewAdmin` accepts a nil store, a nil core, or a nil logger | the panic test (rule 6: the guard ships with a test that fires) |
+| `Suspend` emits its audit row with the console's empty scope instead of the target tenant | the per-tenant export test (the row must be in the suspended tenant's export) |
+| `Suspend` swallows an audit failure | the partial-state test |
 
 Plus, not mutation-based:
 

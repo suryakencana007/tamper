@@ -328,3 +328,33 @@ func TestSuspend_IsIdempotent(t *testing.T) {
 		t.Fatalf("audit rows = %d, want 2 — each attempt is recorded", got)
 	}
 }
+
+// Both halves failing is one error carrying both facts, not whichever failed
+// last: an operator has to know the sessions may be alive AND the record is
+// missing.
+func TestSuspend_BothHalvesFailingAreBothNamed(t *testing.T) {
+	mem := identity.NewMemStore()
+	log := &captureLogger{err: errors.New("audit chain down")}
+	_, admin := stack(t, mem, log)
+
+	broken := failingRevoker{MemStore: mem, err: errors.New("session table down")}
+	jwt := crypto.NewJWTService(crypto.JWTConfig{Secret: "tamper-admin-test-secret", TTL: time.Hour, Issuer: "tamper-test"})
+	core, err := identity.New(broken, jwt)
+	if err != nil {
+		t.Fatalf("identity.New: %v", err)
+	}
+	a := NewAdmin(admin, core, log)
+
+	err = a.Suspend(operatorCtx("ops", "platform"), acme)
+	if err == nil {
+		t.Fatal("want an error, got nil")
+	}
+	for _, want := range []string{"IS suspended", "refresh sessions may remain", "audit row is missing"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+	if !errors.Is(err, broken.err) || !errors.Is(err, log.err) {
+		t.Fatalf("err = %v, want both causes in the chain", err)
+	}
+}

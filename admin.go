@@ -42,6 +42,13 @@ type Admin struct {
 // never as a per-request denial (standing rule 4), and the guard ships with a
 // test that proves it fires (rule 6). A deployment that wants no audit says so
 // with audit.NewNoopLogger() — a decision, not an omission.
+//
+// A nil check cannot see through a typed nil: passing (*tenant.MemStore)(nil) as
+// the AdminStore satisfies the interface, so the panic does not fire and the
+// first write nil-derefs instead. That is the same limit authz.NewRBAC has, and
+// the same reason: Go cannot distinguish the two without reflection, and a
+// reflection check here would fail on any wrapper the application legitimately
+// uses.
 func NewAdmin(admin tenant.AdminStore, core *identity.Core, log audit.Logger) *Admin {
 	switch {
 	case admin == nil:

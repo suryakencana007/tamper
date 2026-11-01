@@ -35,6 +35,7 @@ TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 | TD-20 | #51 | Merged. |
 | TD-23 | #52 | Merged. |
 | TD-26 | #54 | Merged. |
+| TD-06 | #82 | Merged. Opt-in `RequireActiveTenant`; deny is a miss. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, only
@@ -64,7 +65,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-03 | `authz` does not know about tenants | fixed by #56 | — | — |
 | TD-04 | No tenant hierarchy | gap | P1 | Tamper + application |
 | TD-05 | No tenant lifecycle | gap | P1 | Tamper |
-| TD-06 | Tenant suspension is not enforced on authenticated requests | gap | P1 | Tamper |
+| TD-06 | Tenant suspension is not enforced on authenticated requests | fixed by #82 | — | — |
 | TD-07 | No impersonation | gap | P1 | Tamper |
 | TD-08 | `Auditor` and `RequireAuth` do not set the tenant | sharp edge | P1 | Tamper |
 | TD-09 | `tamper.New` cannot turn on audit v4 | resolved by #46 | — | — |
@@ -360,6 +361,28 @@ valid, and for password login, unless the application adds its own gate.
 **Proposal for Tamper.** A middleware `RequireActiveTenant(store)` that runs
 after `RequireTenant` / `PinTenant`. On unauthenticated routes its response
 must look the same as for an unknown tenant (standing rule 3).
+
+**Fix (2026-11-01, #82).** `espresso.RequireActiveTenant(ActiveTenantGate)`,
+designed in [`PHASE9-TENANT-STATUS-SKETCH.md`](PHASE9-TENANT-STATUS-SKETCH.md).
+
+- **Opt-in and read-only.** The gate resolves a `Descriptor` and decides;
+  setting a status is still the application's job (TD-05). A deployment that
+  does not mount it is unchanged.
+- **Deny is a miss.** An unknown tenant and a non-active one go through the same
+  writer, so the two cannot be told apart on the wire.
+- **An error is neither a miss nor an allow.** A store failure takes its own
+  writer; reporting an outage as "no such tenant" would hide an incident.
+- **The tenant comes from the pin** (`TenantFromContext`), never from a resolver
+  of its own, so the gate cannot disagree with the route.
+- **Any status but `StatusActive` refuses**, including one this version has
+  never seen.
+- **`tenant.Single` passes untouched.** It is the empty id, and `tenant.Store`
+  documents that an empty lookup key never resolves; a lookup would 404 every
+  request in a single-tenant deployment.
+
+What it does not close: a suspension still leaves valid access tokens until they
+expire. The gate shortens the window; pairing a suspension with
+`Core.RevokeAllSessionsForTenant` is TD-05's `Suspend`, and is still open.
 
 ### TD-07 — No impersonation
 
@@ -936,7 +959,8 @@ Suggested slice order if this work moves into Tamper:
 4. **TD-03** — the tenant contract for `authz`, with its leak suite. Merged
    (#56).
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
-6. **TD-05 + TD-06** — tenant lifecycle and suspension enforcement.
+6. **TD-05** — tenant lifecycle. (TD-06, suspension enforcement, landed in #82;
+   its `Suspend` should still pair a status change with session revocation.)
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
    answered. For the roles axis the application-side mechanism is decided in
    `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md` (eager per-tenant

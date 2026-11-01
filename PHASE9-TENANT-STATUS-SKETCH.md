@@ -1,9 +1,12 @@
 # Phase 9 — tenant status: refusing a suspended tenant on every request
 
-Status: **draft, for review. Not decided, no code.** This sketch covers TD-06
-from `tech-debt.md`. It is the first half of a pair; TD-05 (a writable tenant
-lifecycle) gets its own amendment when it lands, and §8 says exactly what
-changes here when it does.
+Status: **accepted 2026-11-01; implemented in #82** (`espresso/activetenant.go`,
+13 tests, seven mutation proofs). The four open questions in §8 were answered by
+adopting this sketch's own proposals; they are recorded there.
+
+This sketch covers TD-06 from `tech-debt.md`. It is the first half of a pair;
+TD-05 (a writable tenant lifecycle) gets its own amendment when it lands, and §8
+says exactly what changes here when it does.
 
 It follows `PHASE8-PLATFORM-ADMIN-SKETCH.md` and
 `PHASE8B-AUTHZ-TENANT-SKETCH.md` in shape and in posture: opt-in, read-only,
@@ -261,17 +264,19 @@ Plus, not mutation-based:
    TD-05 introduces `tenant.AdminStore`, the gate keeps taking `tenant.Store`,
    because it only reads.
 
-**Open questions for the owner:**
+**The four questions this section left open, as implemented** (`#82`). Each was
+answered by adopting the proposal above; changing one is an amendment to this
+section plus a small change in the gate.
 
-- **Where in the chain, exactly?** This sketch says "after the pin". On an
-  authenticated route that leaves a choice: before `RequireAuth` (suspension is
-  cheaper to refuse and reveals nothing about the user) or after it. Proposal:
-  put it immediately after the tenant gate and before any authorization gate,
-  and let the app decide its relation to `RequireAuth` per router.
-- **Should `StatusPending` be refused on every request?** Proposal: yes, one
-  rule for all non-active statuses. A deployment that wants a pending tenant to
-  reach an onboarding route mounts that route without the gate.
-- **How long may the cache window be?** Needs a number in the runbook. Proposal:
-  start with no cache; add a TTL only if the `ByID` cost shows up in a profile.
-- **Does a refusal deserve a rate-limited audit row?** Proposal: not in tamper;
-  the `WriteNotActive` writer is the application's hook if it wants one.
+- **Where in the chain?** Immediately after the tenant gate, before any
+  authorization gate. The gate itself makes no claim about `RequireAuth`: it
+  reads the pin, so an application may put it after the auth gate on an
+  authenticated route and before it on a public one. Both placements are tested.
+- **Is `StatusPending` refused everywhere?** Yes — one rule for every non-active
+  status. A pending tenant that must reach an onboarding route mounts that route
+  without this gate.
+- **How long may the cache window be?** None: the gate does one `ByID` per
+  request and the reference deployments wrap nothing. A short TTL on the store
+  is still supported; the accepted window is the TTL.
+- **Does a refusal deserve an audit row?** Not in tamper. The `WriteNotActive`
+  writer is the application's hook if it wants one.

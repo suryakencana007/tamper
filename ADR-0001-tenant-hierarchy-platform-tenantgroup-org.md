@@ -353,7 +353,8 @@ single-resource.
   manifest (keputusan 4): membership di-key `(userID, target)`; id yang
   bertabrakan antar-tenant adalah batasan yang didokumentasikan, bukan
   perubahan port.
-- **Lifecycle tenant** (TD-05), **suspensi** (TD-06), **impersonasi** (TD-07).
+- **Lifecycle tenant** (TD-05), **suspensi** (TD-06 — ditutup di #82, bukan di
+  sini), **impersonasi** (TD-07).
 
 ## 9. Kapan ditinjau ulang
 

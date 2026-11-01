@@ -353,7 +353,8 @@ single-resource.
   manifest (keputusan 4): membership di-key `(userID, target)`; id yang
   bertabrakan antar-tenant adalah batasan yang didokumentasikan, bukan
   perubahan port.
-- **Lifecycle tenant** (TD-05), **suspensi** (TD-06), **impersonasi** (TD-07).
+- **Lifecycle tenant** (TD-05), **suspensi** (TD-06 — ditutup di #82, bukan di
+  sini), **impersonasi** (TD-07).
 
 ## 9. Kapan ditinjau ulang
 
@@ -383,4 +384,5 @@ single-resource.
   sudah merge dan hijau (M1 #65/#66/#69, M2 #70/#71, M3 #72/#73), dan DoD
   manifest tercentang kecuali baris status ini. Yang tetap TERBUKA dan tidak
   diklaim oleh penerimaan ini: sumbu IdP/entitlement/domain (§8) serta
-  TD-05/TD-06/TD-07.
+  TD-05/TD-06/TD-07. (Dari ketiganya, **TD-06** — penegakan suspensi — ditutup
+  kemudian pada hari yang sama: `PHASE9-TENANT-STATUS-SKETCH.md`, #82.)

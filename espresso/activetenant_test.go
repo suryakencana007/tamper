@@ -276,3 +276,84 @@ func TestRequireActiveTenant_PanicsOnMisconfiguration(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------
+// Decision 7: the gate sits after RequireTenant on an authenticated route,
+// not only after PinTenant. The auth gate pins; this gate reads the pin.
+// ---------------------------------------------------------------------
+
+func authedChain(t *testing.T, id tenant.ID, g ActiveTenantGate, next http.Handler) (http.Handler, string) {
+	t.Helper()
+	jwt := tenantJWT(t)
+	h := RequireAuth(jwt)(
+		RequireTenant(FixedRequestTenant(id))(
+			RequireActiveTenant(g)(next)))
+	return h, tokenFor(t, jwt, id)
+}
+
+func serveBearer(t *testing.T, h http.Handler, target, bearer string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRequireActiveTenant_SitsBehindRequireTenant(t *testing.T) {
+	cases := []struct {
+		name   string
+		status tenant.Status
+		want   int
+	}{
+		{"active", tenant.StatusActive, http.StatusNoContent},
+		{"suspended", tenant.StatusSuspended, http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &statusStore{byID: map[string]tenant.Descriptor{
+				"acme": {ID: "acme", Status: tc.status},
+			}}
+			next, reached := okNext()
+			h, tok := authedChain(t, tidAcme, activeGate(store), next)
+
+			rec := serveBearer(t, h, "/acme/x", tok)
+			if rec.Code != tc.want {
+				t.Fatalf("status %q behind RequireTenant = %d, want %d", tc.status, rec.Code, tc.want)
+			}
+			if *reached != (tc.want == http.StatusNoContent) {
+				t.Fatalf("status %q: handler reached = %v, want %v", tc.status, *reached, tc.want == http.StatusNoContent)
+			}
+			// The status read happened in the pinned tenant.
+			if len(store.calls) != 1 || store.calls[0] != "acme" {
+				t.Fatalf("status lookups = %v, want exactly [acme]", store.calls)
+			}
+		})
+	}
+}
+
+// Ordering: RequireTenant refuses a token for another tenant BEFORE the status
+// gate runs, so a wrong tenant never causes a status lookup.
+func TestRequireActiveTenant_WrongTenantTokenNeverReachesTheStatusStore(t *testing.T) {
+	store := &statusStore{byID: map[string]tenant.Descriptor{
+		"acme": {ID: "acme", Status: tenant.StatusActive},
+	}}
+	next, reached := okNext()
+	jwt := tenantJWT(t)
+	h := RequireAuth(jwt)(
+		RequireTenant(FixedRequestTenant(tidAcme))(
+			RequireActiveTenant(activeGate(store))(next)))
+
+	rec := serveBearer(t, h, "/acme/x", tokenFor(t, jwt, tenant.New("globex")))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("a token for another tenant = %d, want the tenant gate's 401", rec.Code)
+	}
+	if *reached {
+		t.Fatal("a token for another tenant reached the handler")
+	}
+	if len(store.calls) != 0 {
+		t.Fatalf("the status store was consulted for a refused tenant: %v", store.calls)
+	}
+}

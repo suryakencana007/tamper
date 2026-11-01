@@ -94,6 +94,12 @@ func RequireActiveTenant(g ActiveTenantGate) func(http.Handler) http.Handler {
 				// documents that an empty lookup key never resolves. Looking it
 				// up would answer ErrNotFound and 404 every request, so there is
 				// no status to check here.
+				//
+				// This is the one way past the gate, and it trusts the pin: an
+				// application whose resolver can answer tenant.Single for a real
+				// tenant has disabled the status check for that route. The pin
+				// is application code, so that is a route configuration bug, not
+				// something this gate can detect from here.
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -109,6 +109,8 @@ BindingsForSubject(ctx, sub, type)          -> BindingsForSubject(ctx, tenant.ID
 BindingsOnResource(ctx, res)                -> BindingsOnResource(ctx, tenant.ID, res)
 
 PermissionsFor(ctx, sub, res)               -> PermissionsFor(ctx, tenant.ID, sub, res)
+ResourcesWithPermission(ctx, sub, key, t)   -> ResourcesWithPermission(ctx, tenant.ID, sub, key, t)
+SubjectsWithPermission(ctx, key, res)       -> SubjectsWithPermission(ctx, tenant.ID, key, res)
 MemPermissionStore.Grant(sub, res, keys...) -> Grant(tenant.ID, sub, res, keys...)
 MemPermissionStore.GrantSuperuser(sub)      -> GrantSuperuser(tenant.ID, sub)
 ```

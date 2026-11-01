@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -148,5 +149,41 @@ func TestSetStatus_IsIdempotentAndSurvivesTheRoundTrip(t *testing.T) {
 	}
 	if d.Slug != "acme" {
 		t.Fatalf("slug = %q, want it preserved by a status change", d.Slug)
+	}
+}
+
+// List on an empty store is an empty SLICE, not nil: a console ranges over it.
+func TestList_EmptyStoreIsNonNil(t *testing.T) {
+	got, err := NewMemStore().List(ctxT)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got == nil {
+		t.Fatal("List returned nil; want an empty slice")
+	}
+	if len(got) != 0 {
+		t.Fatalf("List = %v, want empty", got)
+	}
+}
+
+// The write port shares the store's mutex; this bites under -race only.
+func TestAdminStore_ConcurrentAccess(t *testing.T) {
+	m := NewMemStore()
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(3)
+		id := "t-" + string(rune('a'+i))
+		go func() { defer wg.Done(); _ = m.Create(ctxT, Descriptor{ID: id, Slug: id, Status: StatusActive}) }()
+		go func() { defer wg.Done(); _ = m.SetStatus(ctxT, New(id), StatusSuspended) }()
+		go func() { defer wg.Done(); _, _ = m.List(ctxT) }()
+	}
+	wg.Wait()
+
+	got, err := m.List(ctxT)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 8 {
+		t.Fatalf("tenants = %d, want 8", len(got))
 	}
 }

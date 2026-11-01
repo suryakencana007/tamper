@@ -3,6 +3,7 @@ package tamper
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -257,7 +258,7 @@ func TestSuspend_RevokeFailureLeavesTenantSuspendedAndSaysSo(t *testing.T) {
 	if !errors.Is(err, broken.err) {
 		t.Fatalf("err = %v, want it to wrap the revocation failure", err)
 	}
-	if !contains(err.Error(), "IS suspended") {
+	if !strings.Contains(err.Error(), "IS suspended") {
 		t.Fatalf("err = %q, want it to say the tenant IS suspended", err)
 	}
 	if d, _ := admin.mem.ByID(ctxA, "acme"); d.Status != tenant.StatusSuspended {
@@ -277,7 +278,7 @@ func TestSuspend_AuditFailureIsReported(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error when the audit row cannot be written, got nil")
 	}
-	if !errors.Is(err, log.err) || !contains(err.Error(), "audit row is missing") {
+	if !errors.Is(err, log.err) || !strings.Contains(err.Error(), "audit row is missing") {
 		t.Fatalf("err = %q, want it to name the missing audit row", err)
 	}
 }
@@ -326,13 +327,4 @@ func TestSuspend_IsIdempotent(t *testing.T) {
 	if got := len(log.snapshot()); got != 2 {
 		t.Fatalf("audit rows = %d, want 2 — each attempt is recorded", got)
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

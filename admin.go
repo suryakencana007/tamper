@@ -102,6 +102,11 @@ func (a *Admin) Suspend(ctx context.Context, id tenant.ID) error {
 // SCOPE — the tenant whose log this belongs to — while Actor.TenantID is where
 // the operator is from. That split is what puts the row in the suspended
 // tenant's export and still says who did it.
+//
+// ID and At are stamped here rather than injected: a lifecycle write happens
+// once, at a real moment, and tests assert on the event's structure — scope,
+// actor, action, resource — not on a fixed timestamp. A clock seam would invite
+// a caller to backdate the record.
 func (a *Admin) emitSuspend(ctx context.Context, id tenant.ID) error {
 	_, err := a.log.Log(ctx, audit.Event{
 		ID:           uuid.NewString(),

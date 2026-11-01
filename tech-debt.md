@@ -36,6 +36,7 @@ TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 | TD-23 | #52 | Merged. |
 | TD-26 | #54 | Merged. |
 | TD-06 | #82 | Merged. Opt-in `RequireActiveTenant`; deny is a miss. |
+| TD-05 | #85 | Merged. Opt-in `tenant.AdminStore`; one `Suspend`, status first. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, only
@@ -64,7 +65,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-02 | A token is locked to one tenant; no "enter tenant" flow | fixed by #55 | — | — |
 | TD-03 | `authz` does not know about tenants | fixed by #56 | — | — |
 | TD-04 | No tenant hierarchy | gap | P1 | Tamper + application |
-| TD-05 | No tenant lifecycle | gap | P1 | Tamper |
+| TD-05 | No tenant lifecycle | fixed by #85 | — | — |
 | TD-06 | Tenant suspension is not enforced on authenticated requests | fixed by #82 | — | — |
 | TD-07 | No impersonation | gap | P1 | Tamper |
 | TD-08 | `Auditor` and `RequireAuth` do not set the tenant | sharp edge | P1 | Tamper |
@@ -348,6 +349,29 @@ pieces already exist: `Core.RevokeAllSessionsForTenant`
 `List`, `Create`, `SetStatus`, plus one `Suspend` operation that changes the
 status and revokes the sessions together.
 
+**Fix (2026-11-01, #85).** Designed in
+[`PHASE10-TENANT-LIFECYCLE-SKETCH.md`](PHASE10-TENANT-LIFECYCLE-SKETCH.md).
+
+- **`tenant.AdminStore`** (`List`, `Create`, `SetStatus`) is opt-in, and
+  `tenant.Store` stays read-only: a routing surface can hold a tenant port
+  without holding permission to change one. `tenant.MemStore` implements it.
+- **New sentinels** `ErrConflict`, `ErrInvalidDescriptor`, `ErrSingleTenant`,
+  and every refusal writes nothing. A duplicate id or slug is refused rather
+  than re-seeded, so a second provision cannot reset a suspended tenant.
+- **`tamper.NewAdmin(admin, core, log)`** composes the tenant table, the identity
+  side and the audit chain; it panics on a nil piece.
+- **`Admin.Suspend` writes the status first and revokes second**, and reports a
+  partial state instead of swallowing it. That order is the contract: the tenant
+  stops serving even when the revocation fails, and the error says so.
+- **The suspension's audit row is scoped to the suspended tenant**, with the
+  operator's home tenant on the actor — a console is usually untenanted, and the
+  row would otherwise be missing from that tenant's own export.
+
+What it does not close: no `Delete` (offboarding is a status change plus
+retention, since a deleted row orphans the audit chain), no fourth status, and
+**who may call `Suspend` is still the application's decision** — the framework
+adds the operation, not the authorization.
+
 ### TD-06 — Tenant suspension is not enforced on authenticated requests
 
 **Evidence.** `Descriptor.Status` is checked only in `StartLogin`
@@ -365,9 +389,9 @@ must look the same as for an unknown tenant (standing rule 3).
 **Fix (2026-11-01, #82).** `espresso.RequireActiveTenant(ActiveTenantGate)`,
 designed in [`PHASE9-TENANT-STATUS-SKETCH.md`](PHASE9-TENANT-STATUS-SKETCH.md).
 
-- **Opt-in and read-only.** The gate resolves a `Descriptor` and decides;
-  setting a status is still the application's job (TD-05). A deployment that
-  does not mount it is unchanged.
+- **Opt-in and read-only.** The gate resolves a `Descriptor` and decides; it
+  never writes one. Setting a status is the write port's job (TD-05, now
+  `tenant.AdminStore`). A deployment that does not mount the gate is unchanged.
 - **Deny is a miss.** An unknown tenant and a non-active one go through the same
   writer, so the two cannot be told apart on the wire.
 - **An error is neither a miss nor an allow.** A store failure takes its own
@@ -381,8 +405,8 @@ designed in [`PHASE9-TENANT-STATUS-SKETCH.md`](PHASE9-TENANT-STATUS-SKETCH.md).
   request in a single-tenant deployment.
 
 What it does not close: a suspension still leaves valid access tokens until they
-expire. The gate shortens the window; pairing a suspension with
-`Core.RevokeAllSessionsForTenant` is TD-05's `Suspend`, and is still open.
+expire. The gate shortens the window; closing it is `Admin.Suspend` (TD-05,
+#85), which pairs the status change with session revocation.
 
 ### TD-07 — No impersonation
 
@@ -959,8 +983,8 @@ Suggested slice order if this work moves into Tamper:
 4. **TD-03** — the tenant contract for `authz`, with its leak suite. Merged
    (#56).
 5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
-6. **TD-05** — tenant lifecycle. (TD-06, suspension enforcement, landed in #82;
-   TD-05's `Suspend` should still pair a status change with session revocation.)
+6. **TD-05** — tenant lifecycle, and TD-06 suspension enforcement: both landed
+   (#85, #82). `Admin.Suspend` is the pairing the two were always missing.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is
    answered. For the roles axis the application-side mechanism is decided in
    `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md` (eager per-tenant

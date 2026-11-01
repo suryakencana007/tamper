@@ -1,7 +1,12 @@
 # Phase 10 — tenant lifecycle: a write port and one `Suspend`
 
-Status: **draft, for review. Not decided, no code.** This sketch covers TD-05
-from `tech-debt.md`, the second half of the pair Phase 9 (`TD-06`) opened.
+Status: **accepted 2026-11-01; implemented in #85** (`tenant/admin.go`,
+`admin.go`; 17 tests; nine mutation proofs, all red before being reverted). The
+four open questions in §8 were answered as they were proposed; they are recorded
+there.
+
+This sketch covers TD-05 from `tech-debt.md`, the second half of the pair Phase 9
+(`TD-06`) opened.
 
 It follows `PHASE9-TENANT-STATUS-SKETCH.md`, which added the enforcement half:
 `RequireActiveTenant` refuses a tenant that is not `StatusActive`. This sketch
@@ -326,20 +331,21 @@ When this lands, one sentence in Phase 9 changes and nothing else: the
 until they expire"* to *"until the next refresh cycle, at the moment of
 `Suspend`"*.
 
-**Open questions for the owner:**
+**The four questions this section left open, as implemented** (`#85`). Each was
+answered by adopting the proposal above; changing one is an amendment to this
+section plus a small change in the code.
 
-- **A fourth status for offboarding, or reuse `StatusSuspended`?** Suspension
-  reads as reversible; offboarding does not. Phase 9's gate refuses *any*
-  non-active status, so a `StatusDisabled` would be additive and needs no gate
-  change. Proposal: add it when offboarding gets a real retention policy, not
-  before.
-- **Who may call `Suspend`?** The framework cannot answer this; the
-  console's own authorization does. For a tenant-hierarchy deployment, ADR-0001
-  decision 6 (only a platform admin grants) is the nearest recorded answer.
-- **Does `List` need pagination?** A platform console with thousands of tenants
-  says yes; the signature above says not yet. Proposal: `List(ctx)` now, and a
-  `ListPage` added later without breaking it — a separate method, not a changed
-  one.
-- **Does `Create` allocate the id, or accept one?** The descriptor carries an
-  opaque app-defined id and tamper never derives it, so `Create` accepts it.
-  A deployment that wants UUIDs generates them in the adapter.
+- **A fourth status for offboarding, or reuse `StatusSuspended`?** Reuse it for
+  now: suspension reads as reversible and offboarding does not, but a
+  `StatusDisabled` belongs with the retention policy that would give it meaning.
+  Phase 9's gate refuses *any* non-active status, so adding it later is additive
+  and needs no gate change.
+- **Who may call `Suspend`?** The application's console authorization. The
+  framework ships the operation, not the right to use it; for a hierarchy
+  deployment ADR-0001 decision 6 (only a platform admin grants) is the nearest
+  recorded answer.
+- **Does `List` need pagination?** Not yet. `List(ctx)` is what shipped; a
+  `ListPage` can be added later as a separate method, without changing this one.
+- **Does `Create` allocate the id, or accept one?** It accepts it: the
+  descriptor carries an opaque app-defined id and tamper never derives one. A
+  deployment that wants UUIDs generates them in its adapter.

@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -87,4 +88,69 @@ func (m *MemStore) BySlug(_ context.Context, slug string) (Descriptor, error) {
 		return Descriptor{}, fmt.Errorf("%w: tenant slug %s", ErrNotFound, slug)
 	}
 	return m.byID[id], nil
+}
+
+// --- AdminStore (TD-05) ------------------------------------------------
+
+var _ AdminStore = (*MemStore)(nil)
+
+// List implements AdminStore, ordered by id.
+func (m *MemStore) List(_ context.Context) ([]Descriptor, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Descriptor, 0, len(m.byID))
+	for _, d := range m.byID {
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// Create implements AdminStore.
+//
+// The conflict checks are what make Create safe to retry into: a duplicate id
+// or slug is refused rather than re-seeded, so a second provision cannot reset
+// a suspended tenant to pending or move a slug another tenant holds. An empty
+// slug is not indexed — it is a tenant with no handle, not a handle two tenants
+// can collide on.
+func (m *MemStore) Create(_ context.Context, d Descriptor) error {
+	if d.ID == "" {
+		return fmt.Errorf("%w: %q is the single tenant, which has no row", ErrSingleTenant, d.ID)
+	}
+	if err := checkStatus(d.Status); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.byID[d.ID]; ok {
+		return fmt.Errorf("%w: id %q", ErrConflict, d.ID)
+	}
+	if d.Slug != "" {
+		if _, taken := m.slugToID[d.Slug]; taken {
+			return fmt.Errorf("%w: slug %q", ErrConflict, d.Slug)
+		}
+		m.slugToID[d.Slug] = d.ID
+	}
+	m.byID[d.ID] = d
+	return nil
+}
+
+// SetStatus implements AdminStore. Idempotent: setting the status a tenant
+// already has succeeds and leaves the row as it was.
+func (m *MemStore) SetStatus(_ context.Context, id ID, status Status) error {
+	if err := checkWritableID(id); err != nil {
+		return err
+	}
+	if err := checkStatus(status); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.byID[id.String()]
+	if !ok {
+		return fmt.Errorf("%w: tenant %s", ErrNotFound, id)
+	}
+	d.Status = status
+	m.byID[id.String()] = d
+	return nil
 }

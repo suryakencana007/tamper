@@ -551,8 +551,10 @@ read as allow", a nil one would silently permit.
    one question.
 6. The IdP registry is compiled in the inheriting tenant's name: its redirect
    URLs and its cache key.
-7. `MaxIdPConnections == 0` is unlimited on both sides of a `Union`, and a cap
-   never narrows.
+7. `MaxIdPConnections == 0` is unlimited on both sides of a `Union` **except on a
+   record that purchased nothing**, whose 0 is unset — so the zero record is
+   `Union`'s identity and a parent with no plan cannot lift a child's cap (§4.1).
+   A cap never narrows either way.
 8. The union is the EFFECT; `ForTenant` remains the PURCHASE.
 9. A domain is inherited only as a **proper** subdomain of a **Verified**
    ancestor claim, with the dot boundary intact.

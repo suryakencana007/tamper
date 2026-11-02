@@ -53,9 +53,10 @@ type AdminStore interface {
 	// when the id is empty (which IS the single tenant); ErrInvalidDescriptor
 	// for an unknown Status. Nothing is written on any error.
 	//
-	// A non-empty ParentID is stored as given and nothing more: tamper does not
-	// resolve it, inherit through it, or branch on it (Store's doc). This is
-	// where a hierarchy deployment writes the parentage its own port reads.
+	// A non-empty ParentID is stored as given. This is where a hierarchy
+	// deployment writes the parentage tenant.Ancestors later resolves (Store's
+	// doc) — and storing it grants nothing: inheritance is asked about
+	// explicitly, per axis, and no authorization scope is derived from it.
 	Create(ctx context.Context, d Descriptor) error
 
 	// SetStatus moves one tenant to status. ErrNotFound for an unknown id;

@@ -544,8 +544,6 @@ to compile before it is counted.
 | cycle → `ErrHierarchyCycle` | drop the visited set |
 | depth > 32 → `ErrHierarchyDepth` | drop the bound |
 | store error propagates | return nil, nil on any error |
-| policy error aborts the walk | read `(false, err)` as a stop-with-nil |
-| policy error never reaches a grandparent | continue the walk after an error |
 
 **`tenant/entitlements_test.go`**
 
@@ -566,6 +564,8 @@ to compile before it is counted.
 | child with its own providers ignores the parent | merge both sets |
 | switch off at the parent → no registry, no grandparent | skip past a refusing ancestor |
 | a providerless ancestor is passed over WITHOUT asking its switch (three levels) | ask the switch before checking providers |
+| a policy error aborts the walk | read `(false, err)` as a stop-with-nil |
+| a policy error never reaches a grandparent | continue the walk after an error |
 | switch off, no ancestors → `(nil, nil)` | return an error |
 | unknown tenant → `(nil, nil)`, not an error | propagate `ErrNotFound` |
 | the child's redirect URL is used, not the parent's | build with the parent's id |

@@ -18,10 +18,13 @@ type Descriptor struct {
 
 	// ParentID names the parent tenant; "" is a root tenant.
 	//
-	// RESERVED. Nothing in tamper resolves it, inherits through it, or
-	// branches on it. Whether a parent's IdP serves a child tenant is a
-	// real product question deliberately deferred (sketch §8 item 3) —
-	// the field exists so the answer can be additive when it comes.
+	// Carried by a Store and resolved by [Ancestors] — nothing else, and
+	// never for authority. A Store stores it and resolves NOTHING through
+	// it; [Ancestors] walks it for inheritance asked about explicitly (a
+	// plan, a set of IdPs, a claimable domain) and builds no
+	// authorization scope from it. The RBAC engine's per-scope bindings
+	// are unaffected (ADR-0001 §5.A, narrowed by
+	// PHASE12-TENANT-INHERITANCE-SKETCH.md §3.1).
 	ParentID string
 
 	// Status is the tenant's lifecycle state. A Store returns the row

@@ -162,9 +162,11 @@ func TestMemStore_SeedDoesNotOrphanAnotherTenantsSlug(t *testing.T) {
 	}
 }
 
-// TestMemStore_ParentIDCarriedNotResolved: ParentID is reserved. The
-// store carries it verbatim and resolves NOTHING through it — no
-// inheritance, no fallback to the parent on a child miss.
+// TestMemStore_ParentIDCarriedNotResolved: the STORE resolves nothing. It
+// carries ParentID verbatim, with no inheritance and no fallback to the
+// parent on a child miss. tenant.Ancestors is the resolver (Phase 12 §3.1);
+// a Store must never be one, and this test is what keeps that true now that
+// the framework walks the same field.
 func TestMemStore_ParentIDCarriedNotResolved(t *testing.T) {
 	s := NewMemStore()
 	s.Seed(Descriptor{ID: "t-parent", Slug: "parent", Status: StatusActive})
@@ -194,7 +196,10 @@ func TestMemStore_ConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Add(3)
-		go func() { defer wg.Done(); s.Seed(Descriptor{ID: "t-" + string(rune('a'+i)), Slug: string(rune('a' + i))}) }()
+		go func() {
+			defer wg.Done()
+			s.Seed(Descriptor{ID: "t-" + string(rune('a'+i)), Slug: string(rune('a' + i))})
+		}()
 		go func() { defer wg.Done(); _, _ = s.ByID(ctx, "t-acme") }()
 		go func() { defer wg.Done(); _, _ = s.BySlug(ctx, "acme") }()
 	}

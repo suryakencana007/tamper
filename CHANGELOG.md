@@ -319,6 +319,16 @@ no home tenant. Backfill that column before the upgrade.
 
 ### Added
 
+- **`tenant.Ancestors` — the parentage walk** (Phase 12 slice 12a, TD-04). The
+  one place in tamper that reads `Descriptor.ParentID`, so it amends the Phase 7
+  invariant that said nothing does (ADR-0001 §5.A is narrowed, not overturned:
+  it still stands for authorization). Nearest-first, excluding the tenant itself;
+  `ErrHierarchyCycle` and `ErrHierarchyDepth` for corrupt data; an unset `ID` and
+  `tenant.Single` return nothing *without reading the store*. Also
+  `tenant.Inheritance`, the per-group switch an application implements per axis.
+  Nothing consumes either yet — the three inheritance axes land in later slices —
+  and no behaviour changes: no authorization scope is derived from parentage.
+
 - **Platform admin: entering a tenant** (#55, TD-01, TD-02). Opt-in; a
   deployment that does not use it is unchanged. Design:
   `PHASE8-PLATFORM-ADMIN-SKETCH.md`.

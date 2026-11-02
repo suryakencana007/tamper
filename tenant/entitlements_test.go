@@ -67,7 +67,12 @@ func TestEntitlements_UnionNeverNarrows(t *testing.T) {
 		{SSOEnabled: true, SCIMEnabled: true, MaxIdPConnections: 0},
 		{SSOEnabled: true, SCIMEnabled: true, MaxIdPConnections: 40},
 	}
+	var zero Entitlements
 	for _, a := range shapes {
+		if got := a.Union(zero); got != a {
+			t.Fatalf("Union(%+v, zero) = %+v — the zero record is the identity: a tenant with "+
+				"no plan row states nothing of its own", a, got)
+		}
 		for _, b := range shapes {
 			got := a.Union(b)
 			if a.SSOEnabled && !got.SSOEnabled || a.SCIMEnabled && !got.SCIMEnabled {

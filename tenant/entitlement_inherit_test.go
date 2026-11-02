@@ -74,6 +74,43 @@ func TestInheritingEntitlements_KeepsWhatTheChildBought(t *testing.T) {
 	}
 }
 
+// The pair the sketch got wrong, end to end through the decorator: a child that
+// bought a capped plan keeps its cap when the ancestor bought nothing, and loses
+// it to UNLIMITED when the ancestor actually bought an uncapped one.
+func TestInheritingEntitlements_CapDependsOnWhetherTheAncestorBoughtAnything(t *testing.T) {
+	t.Run("ancestor bought nothing: the child's cap stands", func(t *testing.T) {
+		plans := newPlanStore(map[string]Entitlements{
+			"team": {SSOEnabled: true, MaxIdPConnections: 3},
+			"org":  {}, // no plan row: the zero record
+		})
+		got, err := InheritingEntitlements(plans, hierarchy(t)).ForTenant(context.Background(), New("team"))
+		if err != nil {
+			t.Fatalf("ForTenant: %v", err)
+		}
+		if got.MaxIdPConnections != 3 {
+			t.Fatalf("cap = %d, want 3 — a parent that bought nothing must not lift the child's cap "+
+				"to unlimited", got.MaxIdPConnections)
+		}
+	})
+
+	t.Run("ancestor bought unlimited: the child gets unlimited", func(t *testing.T) {
+		plans := newPlanStore(map[string]Entitlements{
+			"team": {MaxIdPConnections: 3},
+			"org":  {SSOEnabled: true, MaxIdPConnections: 0}, // bought something, uncapped
+		})
+		got, err := InheritingEntitlements(plans, hierarchy(t)).ForTenant(context.Background(), New("team"))
+		if err != nil {
+			t.Fatalf("ForTenant: %v", err)
+		}
+		if got.MaxIdPConnections != 0 {
+			t.Fatalf("cap = %d, want 0 (unlimited) — an ancestor that bought unlimited widens", got.MaxIdPConnections)
+		}
+		if !got.SSOEnabled {
+			t.Fatal("the ancestor's capability did not carry")
+		}
+	})
+}
+
 // A root tenant has nothing to inherit: the decorator returns exactly what the
 // inner store said.
 func TestInheritingEntitlements_RootTenantIsPassthrough(t *testing.T) {
@@ -94,7 +131,7 @@ func TestInheritingEntitlements_RootTenantIsPassthrough(t *testing.T) {
 }
 
 // The uncached contract, asserted so nobody assumes a cache that is not there.
-func TestInheritingEntitlements_ReadsOneePlusDepthTimesAndCachesNothing(t *testing.T) {
+func TestInheritingEntitlements_ReadsOnePlusDepthTimesAndCachesNothing(t *testing.T) {
 	plans := newPlanStore(map[string]Entitlements{"group": {SSOEnabled: true}})
 	store := InheritingEntitlements(plans, hierarchy(t))
 

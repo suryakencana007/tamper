@@ -58,6 +58,9 @@ func (e Entitlements) IsZero() bool {
 //	a record that purchased NOTHING ([Entitlements.IsZero]) has no cap to state,
 //	so its 0 is "unset" rather than "unlimited" and contributes no widening.
 //
+// That makes the zero record the IDENTITY of Union: a tenant with no plan row
+// inherits what its ancestors bought and states nothing of its own.
+//
 // Without that exception, the commonest case in this phase would break: a child
 // with no plan row at all is the zero record, so a group that bought a 3-IdP plan
 // would hand the child UNLIMITED IdPs — every child of every group with a cap,

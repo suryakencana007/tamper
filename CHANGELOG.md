@@ -8,9 +8,18 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
-Nothing yet. Phase 12 continues with IdP and domain inheritance
-(`PHASE12-TENANT-INHERITANCE-SKETCH.md` slices 12c and 12d); the next release is
-0.8.0.
+### Added
+
+- **`tenant.InheritedDomainAuthority` — a claim under an ancestor's domain**
+  (Phase 12 slice 12d, TD-04, decision D4). Given a tenant and a name, it reports
+  whether an **ancestor's verified** domain covers it — nearest ancestor first,
+  longest matching parent within one — as a `DomainAuthority` that deliberately
+  carries no tenant, so a consumer cannot mistake the ancestor for the tenant a
+  user is being routed into. It answers **authority, not approval**: the
+  application still records the child's claim row and writes the audit entry.
+  `tenant.IsProperSubdomain` is the check, exported because the dot in it is the
+  whole defence against `evilacme.com` being read as a subdomain of `acme.com`.
+  Inheritance for the IdP axis follows; the next release is 0.8.0.
 
 ---
 

@@ -2,6 +2,7 @@ package saml
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/suryakencana007/tamper/tenant"
 )
@@ -30,6 +31,12 @@ type inheritConfig struct {
 // configure their own", and the walk stops there rather than substituting a
 // grandparent's providers.
 //
+// Two costs come with it, both documented rather than discovered: the child pays
+// DISCOVERY for the borrowed providers — a network round trip per provider, cached
+// in the child's entry for the TTL — and with inheritance wired a provider change
+// clears the whole registry cache, so that a group's edit reaches its inheritors on
+// their next request. The SP metadata URL is compiled for the child.
+//
 // A nil store or a nil policy leaves the feature OFF, matching the sibling
 // options. tamper.New refuses the half-configured form at boot.
 func WithInheritance(s tenant.Store, allow tenant.Inheritance) ManagerOption {
@@ -48,11 +55,18 @@ func WithInheritance(s tenant.Store, allow tenant.Inheritance) ManagerOption {
 // The policy rules are tenant.Inherited's, in one place; this function is the SAML
 // half of the wiring.
 func (m *Manager) recordsFor(ctx context.Context, tenantID tenant.ID) ([]ProviderRecord, error) {
-	own := func(ctx context.Context, id tenant.ID) ([]ProviderRecord, error) {
-		return m.listEnabled(ctx, id)
-	}
 	if m.inherit == nil {
-		return own(ctx, tenantID)
+		return m.listEnabled(ctx, tenantID)
+	}
+	// The walk can read an ANCESTOR's rows, so a store error has to say whose:
+	// "list enabled providers" alone would leave an operator unable to tell which
+	// tenant's table failed.
+	own := func(ctx context.Context, id tenant.ID) ([]ProviderRecord, error) {
+		recs, err := m.listEnabled(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("saml: tenant %q: %w", id.String(), err)
+		}
+		return recs, nil
 	}
 	return tenant.Inherited(ctx, m.inherit.store, m.inherit.allow, tenantID, own)
 }

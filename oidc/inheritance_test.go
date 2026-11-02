@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -200,6 +201,39 @@ func TestInheritance_PolicyErrorFailsTheLookup(t *testing.T) {
 		t.Fatalf("err = %v, want the policy's own error — reading (false, err) as a refusal would make "+
 			"an outage look like a group that switched the feature off", err)
 	}
+}
+
+// With inheritance wired a store error can come from an ANCESTOR's rows, so the
+// message must say whose table failed — the unwired message ("list enabled
+// providers") would leave an operator guessing which tenant broke.
+func TestInheritance_AStoreErrorNamesTheTenantItCameFrom(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("provider table is down")
+
+	s := &failingTenantStore{tenantProviderStore: newTenantProviderStore(), failFor: "org", err: boom}
+	m := inhManager(t, s, inhHierarchy(t), (&allowSpy{yes: map[string]bool{}}).policy, time.Hour)
+
+	_, err := m.GetRegistry(ctx, tenant.New("team"))
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the store's own error", err)
+	}
+	if !strings.Contains(err.Error(), `"org"`) {
+		t.Fatalf("err = %q, want it to name the ancestor whose rows failed", err.Error())
+	}
+}
+
+// failingTenantStore wraps the tenant store and fails for one tenant id.
+type failingTenantStore struct {
+	*tenantProviderStore
+	failFor string
+	err     error
+}
+
+func (f *failingTenantStore) ListEnabledProviders(ctx context.Context, tenantID tenant.ID) ([]ProviderRecord, error) {
+	if tenantID.String() == f.failFor {
+		return nil, f.err
+	}
+	return f.tenantProviderStore.ListEnabledProviders(ctx, tenantID)
 }
 
 // Corrupt parentage propagates; an unknown tenant does not.

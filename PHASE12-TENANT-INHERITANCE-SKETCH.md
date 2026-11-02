@@ -317,7 +317,8 @@ produces a registry for that tenant (`oidc/manager.go:459-503`). Inheritance
 changes **where the records come from**, and — for the lock reason below — *when
 they are read*. Nothing else about the build changes:
 
-1. `listEnabled(child)` is empty, and inheritance is wired.
+1. `recordsFor` finds the child's own enabled records empty, and inheritance is
+   wired (`oidc/manager.go` `listEnabled` for the own-read).
 2. Walk the ancestors nearest-first. An ancestor with **no enabled providers has
    nothing to lend**, so the walk continues past it without asking its switch —
    asking would let a silent middle layer block a decision made further up.
@@ -326,7 +327,7 @@ they are read*. Nothing else about the build changes:
    grandparent's providers are NOT substituted.
 4. The borrowed record's own `TenantID` is ignored; only the provider
    definitions are used.
-5. The registry is built with **`tenantID = the child`**, so `redirectFor` returns
+5. `buildAndStoreLocked` builds with **`tenantID = the child`**, so `redirectFor` returns
    the child's callback URL, and the cache entry is stored under the child's key.
 
 Step 3 is the rule that is easy to get wrong in the other direction. A group that
@@ -369,21 +370,67 @@ Two behavioural notes:
   a store-read amplifier. The emptiness must expire on the same TTL as a real
   registry, exactly as it does today.
 
-**Where the walk runs: before the lock.** `rebuildLocked` is called with `mu`
-held, and the manager's promise is that concurrent stampedes for the *same*
-tenant serialise while different tenants never wait on each other
-(`oidc/manager.go:345-349`). An ancestor walk inside that lock would make every
-tenant's rebuild wait on the hierarchy store — one slow store read turning a
-per-tenant serialisation into a global one. So the inherited records are resolved
-**outside** `mu`, then handed to the build step, which stays as it is. The
-double-checked locking is unchanged; only what happens before `Lock` grows.
+### 4.2.1 The mechanics, verified against the code before writing any
 
-**Staleness.** `Reload(parent)` does not clear a child's cached entry, so a
-deleted group provider can keep authenticating a child for up to one `ttl`. This
-is the same window the manager already documents for sister replicas
-(`oidc/manager.go:63-68`), it is not a new failure mode, and it is accepted: the
-alternative is a `Children(id)` port and a fan-out invalidation, for a window
-that is already there. A deployment that needs faster takes a shorter TTL.
+Four facts, all read out of the tree rather than assumed, and together they change
+two things this section first said.
+
+**`rebuildLocked` is only ever reached holding `mu.Lock`** — from `GetRegistry`
+(`oidc/manager.go:365-381`) and `Reload` (`:384-391`), identically in
+`saml/manager.go:385-406`. So "resolve the records before the lock" is not a
+change to where `rebuildLocked` reads from; it is a restructure of **four** call
+paths. The shape 12c implements:
+
+```go
+// called with NO lock held: the tenant's own enabled records, or the first
+// ancestor-with-providers that allows inheritance
+func (m *Manager) recordsFor(ctx, tenantID) ([]ProviderRecord, tenant.ID, error)
+
+// called with mu held: build from recs, store under tenantID. Today's
+// rebuildLocked minus its store read.
+func (m *Manager) buildAndStoreLocked(ctx, tenantID, recs, upstream) (*ProviderRegistry, error)
+```
+
+**That breaks one documented promise, and only for deployments that wire
+inheritance.** The manager promises that concurrent stampedes for the *same*
+tenant serialise into a single store read (`oidc/manager.go:345-349`). A store
+read outside the lock cannot promise that. Since the phase's first rule is that an
+unwired deployment behaves as before, 12c keeps **two paths**: no inheritance
+configured ⇒ exactly today's code, today's promise; inheritance configured ⇒ the
+double-check still guarantees one *build*, and a concurrent burst may repeat the
+read and the walk. Recorded rather than discovered in production.
+
+**The child pays discovery for the ancestor's providers.** `buildAndStoreLocked`
+ends in `BuildRegistryFromConfigs` → `BuildProvider`, which performs discovery
+(`oidc/provider.go:124`, `:215-222`) — a network round trip per provider, cached in
+the child's entry for `ttl`. So a group with three providers costs three discovery
+calls per inheriting child per TTL. Documented as the price of the feature, and
+the reason `partialOK` matters more here than it does today: one unreachable
+group IdP is omitted and logged rather than failing the child's whole registry.
+
+**SAML threads ONE replay ledger through every rebuilt registry**
+(`saml/manager.go:82-86`), so it is already shared across tenants and inheritance
+does not change that. What it does mean is that an inherited provider's assertions
+land in the ledger the inheriting deployment configured — which is correct (the
+ledger is keyed by assertion, and the deployment owns the single-use window) and
+worth stating, because "whose replay store?" is the first question an operator
+asks about a shared IdP.
+
+**Invalidation, decided here rather than left as staleness.** The first draft
+accepted a staleness window: `InvalidateTenant` deletes exactly one key
+(`oidc/manager.go:561-566`), so a group's provider edit would leave every child
+serving the old registry until its `ttl`. That is the wrong call once the
+transitivity is seen: if a child inherits from its grandparent because its parent
+has no providers, and the parent then *adds* one, invalidating the parent does not
+touch the child's entry either — the child keeps the grandparent's IdP for a TTL.
+Precise bookkeeping cannot fix this without a `Children(id)` port and a recorded
+chain per entry, which is a lot of machinery for an admin edit.
+
+So, **when inheritance is wired, a provider change clears the whole registry
+cache** instead of one key. It is one line, it makes "the group deleted an IdP"
+true on the next request for every tenant rather than a TTL later, and the cost is
+bounded by real traffic: entries rebuild lazily, per tenant, on demand. Without
+inheritance, invalidation stays exactly as it is — per key, no scan.
 
 **Behind the manager, no fallback.** If inheritance is not wired, `GetRegistry`
 behaves exactly as today — the `len(recs) == 0` branch caches the nil sentinel.
@@ -558,7 +605,10 @@ read as allow", a nil one would silently permit.
    id are ambiguous. A union across the chain is not a merge of two answers to
    one question.
 6. The IdP registry is compiled in the inheriting tenant's name: its redirect
-   URLs and its cache key.
+   URLs and its cache key, and (SAML) its SP metadata and ACS URLs.
+6a. When inheritance is wired, a provider change clears the registry cache rather
+    than one key, so a group's edit reaches its inheritors on their next request.
+    Unwired, invalidation is untouched: one key, no scan.
 7. `MaxIdPConnections == 0` is unlimited on both sides of a `Union` **except on a
    record that purchased nothing**, whose 0 is unset — so the zero record is
    `Union`'s identity and a parent with no plan cannot lift a child's cap (§4.1).
@@ -635,7 +685,11 @@ to compile before it is counted.
 | SAML: the child's SP metadata URL and ACS URL are used | build with the parent's id |
 | the registry is cached under the child's key | store it under the parent's |
 | an inherited-empty result is cached too (`(nil, nil)` expires on the TTL) | skip `storeLocked` on the walked path |
-| the walk does not run while `mu` is held | resolve inherited records inside `rebuildLocked` |
+| the walk does not run while `mu` is held: a blocked hierarchy store must not stall another tenant's fresh lookup | resolve inherited records inside `rebuildLocked` |
+| an ancestor's provider change is visible to its inheritors on the next call | keep the one-key invalidation when inheritance is wired |
+| unwired: invalidation still deletes exactly one key | clear the cache unconditionally |
+| unwired: the stampede promise still holds (one store read per burst) | move the store read out of the lock on both paths |
+| a group provider that discovery refuses is omitted, and the child still serves its own | fail the whole registry on a borrowed provider's discovery error |
 | inheritance unwired → today's behaviour | — (compile-time: no option, no field) |
 
 **`tenant/domain_inheritance_test.go`**
@@ -695,8 +749,11 @@ field.
   same commit: the comment and the code that contradicts it must not coexist.
 - **12b — entitlements** (`Union` + `InheritingEntitlements`). No engine touched,
   so the primitive gets a real consumer before any manager depends on it.
-- **12c — IdP** (`oidc` + `saml` options, `tamper.New` wiring and guards, the
-  redirect-in-the-child's-name test, the pre-lock walk).
+- **12c — IdP** (`oidc` + `saml`: `WithInheritance`, the four call paths split into
+  `recordsFor` + `buildAndStoreLocked`, the two `tamper.New` guards, the
+  child's-name tests for redirect and SP metadata, the pre-lock walk with its
+  concurrency test, and the cache-clear invalidation). Largest slice of the phase:
+  two engines, one lock-ordering argument, and a promise amended only when wired.
 - **12d — domains** (`IsProperSubdomain` + `InheritedDomainAuthority`).
 - **12e — docs** (TD-04 in `tech-debt.md`, an ADR-0001 §8 note that three axes are
   now decided, `MIGRATION`, `CHANGELOG`, and this sketch to `accepted`).

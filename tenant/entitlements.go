@@ -30,6 +30,70 @@ type Entitlements struct {
 	MaxIdPConnections int
 }
 
+// IsZero reports whether this record says the tenant bought NOTHING — no
+// capability and no cap.
+//
+// It earns its own method because the zero value is ambiguous by construction:
+// MaxIdPConnections == 0 means UNLIMITED (see below), and the same 0 is what an
+// empty record carries. "Bought an unlimited number" and "bought nothing" are
+// therefore the same three fields, and the only way to tell them apart is to ask
+// whether anything at all was purchased.
+//
+// [Entitlements.Union] is where that distinction is load-bearing.
+func (e Entitlements) IsZero() bool {
+	return !e.SSOEnabled && !e.SCIMEnabled && e.MaxIdPConnections == 0
+}
+
+// Union returns the maximum of two records: what a tenant has purchased, widened
+// by what an ancestor purchased.
+//
+// It WIDENS only. It never clears a capability either side holds and never lowers
+// a cap, so the result always grants at least what the receiver granted. That is
+// the whole contract of inheritance for this axis: a plan merged with a plan is a
+// plan, and a parent cannot take away what a child bought.
+//
+// Capabilities are OR'd. The cap follows MaxIdPConnections and its zero-means-
+// unlimited reading (see [Entitlements.AllowsAnotherIdP]) with ONE exception:
+//
+//	a record that purchased NOTHING ([Entitlements.IsZero]) has no cap to state,
+//	so its 0 is "unset" rather than "unlimited" and contributes no widening.
+//
+// Without that exception, the commonest case in this phase would break: a child
+// with no plan row at all is the zero record, so a group that bought a 3-IdP plan
+// would hand the child UNLIMITED IdPs — every child of every group with a cap,
+// widened by nothing at all. The type cannot distinguish the two zeros, so Union
+// decides it the way the rest of this package decides ambiguity: a record that
+// states nothing widens nothing.
+//
+// Union is commutative and idempotent; both are tested, because a walk in either
+// direction must not change the answer.
+func (e Entitlements) Union(other Entitlements) Entitlements {
+	return Entitlements{
+		SSOEnabled:        e.SSOEnabled || other.SSOEnabled,
+		SCIMEnabled:       e.SCIMEnabled || other.SCIMEnabled,
+		MaxIdPConnections: unionMaxIdPConnections(e, other),
+	}
+}
+
+// unionMaxIdPConnections is the cap half of Union, split out so the four cases
+// read as four cases rather than as a nested conditional.
+func unionMaxIdPConnections(e, other Entitlements) int {
+	switch {
+	case e.IsZero():
+		return other.MaxIdPConnections
+	case other.IsZero():
+		return e.MaxIdPConnections
+	case e.MaxIdPConnections <= 0 || other.MaxIdPConnections <= 0:
+		// A record that bought SOMETHING and still says 0 means unlimited, which
+		// is a real purchase and beats any finite cap.
+		return 0
+	case e.MaxIdPConnections > other.MaxIdPConnections:
+		return e.MaxIdPConnections
+	default:
+		return other.MaxIdPConnections
+	}
+}
+
 // AllowsAnotherIdP reports whether a tenant already holding `current`
 // identity providers may configure one more.
 //

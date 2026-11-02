@@ -330,6 +330,18 @@ no home tenant. Backfill that column before the upgrade.
   Nothing consumes either yet — the three inheritance axes land in later slices —
   and no behaviour changes: no authorization scope is derived from parentage.
 
+- **`tenant.InheritingEntitlements` — plan inheritance** (Phase 12 slice 12b,
+  TD-04, decision D2). A decorator over `tenant.EntitlementStore`, so
+  `espresso.RequireEntitlement` is untouched: pass the plain store and nothing
+  changes, pass the decorator and a tenant's effective plan is its own **widened**
+  by its ancestors'. `tenant.Entitlements.Union` is the widening — booleans OR'd,
+  the IdP cap at the larger value, a record that bought something keeping `0` as
+  unlimited — and `Entitlements.IsZero()` is what keeps a child with no plan row
+  from inheriting an *uncapped* one. `ForTenant` on the plain store remains the
+  purchase, not the effect: an admin screen showing "your plan" must read the
+  inner store. The decorator caches nothing (1+depth reads per call), so a gated
+  deployment wraps it in its own cache.
+
 - **Platform admin: entering a tenant** (#55, TD-01, TD-02). Opt-in; a
   deployment that does not use it is unchanged. Design:
   `PHASE8-PLATFORM-ADMIN-SKETCH.md`.

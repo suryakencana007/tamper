@@ -144,6 +144,15 @@ tenant's own value with each ancestor's, nearest first. It is a decorator, so
 `espresso.RequireEntitlement` is untouched, and "opt-in" is literal: pass the
 plain store, get today's behaviour.
 
+**It is uncached, and that is a contract the caller must honour.**
+`EntitlementStore`'s own doc says an implementation should be cheap or cached
+"because a gate consults this on every gated request"
+(`tenant/entitlements.go:48-49`), and this one turns that single read into
+1+depth. tamper ships no cache here — there is no clock, TTL or key policy in
+this package to hang one on — so a deployment that gates per request wraps the
+decorator in its own cache, exactly as it would the plain store. Documented on
+the constructor, and §8 records whether a built-in cache should land later.
+
 Sharp edges, each testable:
 
 - **The union is the EFFECT; `ForTenant` stays the PURCHASE.** An admin screen
@@ -166,8 +175,9 @@ func WithInheritance(ancestors AncestorFunc, allow tenant.Inheritance) ManagerOp
 ```
 
 The manager's rebuild already takes a tenant id and a list of records and
-produces a registry for that tenant (`oidc/manager.go:459-504`). Inheritance
-changes **where the records come from**, and nothing else:
+produces a registry for that tenant (`oidc/manager.go:459-503`). Inheritance
+changes **where the records come from**, and — for the lock reason below — *when
+they are read*. Nothing else about the build changes:
 
 1. `listEnabled(child)` is empty, and inheritance is wired.
 2. Walk the ancestors nearest-first. For each, ask the group's switch
@@ -202,6 +212,23 @@ Two behavioural notes:
   (`oidc/manager.go:364`). The walk must not turn that into an error: `ErrNotFound`
   from `Ancestors` means "nothing to inherit", and the outcome is identical — no
   registry. Any *other* error propagates. Deny and miss stay indistinguishable.
+- **The nil result is still CACHED, with a fresh timestamp, whether it came from
+  having no providers or from having nothing to inherit.** This is the existing
+  invariant (`oidc/manager.go:464-473`) and inheritance makes it load-bearing for
+  a new reason: the walk is 1+depth store reads, and `GetRegistry` is reachable
+  with an attacker-chosen tenant id. Without the cache, an id that resolves to
+  nothing would re-run the whole walk on every request — a cheap request becoming
+  a store-read amplifier. The emptiness must expire on the same TTL as a real
+  registry, exactly as it does today.
+
+**Where the walk runs: before the lock.** `rebuildLocked` is called with `mu`
+held, and the manager's promise is that concurrent stampedes for the *same*
+tenant serialise while different tenants never wait on each other
+(`oidc/manager.go:345-349`). An ancestor walk inside that lock would make every
+tenant's rebuild wait on the hierarchy store — one slow store read turning a
+per-tenant serialisation into a global one. So the inherited records are resolved
+**outside** `mu`, then handed to the build step, which stays as it is. The
+double-checked locking is unchanged; only what happens before `Lock` grows.
 
 **Staleness.** `Reload(parent)` does not clear a child's cached entry, so a
 deleted group provider can keep authenticating a child for up to one `ttl`. This
@@ -274,12 +301,17 @@ type InheritanceConfig struct {
 `tamper.New` refuses, with a message naming the field:
 
 - `OIDC.Inherit != nil` with a nil `Store` or nil `Allow`;
-- `SAML.Inherit != nil` likewise;
-- `OIDC.Inherit != nil` while `OIDC` itself is nil (inheritance of an engine that
-  is not built is a misconfiguration, not a no-op), and the same for `SAML`.
+- `SAML.Inherit != nil` likewise.
 
-Each guard gets a test that asserts the error text, so a guard deleted later is
-caught by a failing test rather than by a customer.
+Two guards, not three. "`Inherit` set while the engine config is nil" cannot be
+written: `Config.OIDC` is a pointer, so there is no `OIDC.Inherit` to set when it
+is nil. A guard that cannot fire is worse than absent — rule 6 asks for a guard
+*and* a test that fires it, and this one could never be tested.
+
+The store travels inside the inheritance config rather than at the top level,
+because `tamper.New` has no tenant store today: parentage is the application's
+graph, and this is the first framework code to read it. Each engine may be given
+a different one; that is a feature, not an oversight.
 
 `Ancestors` and the two constructors panic on a nil store, matching
 `RequireEntitlement`'s precedent (`espresso/routes.go:294-297`): a nil store is a
@@ -296,8 +328,13 @@ wiring bug that would silently permit.
 3. The ancestor walk fails closed: cycle, over-depth, dangling parent, or a
    store error is an error, never "root" and never "allow".
 4. `tenant.Single` (`""`) never walks.
-5. A tenant with its own configuration never consults an ancestor, and no axis
-   merges — first match wins, whole.
+5. **Selection differs by axis, and deliberately.** IdP and domains take ONE
+   source — first match walking up, whole, never a merge — so a child with its
+   own providers, or its own matching claim, never consults an ancestor.
+   Entitlements UNION the whole chain, because a capability is additive by
+   nature (a plan merged with a plan is a plan) while two provider rows with one
+   id are ambiguous. A union across the chain is not a merge of two answers to
+   one question.
 6. The IDP registry is compiled in the inheriting tenant's name: its redirect
    URLs and its cache key.
 7. `MaxIdPConnections == 0` is unlimited on both sides of a `Union`, and a cap
@@ -350,6 +387,8 @@ to compile before it is counted.
 | unknown tenant → `(nil, nil)`, not an error | propagate `ErrNotFound` |
 | the child's redirect URL is used, not the parent's | build with the parent's id |
 | the registry is cached under the child's key | store it under the parent's |
+| an inherited-empty result is cached too (`(nil, nil)` expires on the TTL) | skip `storeLocked` on the walked path |
+| the walk does not run while `mu` is held | resolve inherited records inside `rebuildLocked` |
 | inheritance unwired → today's behaviour | — (compile-time: no option, no field) |
 
 **`tenant/domain_inheritance_test.go`**
@@ -383,6 +422,10 @@ field.
    is invoiced.
 4. **Should `ChildrenOf` land later anyway**, for provisioning? Not needed by any
    of these three axes. Left to the app, as ADR-0001 already does.
+5. **Should `InheritingEntitlements` ship with a TTL cache?** Today the caller
+   wraps it (§4.1). A built-in one would need a clock and a size bound, both of
+   which this package has deliberately avoided; the decision is to leave it out
+   until a deployment actually measures the walk.
 
 ---
 

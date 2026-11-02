@@ -328,7 +328,11 @@ same instrument for `identity.Store`.
 8. Run the leak suites against your stores (§5) and watch them pass.
 9. If you use scim: thread the principal's tenant through both ports and delete
    the `Tenancy` config.
-10. Optional: wire `WithMemberships` + `EnterTenant` (§4).
+10. Optional, and independent of the rest: wire any of the four additive
+    features in §4 — `WithMemberships` + `EnterTenant` for platform admins, the
+    lifecycle write port, `WithImpersonation`, or
+    `tenant.InheritingEntitlements`. None of them changes behaviour you already
+    have, and none is needed to finish the upgrade.
 
 ### If you are single-tenant
 

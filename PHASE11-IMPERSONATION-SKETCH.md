@@ -49,6 +49,25 @@ Proposals for review. Decision 3 is the one that needs a decision, not a review.
    actor). No ambient "impersonation enabled" flag exists, so nothing can turn it
    on by mistake.
 
+   The two tenants on such a token, stated because they are easy to get backwards:
+
+   | Claim | Value | Why |
+   |---|---|---|
+   | `tid` | the tenant being acted in — and the **impersonated user's home**, because decision 7 requires them to be a user of it | it is the scope of the request |
+   | `htid` | the **impersonator's** home tenant | `ActorTenantID()` must keep naming the human's home, or the audit actor's tenant is wrong |
+   | `act` | the impersonator's user id | who is responsible |
+
+   `htid` therefore means "the human's home" on an impersonated token, where its
+   Phase 8 doc says "the subject's home". That is a deliberate second reading, and
+   it is the reason for the next paragraph.
+
+   **`Entered()` must be false for an impersonated token.** Today it is
+   `HomeTenantID != ""` (`crypto/jwt.go:693`), so including `htid` would make every
+   existing entered-token check accept an impersonated token — `EnteredFromContext`
+   reads `claims.Entered()`, and `RequireTenantAllowEntered` would pass it through.
+   The definition becomes `HomeTenantID != "" && ActorID == ""`, and `Impersonated()`
+   takes precedence everywhere.
+
 2. **Attribution is never the impersonated user.** `espresso.RequireAuth` puts
    the **real actor** in the audit actor: `act` when present, `sub` otherwise.
    Every row written during an impersonation says a human did it, and the human
@@ -93,14 +112,28 @@ Proposals for review. Decision 3 is the one that needs a decision, not a review.
    route opts in (`AllowImpersonated`). Every existing route stays closed to
    impersonation without a line being changed.
 
+   When a route does opt in, the gate builds the subject with **`tid`** as its
+   home tenant, not `htid`: the impersonated user is a user of the tenant being
+   acted in, and `authz` matches subjects on `{home tenant, type, id}`. Today
+   `DecisionGate` does the opposite — `home := scope; if entered { home = htid }`
+   (`espresso/decision.go`) — so an impersonated token reaching it unchanged would
+   ask for bindings of `{platform, user, bob}` instead of `{acme, user, bob}` and
+   deny a user who has every right to be there. One branch, and it is tested.
+
 6. **No chaining, no refresh, short life.** An impersonated token cannot
    impersonate again; it has no refresh session, so ending it is a TTL, not a
    revocation list. The TTL is the exposure, as with entered tokens.
 
 7. **The impersonated user must exist in the tenant being acted in**, and the
-   impersonator must be able to enter that tenant in the first place. Refusals are
-   one `ErrNotFound`, the shape Phase 8 uses: "not a user", "not your tenant",
-   "not allowed" are indistinguishable.
+   impersonator must be able to enter that tenant in the first place. `Core.Impersonate`
+   checks both, in this order, and both are refusals of the same shape: the target
+   is resolved through `identity.Store.UserByID` and must be `Active` with its
+   stored tenant equal to the tenant being acted in (the empty stored tenant means
+   a single-tenant deployment, where impersonation is refused outright); the
+   impersonator's right to be there is the `ImpersonationPolicy`'s answer, and an
+   error from it is returned, never read as yes. Every refusal is one
+   `ErrNotFound`, the shape Phase 8 uses: "not a user", "not your tenant", "not
+   allowed" and "deactivated" are indistinguishable.
 
 8. **No unhashed columns.** The impulse to add `actor_impersonator` as a
    query-only column is the `cluster_id` precedent v4 explicitly rejected for
@@ -116,10 +149,13 @@ Proposals for review. Decision 3 is the one that needs a decision, not a review.
 home session            {sub: ops,    tid: platform}
 enter acme              {sub: ops,    tid: acme, htid: platform}
 impersonate bob in acme {sub: bob,    tid: acme, htid: platform, act: ops}
-                          │
+                          │                  │              │        │
+                          │                  │              │        └─ the human
+                          │                  │              └─ the human's home
+                          │                  └─ the scope, and bob's home
                           ├── GetUserID / handlers ......... bob   (act as bob)
                           ├── audit Actor.UserID ........... ops   (attribute to the human)
-                          ├── DecisionGate subject ........ {acme, user, bob}
+                          ├── DecisionGate subject ........ {acme, user, bob}   (tid, not htid)
                           └── reached only where a route sets AllowImpersonated
 ```
 
@@ -147,11 +183,16 @@ package crypto
 // are byte-identical (the htid precedent).
 func (c *AccessClaims) Impersonated() bool
 
+// Entered reports an ENTERED token and must not report an impersonated one:
+// HomeTenantID != "" && ActorID == "". Otherwise every existing entered-token
+// check would accept an impersonated token without opting in.
+func (c *AccessClaims) Entered() bool   // changed
+
 // IssueAccessImpersonated mints an impersonated access token: sub = target,
-// tid = tenant, htid = the impersonator's home tenant, act = impersonator.
-// Refuses an unset tenant, an empty target or actor, actor == target, and a TTL
-// that exceeds the service TTL.
-func (j *JWTService) IssueAccessImpersonated(target, actor string, tenantID, homeTenantID tenant.ID,
+// tid = tenant (which is also the target's home), htid = the IMPERSONATOR's home
+// tenant, act = the impersonator. Refuses an unset tenant, an empty target or
+// actor, actor == target, and a TTL longer than the service TTL.
+func (j *JWTService) IssueAccessImpersonated(target, actor string, tenantID, actorHome tenant.ID,
     authTime int64, acr string, ttl time.Duration) (string, error)
 
 package identity
@@ -171,7 +212,11 @@ package espresso
 // RequireTenantAllowImpersonated mirrors RequireTenantAllowEntered.
 // DecisionGate gains AllowImpersonated, defaulting to false.
 func RequireTenantAllowImpersonated(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler
-func ImpersonatedFromContext(ctx context.Context) (actor tenant.ID /* home */, actorID string, ok bool)
+
+// ImpersonatedFromContext reports the impersonation behind the request:
+// actorHome is the human's tenant (htid), actorID the human's user id (act).
+// The impersonated user is GetUserID, and their home tenant is the routed one.
+func ImpersonatedFromContext(ctx context.Context) (actorHome tenant.ID, actorID string, ok bool)
 ```
 
 Audit vocabulary, owned by the application's routes (the `Auditor.For` precedent):
@@ -210,6 +255,10 @@ audit.Action("impersonation.end")
    who is responsible. Nothing downstream infers either from a session record.
 7. **The chain stays v4**, and no impersonation fact lives outside the hash.
 8. **A nil policy is a wiring error**, never a permission.
+9. **`Entered()` and `Impersonated()` are mutually exclusive**, and every gate that
+   distinguishes them does so before anything else.
+10. **The subject's home tenant is the routed tenant** for an impersonated request,
+    so authorization answers for the user who is actually there.
 
 ## 6. What this does not do
 
@@ -236,6 +285,8 @@ Mutation proofs, each failing a named test.
 | `Impersonate` mints a refresh session | the access-only test |
 | A refusal distinguishes "not found" from "not allowed" | the single-refusal test |
 | `IssueAccessImpersonated` accepts actor == target | the self-impersonation test |
+| `Entered()` returns true for an impersonated token | the entered-gate test (an impersonated token must not pass `RequireTenantAllowEntered`) |
+| `DecisionGate` builds the subject with `htid` instead of `tid` | the subject-home test (bindings of the user in THIS tenant) |
 | Remove a construction guard | the panic test (rule 6) |
 
 ## 8. The v5 question, and open questions

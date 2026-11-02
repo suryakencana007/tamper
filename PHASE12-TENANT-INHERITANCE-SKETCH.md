@@ -142,7 +142,10 @@ Decisions inside it, each of which a test pins:
   behalf.
 - **A cycle is an error** (`ErrHierarchyCycle`), not a hang; a chain longer than
   `maxHierarchyDepth` (32) is `ErrHierarchyDepth`. Both are new sentinels in
-  `tenant`, next to `ErrNotFound`.
+  `tenant`, next to `ErrNotFound`. The number bounds corrupt or adversarial data
+  rather than describing a product limit: real hierarchies are three deep, and a
+  deployment needing more than 32 has a data-modelling problem whose symptom should
+  be a named error rather than a slow request.
 - **The store's other errors propagate.** No error return is read as "root".
 
 No new port. Ancestors come from `tenant.Store` + `Descriptor.ParentID`, which
@@ -236,7 +239,10 @@ made, so the walk stops — rejected: skip past a refusing ancestor.
 Step 5 is the security decision of this axis and it is not a detail. Building the
 ancestor's registry and handing it to the child would carry the *ancestor's*
 redirect URI into the child's login flow: the IdP would then complete a flow that
-lands in the wrong tenant's context. Borrowing the definition and compiling it for
+lands in the wrong tenant's context. SAML has the same seam under a different name
+— `spMetadataURLForTenant` (`saml/manager.go:92-95`, `131-141`) is the tenant-aware
+form of the SP metadata URL, so "compile it for the child" means the child's
+metadata URL and the child's ACS URL, not the group's. Borrowing the definition and compiling it for
 the child keeps "which IdP do we ask" inherited and "which tenant is this" not.
 The operational cost, documented rather than hidden: the IdP must accept the
 child's callback URL, so a per-tenant `redirectURLForTenant` means registering N
@@ -284,21 +290,44 @@ behaves exactly as today — the `len(recs) == 0` branch caches the nil sentinel
 ### 4.3 Domains — authority, not approval
 
 ```go
+// No TenantID field, on purpose — see below.
+type DomainAuthority struct {
+	AncestorID ID     // whose verification this claim rests on
+	Domain     string // that ancestor's VERIFIED domain the name sits under
+	ProviderID string // the ancestor's bound IdP, "" when none
+}
+
 func InheritedDomainAuthority(ctx context.Context, s Store, domains DomainStore,
-	tenantID ID, domain string) (DomainRecord, error)
+	tenantID ID, domain string) (DomainAuthority, error)
 
 func IsProperSubdomain(child, parent string) bool   // exported for the admin path
 ```
 
-`tenantID` is an `ID` for the reason above. `DomainStore` is the one port that
+`tenantID` is an `ID` for the reason in §3. `DomainStore` is the one port that
 still speaks strings (`ListForTenant(ctx, tenantID string)`), so the helper
 converts at that boundary with `ID.String()` and nowhere else. `IsProperSubdomain`
 stays pure strings: it is about domains, not tenants, and has no validity to
 carry.
 
+**The return type has no tenant in it, and that is the point.** The obvious
+signature returns the matched `DomainRecord`, whose `TenantID` is the **ancestor**
+— and the consumer that matters is the login path, which reads `rec.TenantID` to
+decide who the user is logging in to (`espresso/startlogin.go:283`). Handing back
+a record with the ancestor's tenant in it invites exactly one bug: an app passes
+it along, and the user is routed into the *group* instead of the child.
+Structurally prevented instead of documented: the value carries the authority
+(`AncestorID`), the domain, and the provider to bind — and nothing a consumer
+could mistake for "which tenant is this". The caller writes its own row for its
+own tenant.
+
+`ProviderID` is taken from `BoundProviderID()`, not the raw field
+(`tenant/domain.go:66-71`), so the helper cannot pass on a binding that came from
+an unproven claim even if the verified filter were later removed.
+
 `InheritedDomainAuthority` walks ancestors nearest-first and, for each, asks
 `domains.ListForTenant(ancestor)` for a **verified** claim that `domain` is a
-proper subdomain of, returning the first match. A public email domain, no
+proper subdomain of, returning the first match as a `DomainAuthority` naming the
+ancestor it came from. A public email domain, no
 matching claim, and an unverified ancestor claim are all `ErrNotFound` — the same
 three-fold collapse `ResolveDomain` already documents, for the same reason. An
 **unnormalised** input is the one thing said plainly (`ErrDomainNotNormalised`):
@@ -332,6 +361,34 @@ unauthenticated resolve path. Putting a hierarchy walk behind it would make the
 most security-sensitive lookup in a pooled deployment depend on a second store on
 every unauthenticated request. The helper is called from the admin path, where a
 customer's operator is already authenticated.
+
+### 4.4 Where two axes meet
+
+Each axis is independent (invariant 10), which produces two combinations worth
+naming, because both look like bugs and neither is.
+
+**D2 without D3: the feature is paid for and no provider exists.** The entitlement
+union says the child's `SSOEnabled` is true; the group never opted into IdP
+inheritance, and the child configured nothing. The entitlement gate opens and
+`GetRegistry` returns nil. That is not a contradiction: nil already means "not
+configured" by contract (`oidc/provider.go:202`, `saml/builder.go:27`), and a
+route must render that as such rather than as an error. Inheriting a plan is a
+statement about money; it is not a promise that a provider row exists.
+
+**D4 without D3: the claim names a provider this tenant cannot resolve.** The
+`ProviderID` in a child's inherited domain claim is an id from the *group's*
+records. The child's registry contains it only if the child inherits providers —
+which needs D3 on for that group. So the rule at claim time is: **bind the
+provider only when the child's own registry resolves it; otherwise leave it
+empty.** Empty is a legitimate answer, and the login path already treats it as one
+(`espresso/startlogin.go:272-278` — a verified domain with no IdP is the password
+path, not an error). A claim that binds an unresolvable provider is a login that
+fails for one customer and works for its sibling, which is the worst possible way
+to discover the coupling.
+
+Neither rule is enforceable in tamper: both need the application's write path.
+Both are stated here so that the first deployment that hits them finds a
+paragraph rather than a theory.
 
 ---
 
@@ -402,6 +459,9 @@ read as allow", a nil one would silently permit.
     other axis's answer, and no axis's wiring can be inferred from another's.
 11. `InheritedDomainAuthority` returns authority and writes nothing; approval and
     the audit row are the application's.
+12. A cross-axis value must never be mistaken for the tenant: the domain authority
+    carries no tenant, and an inherited domain binds an IdP only when the child's
+    own registry resolves that provider.
 
 ---
 
@@ -447,6 +507,7 @@ to compile before it is counted.
 | switch off, no ancestors → `(nil, nil)` | return an error |
 | unknown tenant → `(nil, nil)`, not an error | propagate `ErrNotFound` |
 | the child's redirect URL is used, not the parent's | build with the parent's id |
+| SAML: the child's SP metadata URL and ACS URL are used | build with the parent's id |
 | the registry is cached under the child's key | store it under the parent's |
 | an inherited-empty result is cached too (`(nil, nil)` expires on the TTL) | skip `storeLocked` on the walked path |
 | the walk does not run while `mu` is held | resolve inherited records inside `rebuildLocked` |
@@ -456,13 +517,15 @@ to compile before it is counted.
 
 | Test | Mutant |
 |---|---|
-| proper subdomain of a verified ancestor → the ancestor's record | — |
+| proper subdomain of a verified ancestor → a `DomainAuthority` naming that ancestor | return the ancestor's `DomainRecord` instead |
 | `evilacme.com` vs `acme.com` → not found | drop the `"."` in `IsProperSubdomain` |
 | the parent's own domain is not inheritable | allow equality |
 | unverified ancestor claim → not found | ignore `Verified` |
 | public email domain → not found | drop the public check |
 | unnormalised input → `ErrDomainNotNormalised` | normalise silently |
 | no ancestor claims the name → not found | return the nearest ancestor regardless |
+| the returned value has no field usable as the resolved tenant | return the ancestor's `DomainRecord` |
+| `ProviderID` comes from `BoundProviderID()` | return the raw record field |
 
 **`provider_test.go`** — one test per boot guard, asserting the message names the
 field.

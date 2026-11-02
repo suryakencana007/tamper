@@ -57,7 +57,7 @@ not a separate service. Three properties shape every flow:
 | `Store` (`ByID`, `BySlug`) | Read port for tenants. |
 | `DomainStore`, `ResolveDomain`, `DomainRecord.BoundProviderID` | Home-realm discovery: email domain → tenant → IdP. Only verified domains resolve. |
 | `NewVerificationToken`, `NewDNSVerifier` | Proof of domain ownership through a DNS TXT record. |
-| `Entitlements`, `EntitlementStore.ForTenant` | The features a tenant has bought (SSO, SCIM, IdP limit). This is not authorization. |
+| `Entitlements`, `EntitlementStore.ForTenant`, `Union`, `InheritingEntitlements` | The features a tenant has bought (SSO, SCIM, IdP limit). This is not authorization. `ForTenant` is the PURCHASE; the decorator's answer is the EFFECT — its own unioned with its ancestors'. |
 | `WithTenant` / `FromContext` | Context propagation only. Never used as a permission. |
 
 ### `identity` — credentials and sessions

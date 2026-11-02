@@ -245,14 +245,32 @@ independently switchable (invariant 10).
 
 ```go
 func (e Entitlements) Union(parent Entitlements) Entitlements
+func (e Entitlements) IsZero() bool
 func InheritingEntitlements(inner EntitlementStore, s Store) EntitlementStore
 ```
 
 `Union` is "the maximum": booleans OR, `MaxIdPConnections` combined. The cap is
 the one place where "maximum" is not `max`, because **`0` means unlimited**
-(`tenant/entitlements.go:26`): if either side is 0 the result is 0, otherwise the
-larger. A naïve `max` here narrows a tenant from unlimited to 40, and the symptom
-is a child that suddenly cannot add an IdP it was always allowed to add.
+(`tenant/entitlements.go:26`): a record that bought *something* and says 0 grants
+unlimited, and unlimited beats any finite cap. A naïve `max` here narrows a tenant
+from unlimited to 40, and the symptom is a child that suddenly cannot add an IdP it
+was always allowed to add.
+
+**Amended while implementing 12b: the zero record is the exception.** As first
+drafted this section said "if either side is 0 the result is 0", and that breaks
+the commonest case in the whole phase. A child with no plan row is the **zero
+record**, and the zero record's `MaxIdPConnections` is also 0 — so a group that
+bought a 3-IdP plan would have handed every child of every capped group
+**unlimited** IdPs, widened by a record that says nothing was purchased. The type
+cannot tell the two zeros apart; `Entitlements.IsZero()` is that question asked
+explicitly, and `Union` answers it the way this package answers ambiguity
+everywhere: **a record that states nothing widens nothing**, while a record that
+bought anything at all keeps 0 = unlimited.
+
+The residual edge is recorded rather than hidden: an ancestor that bought *only*
+an unlimited cap, with no capability at all, is indistinguishable from one that
+bought nothing, and is read as nothing. A deployment that wants to grant a cap
+must grant a capability with it.
 
 `InheritingEntitlements` returns a store whose `ForTenant(ctx, id)` unions the
 tenant's own value with each ancestor's, nearest first. It is a decorator, so
@@ -533,8 +551,10 @@ read as allow", a nil one would silently permit.
    one question.
 6. The IdP registry is compiled in the inheriting tenant's name: its redirect
    URLs and its cache key.
-7. `MaxIdPConnections == 0` is unlimited on both sides of a `Union`, and a cap
-   never narrows.
+7. `MaxIdPConnections == 0` is unlimited on both sides of a `Union` **except on a
+   record that purchased nothing**, whose 0 is unset — so the zero record is
+   `Union`'s identity and a parent with no plan cannot lift a child's cap (§4.1).
+   A cap never narrows either way.
 8. The union is the EFFECT; `ForTenant` remains the PURCHASE.
 9. A domain is inherited only as a **proper** subdomain of a **Verified**
    ancestor claim, with the dot boundary intact.
@@ -574,11 +594,20 @@ to compile before it is counted.
 | Test | Mutant |
 |---|---|
 | union: booleans OR | AND them |
-| union: 0 vs 40 → 0 (unlimited) | plain `max` |
+| union: unlimited vs 40 → unlimited | plain `max` |
 | union: 40 vs 10 → 40 | return the child's |
-| decorator unions the chain | return the child's own only |
-| decorator on a root tenant = inner | walk anyway |
-| decorator error → error | swallow on the walk |
+| union: a ZERO record states no cap (3 stays 3) | drop the `IsZero` exception → the child gets unlimited |
+| union: the zero record is the identity, for every shape | special-case only the cap |
+| `IsZero` reads a purchased-but-uncapped record as NOT zero | conflate it with the zero record |
+| decorator: a planless ancestor leaves a 3-cap alone; an ancestor that bought uncapped lifts it | collapse the two readings of `MaxIdPConnections == 0` |
+| union: commutative, idempotent, never narrows | any of the above |
+| decorator unions the whole chain | return the child's own only |
+| decorator on a root tenant = inner, one read | walk anyway |
+| decorator reads 1+depth and caches nothing | assume a cache |
+| decorator: unset `ID` / `Single` never walk | walk |
+| decorator: inner error, dangling parent, unknown tenant all fail the lookup | swallow and return the child's own |
+| decorator panics on a nil inner or nil store | return something usable |
+| espresso: the same gate denies with the plain store and opens with the decorator | wire the decorator inside the gate instead of at the call site |
 
 **`oidc/inheritance_test.go` and `saml/inheritance_test.go`**
 
@@ -630,7 +659,8 @@ field.
    append-only for a reason.
 3. **Do inherited entitlements show on the customer's invoice?** Billing is the
    application's; the union is only the effective value. Nothing here changes what
-   is invoiced.
+   is invoiced. Related and decided in §4.1: an ancestor that bought only an
+   unlimited cap, with no capability, is read as having bought nothing.
 4. **Should `ChildrenOf` land later anyway**, for provisioning? Not needed by any
    of these three axes. Left to the app, as ADR-0001 already does.
 5. **Should `InheritingEntitlements` ship with a TTL cache?** Today the caller

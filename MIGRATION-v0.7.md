@@ -220,7 +220,7 @@ VerifyTOTPPendingInTenant(token, tid)       -> VerifyTOTPPending(token, tenant.I
 
 ---
 
-## 4. The additive features: entering a tenant, and a lifecycle write
+## 4. The additive features: nothing here happens unless you wire it
 
 A user is stored in one home tenant. A **membership** is the right to act
 inside another. Nothing happens unless you wire it.
@@ -266,6 +266,19 @@ mounts `RequireTenantAllowImpersonated` (or the combined
 `DecisionGate.AllowImpersonated`. Tokens minted before this release are
 unchanged: `AccessClaims.Entered()` still means what it meant, because only an
 impersonated token carries `act`. Nothing here is breaking.
+
+**Plan inheritance (TD-04, decision D2).** A tenant's **effective** plan can be
+its own widened by what its ancestors bought. `tenant.InheritingEntitlements(plans,
+hierarchy)` is a decorator over `tenant.EntitlementStore`, so
+`espresso.RequireEntitlement` is untouched — pass your plain store and nothing
+changes. `tenant.Entitlements.Union` is the widening: capabilities OR'd, the IdP
+cap at the larger value, and a record that bought *something* keeping `0` as
+unlimited. A **record that bought nothing widens nothing** — `Entitlements.IsZero`
+is that question — otherwise a child with no plan row would inherit an *uncapped*
+IdP allowance from a capped parent. Two things to know before wiring it: it is
+**uncached** (1+depth store reads per gated request, so wrap it in your own
+cache), and it reports the **effect**, while your own `ForTenant` remains the
+**purchase** — an admin screen showing "your plan" must read the inner store.
 
 ---
 

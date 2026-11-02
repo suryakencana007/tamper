@@ -977,6 +977,9 @@ type Entitlements struct {
     SSOEnabled        bool
     SCIMEnabled       bool
     MaxIdPConnections int  // 0 = unlimited
+    // AMENDED (Phase 12 §4.1): that reading holds for a record that bought
+    // SOMETHING. On a record that bought nothing the same 0 is "unset", so a
+    // parent with no plan cannot lift a child's cap. Entitlements.IsZero asks it.
 }
 
 type EntitlementStore interface {

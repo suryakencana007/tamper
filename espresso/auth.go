@@ -184,9 +184,13 @@ func decorateAuthed(ctx context.Context, claims *crypto.AccessClaims) context.Co
 	userID := claims.Subject
 	ctx = context.WithValue(ctx, userIDKey{}, userID)
 	ctx = context.WithValue(ctx, accessClaimsKey{}, claims)
+	// ActorUserID, not Subject: on an impersonated token the subject is the
+	// customer's user and the actor is the human behind them. Every audit row
+	// this request produces must name the human, or the record blames the wrong
+	// person while looking complete.
 	return audit.WithActor(ctx, audit.Actor{
 		Type:     audit.ActorTypeUser,
-		UserID:   userID,
+		UserID:   claims.ActorUserID(),
 		TenantID: claims.ActorTenantID(),
 	})
 }

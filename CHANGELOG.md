@@ -346,6 +346,29 @@ no home tenant. Backfill that column before the upgrade.
 - **`authz/tenanttest`** (#56, TD-03). Leak suites for `BindingStore` and
   `PermissionStore`, the `authz` sibling of `identity/tenanttest`.
 
+- **Impersonation: a human acting as another user** (#88, TD-07). Opt-in; a
+  deployment that never configures a policy cannot impersonate at all. Design:
+  `PHASE11-IMPERSONATION-SKETCH.md`.
+  - A token minted by `identity.Core.Impersonate` carries **two identities**:
+    `sub` is the user being impersonated — so handlers and `GetUserID` act as
+    that user — and a new `act` claim names the human behind it.
+  - **Every audit row is attributed to the human.** `espresso.RequireAuth` puts
+    `claims.ActorUserID()` in the audit actor: `act` when present, `sub`
+    otherwise. A row naming the impersonated user would blame the customer while
+    looking complete.
+  - `identity.ImpersonationPolicy` (`MayImpersonate`) is required to enable it;
+    a nil policy makes `Impersonate` return `ErrNoImpersonationPolicy`. New
+    errors: `crypto.ErrSelfImpersonation`, `identity.ErrNoImpersonationPolicy`.
+  - **Refused by default.** `RequireTenant` and `RequireTenantAllowEntered` reject
+    an impersonated token; a route opts in with the new
+    `RequireTenantAllowImpersonated` and `DecisionGate.AllowImpersonated`. When it
+    does, the authorization subject's home tenant is the routed tenant.
+  - **No chaining, no refresh session**: an impersonation ends when its token
+    expires, so `WithImpersonation`'s TTL is the whole revocation window.
+  - `AccessClaims.Entered()` now reports `htid != "" && act == ""`, so an
+    impersonated token is not mistaken for an entered one. Tokens minted before
+    this release are unaffected: they carry no `act`.
+
 - **Tenant lifecycle: a write port and one `Suspend`** (#85, TD-05). Opt-in; a
   deployment that does not implement the port is unchanged. Design:
   `PHASE10-TENANT-LIFECYCLE-SKETCH.md`.

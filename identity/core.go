@@ -37,9 +37,13 @@ type Core struct {
 	throttling   Throttling      // zero value = no rate limiting; see WithThrottling
 	invitations  InvitationStore // nil = invitation verbs error (opt-in, 7j-1)
 	memberships  MembershipStore // nil = EnterTenant errors (opt-in, Phase 8)
-	enterTTL     time.Duration   // 0 = entered tokens live as long as ordinary ones
-	now          func() time.Time
-	newID        func() string
+	// impersonation is the policy Impersonate asks; nil = impersonation is off
+	// (opt-in, Phase 11). impersonationTTL is the lifetime of the token it mints.
+	impersonation    ImpersonationPolicy
+	impersonationTTL time.Duration
+	enterTTL         time.Duration // 0 = entered tokens live as long as ordinary ones
+	now              func() time.Time
+	newID            func() string
 }
 
 // Option configures a Core.
@@ -101,6 +105,13 @@ func New(store Store, jwt *crypto.JWTService, opts ...Option) (*Core, error) {
 	if jwt != nil && c.enterTTL > jwt.AccessTTL() {
 		return nil, fmt.Errorf("identity: WithEnterTenantTTL(%s) is longer than the access token TTL (%s)",
 			c.enterTTL, jwt.AccessTTL())
+	}
+	// Same rule for an impersonated token, and for the same reason: the JWT
+	// service would cut it on every mint, and the operator would believe in a
+	// revocation window that is not the one in effect.
+	if jwt != nil && c.impersonationTTL > jwt.AccessTTL() {
+		return nil, fmt.Errorf("identity: WithImpersonation ttl (%s) is longer than the access token TTL (%s)",
+			c.impersonationTTL, jwt.AccessTTL())
 	}
 	// There is no optional interface to assert against: a Store that does
 	// not implement the tenant-scoped methods does not compile, which is

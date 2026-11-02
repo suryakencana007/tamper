@@ -60,6 +60,7 @@ var (
 	errMissingAuthContext = errors.New("token has no auth_time or no acr")
 	errWrongTenant        = errors.New("token tid does not match the tenant it was verified for")
 	errBadHomeTenant      = errors.New("htid without a different tid")
+	errBadImpersonator    = errors.New("act without an htid, or acting as itself")
 )
 
 // ErrTenantRequired — [JWTService.IssueAccess] or
@@ -334,12 +335,62 @@ type AccessClaims struct {
 	//
 	// omitempty: an ordinary token has no htid on the wire.
 	HomeTenantID string `json:"htid,omitempty"`
+	// ActorID is present only on an IMPERSONATED token: the user id of the
+	// human behind it, while Subject (sub) is the user being impersonated.
+	//
+	// It grants nothing and changes no comparison. Every verifier still
+	// compares TenantID, and only TenantID, with the tenant it was asked
+	// about; this claim is for ATTRIBUTION, so that the audit row names the
+	// human rather than the person whose screens were on the glass.
+	//
+	// A token that carries it also carries an htid — the human's home
+	// tenant — because "a human" without a home tenant is not a fact this
+	// service can record. The impersonated user's home tenant is TenantID:
+	// they are a user of the tenant being acted in.
+	//
+	// omitempty: every other token shape has no act on the wire, so
+	// existing tokens stay byte-identical.
+	ActorID string `json:"act,omitempty"`
 	jwt.RegisteredClaims
+}
+
+// IssueAccessImpersonated mints an IMPERSONATED access token: Subject is
+// target, ActorID is actor, TenantID is the tenant being acted in (also the
+// target's home), and HomeTenantID is the ACTOR's home tenant.
+//
+// The two tenants are different facts and must both be real: an impersonation
+// happens inside one tenant, by a human from another. Refuses an unset or
+// single tenant on either side, two equal tenants (ErrEnteredTenants — the
+// same rule an entered token follows), an empty target or actor, and an actor
+// equal to the target (ErrSelfImpersonation).
+//
+// ttl is cut to the service TTL, as an entered token's is.
+func (j *JWTService) IssueAccessImpersonated(target, actor string, tenantID, actorHome tenant.ID, authTime int64, acr string, ttl time.Duration) (string, error) {
+	if target == "" || actor == "" {
+		return "", fmt.Errorf("%w: an impersonated token needs a target and an actor", ErrInvalidToken)
+	}
+	if target == actor {
+		return "", ErrSelfImpersonation
+	}
+	if !tenantID.Valid() || !actorHome.Valid() {
+		return "", ErrTenantRequired
+	}
+	if tenantID.IsSingle() || actorHome.IsSingle() || tenantID == actorHome {
+		return "", ErrEnteredTenants
+	}
+	if ttl <= 0 || ttl > j.ttl {
+		ttl = j.ttl
+	}
+	return j.issueAccessWithActor(target, actor, tenantID.String(), actorHome.String(), authTime, acr, ttl)
 }
 
 // ActorTenantID returns the tenant the token's subject is from: the
 // home tenant of an entered token, and TenantID for every other token,
 // where the two are the same thing.
+//
+// On an IMPERSONATED token those are not the same thing: it returns the
+// human's home tenant, which is what the audit actor needs (who acted), not
+// the impersonated user's (whose tenant the action happened in).
 func (c *AccessClaims) ActorTenantID() string {
 	if c.HomeTenantID != "" {
 		return c.HomeTenantID
@@ -414,6 +465,13 @@ func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int
 // caller's own arguments, so it has its own text like ErrTenantRequired.
 var ErrEnteredTenants = errors.New("auth: an entered token needs two different tenants, neither of them the single tenant")
 
+// ErrSelfImpersonation — IssueAccessImpersonated was asked to mint a token
+// whose actor and target are the same user id. That token would claim a human
+// is acting as themselves under another identity: there is no such thing to
+// record, and every audit row it produced would be ambiguous about which of the
+// two facts the id meant.
+var ErrSelfImpersonation = errors.New("auth: an impersonated token needs an actor different from the target")
+
 // IssueAccessEntered mints an access token for a subject who is stored
 // in homeTenantID and is acting in tenantID. The token carries
 // tid=tenantID, so it is accepted exactly where an ordinary token for
@@ -451,6 +509,13 @@ func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID te
 // so the two cannot drift apart in anything but the claims they differ
 // on by design.
 func (j *JWTService) issueAccess(userID, tid, htid string, authTime int64, acr string, ttl time.Duration) (string, error) {
+	return j.issueAccessWithActor(userID, "", tid, htid, authTime, acr, ttl)
+}
+
+// issueAccessWithActor is the one mint body: act is empty for every token shape
+// but an impersonated one, so the attribution claim cannot be set by accident
+// and the shapes cannot drift.
+func (j *JWTService) issueAccessWithActor(userID, act, tid, htid string, authTime int64, acr string, ttl time.Duration) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
 	}
@@ -467,6 +532,7 @@ func (j *JWTService) issueAccess(userID, tid, htid string, authTime int64, acr s
 		Purpose:      purposeAccess,
 		TenantID:     tid,
 		HomeTenantID: htid,
+		ActorID:      act,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
@@ -684,13 +750,45 @@ func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	if claims.HomeTenantID != "" && (claims.TenantID == "" || claims.HomeTenantID == claims.TenantID) {
 		return nil, invalidToken(errBadHomeTenant)
 	}
+	// An act is minted only beside an htid (the human's home) and a different
+	// sub (the impersonated user). A token that says otherwise was not minted
+	// here, and its act would be recorded as the actor — blaming a human who
+	// was never behind it, or the human themselves.
+	if claims.ActorID != "" && (claims.HomeTenantID == "" || claims.ActorID == claims.Subject) {
+		return nil, invalidToken(errBadImpersonator)
+	}
 	return claims, nil
 }
 
 // Entered reports whether the token is an entered one: minted by
 // IssueAccessEntered for a subject who is acting outside their home
 // tenant.
-func (c *AccessClaims) Entered() bool { return c.HomeTenantID != "" }
+//
+// An IMPERSONATED token is deliberately not entered, although it carries an
+// htid like an entered one. "Entered" means the subject is the human wearing
+// their own identity in someone else's tenant, which is the shape every gate
+// that opts into guests expects; an impersonated token must be refused there
+// and accepted only where a route opts into impersonation. Reporting both as
+// entered would make that opt-in meaningless.
+func (c *AccessClaims) Entered() bool { return c.HomeTenantID != "" && c.ActorID == "" }
+
+// Impersonated reports whether the token is an impersonated one: minted by
+// IssueAccessImpersonated, where Subject is the user being impersonated and
+// ActorID is the human behind it.
+func (c *AccessClaims) Impersonated() bool { return c.ActorID != "" }
+
+// ActorUserID returns the user id an AUDIT ROW should name: the human behind an
+// impersonated token, and the subject otherwise.
+//
+// It is the one place that decision is made. Attribution is not something each
+// emitter should re-derive from Subject, because the one that forgets writes a
+// row blaming the impersonated user — a wrong record that looks complete.
+func (c *AccessClaims) ActorUserID() string {
+	if c.ActorID != "" {
+		return c.ActorID
+	}
+	return c.Subject
+}
 
 // AccessTTL returns the lifetime of the access tokens this service
 // mints.

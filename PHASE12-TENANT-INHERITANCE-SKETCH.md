@@ -66,6 +66,7 @@ none of them grants a permission — D1's bindings still decide that.
 | SAML is the same shape, separately | `saml/manager.go:385-400`, `465-` |
 | Home-realm discovery is exact and believes only verified claims | `tenant/domain.go:130-152` |
 | No boot guard asserts a tenant-scoped provider store, and one comment says otherwise | `oidc/store.go:71-73` vs `oidc/manager.go:359-361` |
+| ADR-0001 already rejected resolving `ParentID` in core, and named its precondition | `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md:262-265` — "Butuh amend sketch Phase 7 dulu". §3.1 is that amendment |
 
 Two consequences worth naming up front:
 

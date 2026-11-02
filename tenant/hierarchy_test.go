@@ -145,7 +145,9 @@ func TestAncestors_UnknownStartIsAnError(t *testing.T) {
 	}
 }
 
-// A parent that does not resolve is corrupt data, not a root.
+// A parent that does not resolve is corrupt data, not a root — and it must be
+// distinguishable from a miss on the tenant that was ASKED about, because an
+// inheriting caller translates one and must not translate the other.
 func TestAncestors_DanglingParentIsAnError(t *testing.T) {
 	s := NewMemStore()
 	s.Seed(Descriptor{ID: "team", ParentID: "vanished", Status: StatusActive})
@@ -153,6 +155,24 @@ func TestAncestors_DanglingParentIsAnError(t *testing.T) {
 	_, err := Ancestors(context.Background(), s, New("team"))
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Ancestors with a dangling parent err = %v, want ErrNotFound", err)
+	}
+	if !errors.Is(err, ErrHierarchyDangling) {
+		t.Fatalf("err = %v, want ErrHierarchyDangling so a caller can tell corrupt parentage "+
+			"from a request about a tenant that does not exist", err)
+	}
+}
+
+// The counterpart: an unknown START id is a plain miss, and must NOT carry the
+// dangling sentinel, or a caller would refuse to inherit for a tenant that simply
+// does not exist.
+func TestAncestors_UnknownStartIsNotDangling(t *testing.T) {
+	s := NewMemStore()
+	_, err := Ancestors(context.Background(), s, New("ghost"))
+	if errors.Is(err, ErrHierarchyDangling) {
+		t.Fatalf("err = %v; an unknown tenant is not corrupt parentage", err)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
 

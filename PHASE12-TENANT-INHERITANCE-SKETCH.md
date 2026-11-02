@@ -142,17 +142,24 @@ Decisions inside it, each of which a test pins:
   **unreachable from this walk**: an empty `ParentID` ends the chain before any
   conversion. A test pins it, because the way this breaks later is a refactor that
   converts first and checks afterwards, putting `Single` in an ancestor list.
-- **A parent id that does not resolve is an ERROR**, not a silent root
-  (`ErrNotFound`, wrapped). A dangling pointer is corrupt data; treating it as a
-  root would quietly change who inherits what.
+- **A parent id that does not resolve is an ERROR**, not a silent root. It is
+  `ErrHierarchyDangling`, and it is deliberately **not** the same value as a miss
+  on the start id even though both satisfy `ErrNotFound`. The next bullet is why.
+  A dangling pointer is corrupt data; treating it as a root would quietly change
+  who inherits what.
 - **`ErrNotFound` for the starting id is an error**, like any other miss — an
   unknown tenant has no ancestors, and saying so is not the same as saying "it
   exists with none". The one consumer that must not see an error is the registry
-  (§4.2), and it translates this one sentinel rather than the walk guessing on its
-  behalf.
+  (§4.2), and it translates this one case rather than the walk guessing on its
+  behalf. **That is exactly why the two misses need separate values:** a caller
+  that translated "any `ErrNotFound`" would also swallow `ErrHierarchyDangling`
+  and hide corrupt parentage behind "nothing to inherit" — the failure the
+  sentinels exist to prevent. The rule for the translator is therefore ordered:
+  `ErrHierarchyDangling` first (propagate), then a plain `ErrNotFound` on the
+  start id (nothing to inherit).
 - **A cycle is an error** (`ErrHierarchyCycle`), not a hang; a chain longer than
-  `maxHierarchyDepth` (32) is `ErrHierarchyDepth`. Both are new sentinels in
-  `tenant`, next to `ErrNotFound`. The number bounds corrupt or adversarial data
+  `maxHierarchyDepth` (32) is `ErrHierarchyDepth`. With `ErrHierarchyDangling`
+  above, that is three new sentinels in `tenant`, next to `ErrNotFound`. The number bounds corrupt or adversarial data
   rather than describing a product limit: real hierarchies are three deep, and a
   deployment needing more than 32 has a data-modelling problem whose symptom should
   be a named error rather than a slow request.
@@ -316,9 +323,12 @@ Two behavioural notes:
   one registry and make the flow's provider selection ambiguous.
 - **An unknown tenant stays `(nil, nil)`.** Today `GetRegistry` documents that a
   tenant with no providers returns a nil registry and no error
-  (`oidc/manager.go:364`). The walk must not turn that into an error: `ErrNotFound`
-  from `Ancestors` means "nothing to inherit", and the outcome is identical — no
-  registry. Any *other* error propagates. Deny and miss stay indistinguishable.
+  (`oidc/manager.go:364`). The walk must not turn that into an error: a plain
+  `ErrNotFound` on the tenant that was asked about means "nothing to inherit", and
+  the outcome is identical — no registry. Deny and miss stay indistinguishable.
+  **Anything else propagates, and `ErrHierarchyDangling` is checked first**, even
+  though it satisfies `ErrNotFound` too: corrupt parentage is a data fault, and
+  translating it would hide it behind an empty registry.
 - **The nil result is still CACHED, with a fresh timestamp, whether it came from
   having no providers or from having nothing to inherit.** This is the existing
   invariant (`oidc/manager.go:464-473`) and inheritance makes it load-bearing for
@@ -540,7 +550,8 @@ to compile before it is counted.
 | `tenant.Single` → empty, store never called | walk for the single tenant |
 | a `ParentID` of `""` mid-chain stops the walk and never yields `Single` | convert before checking emptiness |
 | every returned id passes `Valid()` | return raw strings through a conversion that can produce unset |
-| dangling parent → error | return the chain so far instead of failing |
+| dangling parent → `ErrHierarchyDangling`, which also satisfies `ErrNotFound` | return the chain so far instead of failing |
+| an unknown start id is NOT dangling | wrap the start miss in `ErrHierarchyDangling` too |
 | cycle → `ErrHierarchyCycle` | drop the visited set |
 | depth > 32 → `ErrHierarchyDepth` | drop the bound |
 | store error propagates | return nil, nil on any error |
@@ -568,6 +579,7 @@ to compile before it is counted.
 | a policy error never reaches a grandparent | continue the walk after an error |
 | switch off, no ancestors → `(nil, nil)` | return an error |
 | unknown tenant → `(nil, nil)`, not an error | propagate `ErrNotFound` |
+| corrupt parentage → the error propagates, NOT `(nil, nil)` | translate any `ErrNotFound` |
 | the child's redirect URL is used, not the parent's | build with the parent's id |
 | SAML: the child's SP metadata URL and ACS URL are used | build with the parent's id |
 | the registry is cached under the child's key | store it under the parent's |
@@ -618,7 +630,7 @@ field.
 ## 9. Slices
 
 - **12a — the primitive** (`tenant/hierarchy.go`: `Ancestors`, `Inheritance`, the
-  two sentinels), the `oidc/manager.go:359-361` doc correction, and the four
+  three sentinels), the `oidc/manager.go:359-361` doc correction, and the four
   statements of the Phase 7 invariant that this amends (§3.1). Those ship in the
   same commit: the comment and the code that contradicts it must not coexist.
 - **12b — entitlements** (`Union` + `InheritingEntitlements`). No engine touched,

@@ -323,8 +323,9 @@ no home tenant. Backfill that column before the upgrade.
   one place in tamper that reads `Descriptor.ParentID`, so it amends the Phase 7
   invariant that said nothing does (ADR-0001 §5.A is narrowed, not overturned:
   it still stands for authorization). Nearest-first, excluding the tenant itself;
-  `ErrHierarchyCycle` and `ErrHierarchyDepth` for corrupt data; an unset `ID` and
-  `tenant.Single` return nothing *without reading the store*. Also
+  `ErrHierarchyCycle`, `ErrHierarchyDepth` and `ErrHierarchyDangling` for corrupt
+  data; an unset `ID` and `tenant.Single` return nothing *without reading the
+  store*. Also
   `tenant.Inheritance`, the per-group switch an application implements per axis.
   Nothing consumes either yet — the three inheritance axes land in later slices —
   and no behaviour changes: no authorization scope is derived from parentage.

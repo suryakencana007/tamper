@@ -26,6 +26,18 @@ var (
 	// going" — differ in who inherits what. Deny.
 	ErrHierarchyCycle = errors.New("tenant: hierarchy cycle")
 
+	// ErrHierarchyDangling — an ancestor id does not resolve. Separate from
+	// ErrNotFound, which every case here also satisfies, because the two mean
+	// opposite things to a caller: a missing START id is a request about a
+	// tenant that does not exist, while a missing ANCESTOR is corrupt
+	// parentage that someone must fix.
+	//
+	// A caller that inherits must translate the first and not the second
+	// (PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2): swallowing both would hide a
+	// data fault behind "nothing to inherit", which is the opposite of what
+	// these sentinels are for.
+	ErrHierarchyDangling = errors.New("tenant: hierarchy parent does not resolve")
+
 	// ErrHierarchyDepth — the chain is longer than maxHierarchyDepth.
 	//
 	// The bound is against corrupt or adversarial data, not a product limit.
@@ -79,9 +91,12 @@ type Inheritance func(ctx context.Context, id ID) (bool, error)
 // one of them is worth an operator's attention.
 //
 // The other failures fail closed too. A parent id that does not resolve is an
-// error (matching ErrNotFound, wrapped) rather than a silent root, because a
-// dangling pointer is corrupt data and treating it as a root would quietly
-// change who inherits what. A cycle is ErrHierarchyCycle and an over-long chain
+// error rather than a silent root, because a dangling pointer is corrupt data and
+// treating it as a root would quietly change who inherits what. That error is
+// ErrHierarchyDangling — deliberately NOT the same value as a miss on the start
+// id, even though both satisfy ErrNotFound. They are different facts to a caller
+// that inherits: an unknown tenant gets nothing, corrupt parentage must not be
+// mistaken for it. A cycle is ErrHierarchyCycle and an over-long chain
 // is ErrHierarchyDepth. Those sentinels are the operational face of this rule:
 // fail-closed means a tenant with corrupt parentage has its gated requests
 // denied, which looks like an outage rather than a data fault, so callers must
@@ -129,7 +144,8 @@ func Ancestors(ctx context.Context, s Store, id ID) ([]ID, error) {
 
 		desc, err = s.ByID(ctx, pid.String())
 		if err != nil {
-			return nil, fmt.Errorf("tenant: ancestors of %q: %w", id.String(), err)
+			return nil, fmt.Errorf("%w: %q (ancestor of %q): %w",
+				ErrHierarchyDangling, pid.String(), id.String(), err)
 		}
 	}
 }

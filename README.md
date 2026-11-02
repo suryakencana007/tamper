@@ -9,11 +9,12 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.7.0 — pooled tenancy, finished.** One process, N tenants, deny by
-> default. v0.7.0 completes what v0.4.0 began: the compatibility twins are gone
-> (TD-28), `authz` takes the tenant (TD-03), and the audit log is
-> `canonical_version=4` only — **an audit DB written by an earlier version cannot
-> be opened.**
+> **Status: v0.7.0 — pooled tenancy.** One process, N tenants, deny by default.
+> v0.7.0 closes the upgrade v0.4.0 began: the compatibility twins are gone (TD-28),
+> `authz` takes the tenant (TD-03), and the audit log is `canonical_version=4` only
+> — **an audit DB written by an earlier version cannot be opened.** The one part
+> of tenancy still open is TD-04's IdP and domain inheritance; plan inheritance
+> shipped here, and the other two axes follow in 0.8.0.
 >
 > Upgrading? [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md) is the ordered checklist.
 > Coming from v0.2.x, step through **v0.3.0** (drop-in) and
@@ -33,11 +34,11 @@ go get github.com/suryakencana007/tamper@v0.7.0
 | `crypto` | JWT issue/verify, bcrypt passwords, refresh-token hashing, TOTP, and the KEK keyset + secretbox envelope that seals at-rest secrets |
 | `audit` | tamper-evident hash-chain logging (per-row canonical-version dispatch, boot-time verify, per-tenant export, GDPR-style commitment redaction) over an internal SQLite persistence layer |
 | `authz` | the `Authorizer` PDP (`Check` + reverse queries) over two interchangeable engines — the rank `RBAC` and the set-based `PermissionSet` — plus a converter that makes them decide identically |
-| `tenant` | the tenancy vocabulary: `tenant.ID` (zero value denies), `Descriptor` + `Store`/`Resolver` ports, home-realm domain discovery, per-tenant entitlements |
+| `tenant` | the tenancy vocabulary: `tenant.ID` (zero value denies), `Descriptor` + `Store`/`Resolver` ports, home-realm domain discovery, per-tenant entitlements, the parentage walk (`Ancestors`) and plan inheritance (`InheritingEntitlements`) |
 | `identity` | credentials + session core (register / login / refresh / logout, TOTP enrollment, multi-IdP linking) behind one `identity.Store` port |
 | `oidc` / `saml` | OIDC relying-party + SAML service-provider substrates and store-backed provider managers with KEK-sealed secrets |
 | `scim` | SCIM 2.0 substrate — filter engine, RFC 7644 PATCH applier, group-cycle detection — over app-supplied ports |
-| `espresso` | the first-class transport adapter: mountable auth / OIDC / SAML / SCIM route surfaces + `RequireAuth` / `RequireServiceAccount` / `RequireDecision` / `RequireFreshAuth` / `PinTenant` / `RequireTenant` middleware |
+| `espresso` | the first-class transport adapter: mountable auth / OIDC / SAML / SCIM route surfaces + `RequireAuth` / `RequireAuthWS` / `RequireServiceAccount` / `RequireDecision` / `RequireFreshAuth` / `RequireFreshAuthWithAudit` / `PinTenant` / `RequireTenant` middleware, the plan gate (`RequireEntitlement`), the lifecycle gate (`RequireActiveTenant`), and the tenant gates' opt-in forms (`RequireTenantAllowEntered`, `RequireTenantAllowImpersonated`, `RequireTenantAllowEnteredOrImpersonated`) |
 
 The framework roadmap, extraction playbook, and design rationale live in
 [`TAMPER-DESIGN.md`](./TAMPER-DESIGN.md).

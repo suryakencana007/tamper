@@ -1,11 +1,10 @@
 # Migrating to tamper v0.7.0
 
-> **Draft.** The version number is not cut yet; if the release becomes v0.8.0,
-> rename this file. Everything below is taken from the `[Unreleased]` section
+> **v0.7.0, cut 2026-11-02.** Everything below is taken from the `0.7.0` section
 > of `CHANGELOG.md`, which remains the authoritative list — this document only
 > puts it in upgrade order.
 
-This release finishes two jobs the previous one started, and both break code:
+This release finishes the pooled-tenancy work. Three things break code:
 
 1. **TD-28 — no compatibility code.** Every package had each API twice, once
    with a tenant and once without, so that pre-tenancy callers kept working.
@@ -15,10 +14,16 @@ This release finishes two jobs the previous one started, and both break code:
 2. **TD-03 — the tenant reaches `authz`.** `authz` was the last package that
    did not know about tenants. Every port now takes the scope, `Subject` and
    `Binding` carry a tenant, and an unset scope is an error.
+3. **The audit log is `canonical_version=4` only** (#46). An audit DB written by
+   an earlier version cannot be opened, and there is no workaround: archive it and
+   start a new file. §2a.
 
-Plus one additive feature: **a platform admin can enter another tenant**
-(Phase 8, TD-01/TD-02). It is opt-in; a deployment that never calls
-`EnterTenant` is unchanged by it.
+Plus four additive features, none of which does anything unless you wire it:
+**entering another tenant** (Phase 8, TD-01/TD-02), the **tenant lifecycle write
+port** (TD-05), **impersonation** (TD-07), and **plan inheritance** (Phase 12).
+The last is partial in this release — `tenant.Ancestors` and
+`tenant.InheritingEntitlements` ship here, and the IdP and domain axes land in
+0.8.0. §4.
 
 **Read §1 first.** Almost every compile error below is the compiler asking you
 the same question — *which tenant is this?* — and answering it once, up front,

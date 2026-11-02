@@ -9,17 +9,21 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.4.0 — pooled multi-tenancy.** One process, N tenants, deny by
-> default. v0.4.0 is Phase 7's single deliberate breaking release: the tenant
-> became a type (`tenant.ID`) and entered the base ports. Coming from v0.2.x?
-> Step through **v0.3.0** (drop-in, zero code changes) and then follow
-> [`MIGRATION-v0.4.md`](./MIGRATION-v0.4.md) — for a single-tenant deployment
-> the whole upgrade is mechanical.
+> **Status: v0.7.0 — pooled tenancy, finished.** One process, N tenants, deny by
+> default. v0.7.0 completes what v0.4.0 began: the compatibility twins are gone
+> (TD-28), `authz` takes the tenant (TD-03), and the audit log is
+> `canonical_version=4` only — **an audit DB written by an earlier version cannot
+> be opened.**
+>
+> Upgrading? [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md) is the ordered checklist.
+> Coming from v0.2.x, step through **v0.3.0** (drop-in) and
+> [`MIGRATION-v0.4.md`](./MIGRATION-v0.4.md) first; v0.5.0 changed one thing worth
+> reading (`VerifyAccess` now denies an unset tenant id) and v0.6.0 is drop-in.
 
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.4.0
+go get github.com/suryakencana007/tamper@v0.7.0
 ```
 
 ## What's shipped

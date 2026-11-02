@@ -165,6 +165,11 @@ var (
 	// membership store has no cross-tenant path, and saying "not found"
 	// instead would look like a missing membership row.
 	ErrNoMembershipStore = errors.New("identity: core has no membership store")
+	// ErrNoImpersonationPolicy — Impersonate was invoked on a Core built without
+	// WithImpersonation. A wiring error, said plainly: impersonation is opt-in,
+	// and a Core that was never configured for it must not be able to mint an
+	// impersonated token even if a caller asks.
+	ErrNoImpersonationPolicy = errors.New("identity: core has no impersonation policy")
 
 	// ErrAuthContextRequired — a mint was asked for without saying how
 	// and when the user authenticated: a non-positive auth_time, an

@@ -37,9 +37,13 @@ type Core struct {
 	throttling   Throttling      // zero value = no rate limiting; see WithThrottling
 	invitations  InvitationStore // nil = invitation verbs error (opt-in, 7j-1)
 	memberships  MembershipStore // nil = EnterTenant errors (opt-in, Phase 8)
-	enterTTL     time.Duration   // 0 = entered tokens live as long as ordinary ones
-	now          func() time.Time
-	newID        func() string
+	// impersonation is the policy Impersonate asks; nil = impersonation is off
+	// (opt-in, Phase 11). impersonationTTL is the lifetime of the token it mints.
+	impersonation    ImpersonationPolicy
+	impersonationTTL time.Duration
+	enterTTL         time.Duration // 0 = entered tokens live as long as ordinary ones
+	now              func() time.Time
+	newID            func() string
 }
 
 // Option configures a Core.

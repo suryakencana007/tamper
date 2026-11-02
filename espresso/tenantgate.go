@@ -74,8 +74,22 @@ func TenantFromContext(ctx context.Context) (tenant.ID, bool) {
 //   - the token's tid is exactly the routed tenant; absent, empty and
 //     mismatched all fail the one equality;
 //   - an entered token only where guests were invited.
-func tokenFitsTenant(claims *crypto.AccessClaims, routed string, guests bool) bool {
-	return claims != nil && claims.TenantID == routed && (guests || !claims.Entered())
+func tokenFitsTenant(claims *crypto.AccessClaims, routed string, guests, impersonators bool) bool {
+	if claims == nil || claims.TenantID != routed {
+		return false
+	}
+	// Which shape is this, and does the route invite it? An impersonated token
+	// is neither entered nor ordinary: it is the one shape a route has to opt
+	// into separately, because acting as a customer's user is a different power
+	// from acting as yourself inside their tenant.
+	switch {
+	case claims.Impersonated():
+		return impersonators
+	case claims.Entered():
+		return guests
+	default:
+		return true
+	}
 }
 
 // RequireTenant returns middleware that pins the request to the tenant
@@ -123,7 +137,7 @@ func tokenFitsTenant(claims *crypto.AccessClaims, routed string, guests bool) bo
 // tenancy misconfiguration fails at construction, never as a per-request
 // denial that looks like ordinary traffic (§6.4).
 func RequireTenant(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler {
-	return requireTenant(resolve, false)
+	return requireTenant(resolve, false, false)
 }
 
 // RequireTenantAllowEntered is [RequireTenant] for a route that platform
@@ -143,12 +157,42 @@ func RequireTenant(resolve func(*http.Request) (tenant.ID, bool)) func(http.Hand
 //     gets only what this tenant granted them. A handler that decides
 //     by itself reads [EnteredFromContext].
 func RequireTenantAllowEntered(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler {
-	return requireTenant(resolve, true)
+	return requireTenant(resolve, true, false)
+}
+
+// RequireTenantAllowImpersonated is [RequireTenant] for a route that accepts a
+// token minted by identity.Core.Impersonate: the request IS the customer's user,
+// and the audit row names the human behind it.
+//
+// It does NOT also accept an entered token, and RequireTenantAllowEntered does
+// not accept an impersonated one. The two powers are separate on purpose — acting
+// as yourself inside a tenant is not acting as one of its users — so a route that
+// wants both mounts both, innermost first, and each contributes its own refusal.
+func RequireTenantAllowImpersonated(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler {
+	return requireTenant(resolve, false, true)
 }
 
 // EnteredFromContext reports whether the request was made with an
 // entered token, and if so the subject's home tenant. False behind
 // [RequireTenant], which refuses such tokens.
+// ImpersonatedFromContext reports the impersonation behind the request:
+// actorHome is the human's home tenant (the token's htid) and actorID the human's
+// user id (its act). The impersonated user is GetUserID, and their home tenant is
+// the routed one.
+//
+// False behind RequireTenant and RequireTenantAllowEntered, which refuse such a
+// token; true only behind a gate mounted with AllowImpersonated.
+func ImpersonatedFromContext(ctx context.Context) (actorHome tenant.ID, actorID string, ok bool) {
+	claims, found := AccessClaimsFromContext(ctx)
+	if !found || claims == nil || !claims.Impersonated() {
+		return tenant.ID{}, "", false
+	}
+	return tenant.New(claims.HomeTenantID), claims.ActorID, true
+}
+
+// EnteredFromContext reports whether the request was made with an entered token,
+// and if so the subject's home tenant. False for an impersonated token, which
+// carries an htid of its own but is a different shape.
 func EnteredFromContext(ctx context.Context) (home tenant.ID, entered bool) {
 	claims, ok := AccessClaimsFromContext(ctx)
 	if !ok || claims == nil || !claims.Entered() {
@@ -173,7 +217,7 @@ func FixedRequestTenant(id tenant.ID) func(*http.Request) (tenant.ID, bool) {
 	return func(*http.Request) (tenant.ID, bool) { return id, true }
 }
 
-func requireTenant(resolve func(*http.Request) (tenant.ID, bool), allowEntered bool) func(http.Handler) http.Handler {
+func requireTenant(resolve func(*http.Request) (tenant.ID, bool), allowEntered, allowImpersonated bool) func(http.Handler) http.Handler {
 	if resolve == nil {
 		panic("tamper/espresso: RequireTenant requires a resolve function — " +
 			"a nil resolver would be a tenant gate that pins nothing")
@@ -187,7 +231,7 @@ func requireTenant(resolve func(*http.Request) (tenant.ID, bool), allowEntered b
 			// is good somewhere else.
 			claims, _ := AccessClaimsFromContext(r.Context())
 			routed, ok := resolve(r)
-			if !ok || !routed.Valid() || !tokenFitsTenant(claims, routed.String(), allowEntered) {
+			if !ok || !routed.Valid() || !tokenFitsTenant(claims, routed.String(), allowEntered, allowImpersonated) {
 				writeUnauthenticated(w, "invalid token")
 				return
 			}

@@ -44,6 +44,18 @@ type DecisionGate struct {
 	// who is let through is asked about with their home tenant on the
 	// subject, so they get only what this tenant granted them.
 	AllowEntered bool
+	// AllowImpersonated does the same for a token minted by
+	// identity.Core.Impersonate. It is a separate flag because it is a
+	// separate power: an entered admin is still themselves, while an
+	// impersonated token makes the request BECOME the customer's user.
+	// False, the default, refuses an impersonated token with the 401 every
+	// other wrong-shape token gets.
+	//
+	// When it is set, the subject is built with the ROUTED tenant as its
+	// home, not the token's htid: the impersonated user is a user of the
+	// tenant being acted in, and authz matches subjects on their home
+	// tenant.
+	AllowImpersonated bool
 	// SubjectType is the app's subject taxonomy value (e.g. "user").
 	SubjectType string
 	// ResourceType is the app's resource taxonomy value. Also used in
@@ -149,7 +161,7 @@ func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 			}
 			claims, _ := AccessClaimsFromContext(r.Context())
 			scope, resolved := g.Tenant(r)
-			if !resolved || !scope.Valid() || !tokenFitsTenant(claims, scope.String(), g.AllowEntered) {
+			if !resolved || !scope.Valid() || !tokenFitsTenant(claims, scope.String(), g.AllowEntered, g.AllowImpersonated) {
 				writeUnauthenticated(w, "invalid token")
 				return
 			}

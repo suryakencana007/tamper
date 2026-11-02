@@ -2,7 +2,6 @@ package oidc
 
 import (
 	"context"
-	"errors"
 
 	"github.com/suryakencana007/tamper/tenant"
 )
@@ -48,61 +47,14 @@ func WithInheritance(s tenant.Store, allow tenant.Inheritance) ManagerOption {
 // ancestor walk under that lock would extend the critical section across a second
 // store, so every tenant's rebuild would wait behind one slow hierarchy read.
 //
-// Outcomes:
-//
-//	own records exist      those, always — a child with providers never consults
-//	                       an ancestor, and nothing is merged
-//	no ancestry configured today's empty result
-//	unknown tenant         empty, not an error: the registry's contract is (nil, nil)
-//	                       for a tenant with no providers, and "this tenant does not
-//	                       exist" has the same answer
-//	dangling parent        ErrHierarchyDangling, propagated: corrupt parentage is a
-//	                       data fault, and swallowing it would hide it behind an
-//	                       empty registry
-//	policy error           propagated, with the bool ignored both ways round
+// The policy rules are tenant.Inherited's, in one place; this function is the OIDC
+// half of the wiring.
 func (m *Manager) recordsFor(ctx context.Context, tenantID tenant.ID) ([]ProviderRecord, error) {
-	recs, err := m.listEnabled(ctx, tenantID)
-	if err != nil {
-		return nil, err
+	own := func(ctx context.Context, id tenant.ID) ([]ProviderRecord, error) {
+		return m.listEnabled(ctx, id)
 	}
-	if len(recs) > 0 || m.inherit == nil {
-		return recs, nil
+	if m.inherit == nil {
+		return own(ctx, tenantID)
 	}
-
-	chain, err := tenant.Ancestors(ctx, m.inherit.store, tenantID)
-	if err != nil {
-		if errors.Is(err, tenant.ErrHierarchyDangling) {
-			return nil, err
-		}
-		if errors.Is(err, tenant.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	for _, ancestor := range chain {
-		borrowed, err := m.listEnabled(ctx, ancestor)
-		if err != nil {
-			return nil, err
-		}
-		if len(borrowed) == 0 {
-			// Nothing to lend, so its switch is not asked: a silent middle layer
-			// must not block a decision made further up.
-			continue
-		}
-		allowed, err := m.inherit.allow(ctx, ancestor)
-		if err != nil {
-			// A settings-table-backed policy fails the day that table is
-			// unreachable. Reading (false, err) as a refusal would turn that
-			// outage into a silent deny, indistinguishable from a group that
-			// switched the feature off; reading (true, err) as permission is the
-			// obvious bug. Both are avoided by returning the error.
-			return nil, err
-		}
-		if !allowed {
-			return nil, nil
-		}
-		return borrowed, nil
-	}
-	return nil, nil
+	return tenant.Inherited(ctx, m.inherit.store, m.inherit.allow, tenantID, own)
 }

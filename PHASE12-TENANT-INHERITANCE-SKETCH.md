@@ -94,7 +94,18 @@ func Ancestors(ctx context.Context, s Store, id ID) ([]ID, error)
 
 // A group's switch for one axis. Absent policy = deny.
 type Inheritance func(ctx context.Context, id ID) (bool, error)
+
+// tenant/inherited.go — the policy rules, once, over the axis's own type.
+type InheritFunc[T any] func(ctx context.Context, id ID) ([]T, error)
+func Inherited[T any](ctx context.Context, s Store, allow Inheritance, id ID, own InheritFunc[T]) ([]T, error)
 ```
+
+`Inherited` was added in 12c's review, not in the original sketch, and the reason is
+worth recording: the OIDC and SAML managers each grew their own `recordsFor`, and the
+two came out **byte-identical except for comments** — which means the security rules
+below existed in two places, waiting to drift. They are one function now, and each
+manager supplies only its lookup and its record type. It is also why the helper is
+generic: a provider record and an entitlement record share no shape.
 
 An implementation must also deny on an unset `ID`. `Ancestors` never yields one,
 so that clause is defence in depth — but a policy is an interface the application
@@ -369,6 +380,12 @@ Two behavioural notes:
   nothing would re-run the whole walk on every request — a cheap request becoming
   a store-read amplifier. The emptiness must expire on the same TTL as a real
   registry, exactly as it does today.
+
+The walk's rules — whose switch is asked, where it stops, which errors propagate —
+are implemented once, in `tenant.Inherited` (§3), and both engines' `recordsFor` are
+a few lines of wiring. Their suites keep their own copies of a few rule tests, which
+is deliberate: those prove each manager passes its OWN lookup and switch into the
+shared rule, which the tenant tests cannot see.
 
 ### 4.2.1 The mechanics, verified against the code before writing any
 

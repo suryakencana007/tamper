@@ -20,6 +20,9 @@ All notable changes to tamper are recorded here. Versions follow
   IdP without opting in ends the walk rather than passing a grandparent's providers
   down. With inheritance wired, a provider change clears the registry cache instead
   of one key, so a group's edit reaches its inheritors on the next request.
+  `tenant.Inherited` is the shared primitive underneath both: the policy rules —
+  whose switch is asked, where the walk stops, which errors propagate — live in one
+  place over the axis's own record type.
 
 - **`tenant.InheritedDomainAuthority` — a claim under an ancestor's domain**
   (Phase 12 slice 12d, TD-04, decision D4). Given a tenant and a name, it reports

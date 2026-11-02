@@ -57,9 +57,12 @@ Proposals for review. Decision 3 is the one that needs a decision, not a review.
    | `htid` | the **impersonator's** home tenant | `ActorTenantID()` must keep naming the human's home, or the audit actor's tenant is wrong |
    | `act` | the impersonator's user id | who is responsible |
 
-   `htid` therefore means "the human's home" on an impersonated token, where its
-   Phase 8 doc says "the subject's home". That is a deliberate second reading, and
-   it is the reason for the next paragraph.
+   `htid` therefore reads as **"the human's home tenant"** — which is exactly what
+   it already is on every token Phase 8 mints, where the human and the subject are
+   the same person. No second meaning is introduced; Phase 8's doc comment gets a
+   one-clause amendment ("the subject's home" → "the human's home, which is the
+   subject's home unless the token is impersonated") so that one sentence covers
+   both token shapes.
 
    **`Entered()` must be false for an impersonated token.** Today it is
    `HomeTenantID != ""` (`crypto/jwt.go:693`), so including `htid` would make every
@@ -111,6 +114,14 @@ Proposals for review. Decision 3 is the one that needs a decision, not a review.
    `DecisionGate` refuse it exactly as they refuse an entered token unless the
    route opts in (`AllowImpersonated`). Every existing route stays closed to
    impersonation without a line being changed.
+
+   The guarantee is a gate's guarantee, and it is worth saying where it stops: a
+   route that mounts **only** `RequireAuth` accepts any valid access token, and an
+   impersonated one is no exception. That is already true of an entered token and
+   of every other token shape, so it is a property of such a route rather than
+   something this phase introduces — but a console route that trusts its subject
+   without a gate is exactly where an impersonated token would do the most good
+   and the most harm.
 
    When a route does opt in, the gate builds the subject with **`tid`** as its
    home tenant, not `htid`: the impersonated user is a user of the tenant being
@@ -204,6 +215,10 @@ type ImpersonationPolicy interface {
     MayImpersonate(ctx context.Context, actorID string, tenantID tenant.ID, targetUserID string) (bool, error)
 }
 
+// WithImpersonation enables Impersonate. A nil policy, or a non-positive ttl,
+// panics at construction; a ttl longer than the JWT service's own fails New —
+// the same rules WithEnterTenantTTL already applies, because it is the same kind
+// of window.
 func WithImpersonation(p ImpersonationPolicy, ttl time.Duration) Option
 func (c *Core) Impersonate(ctx context.Context, session *crypto.AccessClaims, targetUserID string) (Tokens, error)
 
@@ -226,6 +241,11 @@ audit.Action("impersonation.start")
 audit.Action("impersonation.end")
 // resource_type "user", resource_id = the impersonated user, tenant = the target tenant
 ```
+
+The token-fits-the-route rule stays in **one** place: `tokenFitsTenant` in
+`espresso/tenantgate.go` is what every tenant gate calls, so it grows a second
+flag (`allowImpersonated`) beside `guests` rather than a second copy of the
+comparison in a new middleware.
 
 **Shapes considered and rejected.**
 

@@ -172,6 +172,27 @@ func TestInheritedDomainAuthority_LongestMatchWithinOneAncestor(t *testing.T) {
 	}
 }
 
+// An unverified claim in the NEAREST ancestor does not stop the walk: the group's
+// verified proof is still the authority. This is the shape a real rollout has —
+// an org claiming its own subdomain before proving it, with the group's domain
+// already verified.
+func TestInheritedDomainAuthority_AnUnverifiedNearestClaimDoesNotBlockTheWalk(t *testing.T) {
+	store := &domainStore{claims: map[string][]DomainRecord{
+		"org":   {{TenantID: "org", Domain: "sdn.acme.edu", Verified: false}},
+		"group": {{TenantID: "group", Domain: "acme.edu", Verified: true, ProviderID: "okta"}},
+	}}
+	got, err := InheritedDomainAuthority(context.Background(), hierarchy(t), store, New("team"), "x.sdn.acme.edu")
+	if err != nil {
+		t.Fatalf("InheritedDomainAuthority: %v", err)
+	}
+	if got.AncestorID.String() != "group" || got.Domain != "acme.edu" {
+		t.Fatalf("authority = %+v, want the group's verified acme.edu", got)
+	}
+	if len(store.calls) != 2 {
+		t.Fatalf("the claim store was read %d times, want 2 (org, then group)", len(store.calls))
+	}
+}
+
 // A tenant with nothing above it has no inherited authority, and the domain store
 // is never consulted.
 func TestInheritedDomainAuthority_NoAncestorsNeverAsksForClaims(t *testing.T) {

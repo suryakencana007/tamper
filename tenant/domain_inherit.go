@@ -68,6 +68,17 @@ type DomainAuthority struct {
 // runs on an admin path where the operator is authenticated, but the answer still
 // should not tell one tenant which domains another has claimed.
 //
+// Two things it does NOT consult, and both are deliberate:
+//
+//   - The tenant's OWN claims. A name the tenant verified itself is
+//     [ResolveDomain]'s business, and that path already believes it; asking here
+//     would be a second answer to a question that has one.
+//   - A claim whose stored domain is not normalised. The DomainStore contract puts
+//     normalisation on the application, so an unnormalised row simply never
+//     matches — `ACME.EDU` is not a suffix of `sdn05.acme.edu`. That is the
+//     fail-closed reading, and the alternative (normalising the stored value here)
+//     is exactly the silent repair tenant/domain.go refuses to do.
+//
 // Walking is nearest-ancestor-first, and within one ancestor the LONGEST matching
 // domain wins. The second rule is not decoration: an ancestor may hold both
 // `acme.com` and `sub.acme.com`, both match `x.sub.acme.com`, and only one of them

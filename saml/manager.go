@@ -110,6 +110,11 @@ type Manager struct {
 	registries map[tenant.ID]*cachedRegistry
 	ttl        time.Duration
 
+	// inherit, when non-nil, lets a tenant with no enabled providers of its
+	// own serve the nearest ancestor's. Wired by WithInheritance; see
+	// inheritance.go.
+	inherit *inheritConfig
+
 	now func() time.Time
 }
 
@@ -389,21 +394,55 @@ func (m *Manager) GetRegistry(ctx context.Context, tenantID tenant.ID) (*Provide
 	if entry != nil && m.cacheFresh(entry.cachedAt) {
 		return entry.registry, nil
 	}
+	if m.inherit == nil {
+		// The unwired path, unchanged: the store read happens under the lock.
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if e := m.registries[tenantID]; e != nil && m.cacheFresh(e.cachedAt) {
+			return e.registry, nil
+		}
+		return m.rebuildLocked(ctx, tenantID)
+	}
+
+	// Wired path: the walk reads a second store, so it happens before the lock.
+	recs, err := m.recordsFor(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if e := m.registries[tenantID]; e != nil && m.cacheFresh(e.cachedAt) {
 		return e.registry, nil
 	}
-	return m.rebuildLocked(ctx, tenantID)
+	return m.buildAndStoreLocked(ctx, tenantID, recs)
 }
 
 // Reload is Reload for one tenant's key, touching no other
 // tenant's entry. Mirrors oidc.Manager.Reload.
+//
+// The entry is dropped BEFORE the rebuild in both paths, so a failed reload
+// leaves the tenant with nothing cached rather than with the provider the admin
+// just removed.
 func (m *Manager) Reload(ctx context.Context, tenantID tenant.ID) error {
+	if m.inherit == nil {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.registries, tenantID)
+		_, err := m.rebuildLocked(ctx, tenantID)
+		return err
+	}
+
+	m.mu.Lock()
+	delete(m.registries, tenantID)
+	m.mu.Unlock()
+
+	recs, err := m.recordsFor(ctx, tenantID)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.registries, tenantID)
-	_, err := m.rebuildLocked(ctx, tenantID)
+	_, err = m.buildAndStoreLocked(ctx, tenantID, recs)
 	return err
 }
 
@@ -467,6 +506,17 @@ func (m *Manager) rebuildLocked(ctx context.Context, tenantID tenant.ID) (*Provi
 	if err != nil {
 		return nil, err
 	}
+	return m.buildAndStoreLocked(ctx, tenantID, recs)
+}
+
+// buildAndStoreLocked builds from already-resolved records and stores the result
+// under tenantID. Caller MUST hold mu.Lock.
+//
+// Every per-tenant seam here — the SP metadata URL, the ACS URL the app supplied,
+// the replay ledger — is addressed with the tenant the ANSWER belongs to, which is
+// what makes inheritance safe: a borrowed provider's SP metadata is compiled for
+// the child, never for the group it came from.
+func (m *Manager) buildAndStoreLocked(ctx context.Context, tenantID tenant.ID, recs []ProviderRecord) (*ProviderRegistry, error) {
 	if len(recs) == 0 {
 		// Per-tenant nil sentinel, cached with a fresh timestamp so an
 		// empty tenant honours the TTL exactly as a populated one does.
@@ -592,8 +642,16 @@ func (m *Manager) invalidateCache() {
 // to and the application says so.
 func (m *Manager) InvalidateTenant(tenantID tenant.ID) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.inherit != nil {
+		// Same decision and reasoning as oidc.Manager.InvalidateTenant: a changed
+		// tenant's providers may be serving every tenant that inherits them, they
+		// cannot be enumerated without a Children port, and the transitive case
+		// defeats per-entry bookkeeping.
+		m.registries = make(map[tenant.ID]*cachedRegistry)
+		return
+	}
 	delete(m.registries, tenantID)
-	m.mu.Unlock()
 }
 
 // definitionFromRecord opens the sealed signing key + projects the

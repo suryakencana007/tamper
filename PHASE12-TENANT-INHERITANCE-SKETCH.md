@@ -384,12 +384,18 @@ paths. The shape 12c implements:
 ```go
 // called with NO lock held: the tenant's own enabled records, or the first
 // ancestor-with-providers that allows inheritance
-func (m *Manager) recordsFor(ctx, tenantID) ([]ProviderRecord, tenant.ID, error)
+func (m *Manager) recordsFor(ctx, tenantID) ([]ProviderRecord, error)
 
 // called with mu held: build from recs, store under tenantID. Today's
 // rebuildLocked minus its store read.
-func (m *Manager) buildAndStoreLocked(ctx, tenantID, recs, upstream) (*ProviderRegistry, error)
+func (m *Manager) buildAndStoreLocked(ctx, tenantID, recs) (*ProviderRegistry, error)
 ```
+
+`recordsFor` first returned the borrowing ancestor too, so a caller could record
+which group served a child. 12c dropped it: invalidation is the cache clear below,
+which needs no per-entry bookkeeping, and a field read only by tests is not worth
+carrying. `rebuildLocked` stays for the unwired path — the unwired path keeps its
+store read under the lock, promise and all.
 
 **That breaks one documented promise, and only for deployments that wire
 inheritance.** The manager promises that concurrent stampedes for the *same*
@@ -685,7 +691,7 @@ to compile before it is counted.
 | SAML: the child's SP metadata URL and ACS URL are used | build with the parent's id |
 | the registry is cached under the child's key | store it under the parent's |
 | an inherited-empty result is cached too (`(nil, nil)` expires on the TTL) | skip `storeLocked` on the walked path |
-| the walk does not run while `mu` is held: a blocked hierarchy store must not stall another tenant's fresh lookup | resolve inherited records inside `rebuildLocked` |
+| the walk does not run while `mu` is held: a blocked hierarchy store must not stall another tenant's lookup (fails by TIMEOUT, which is why it is written with a select) | move `recordsFor` back inside the lock |
 | an ancestor's provider change is visible to its inheritors on the next call | keep the one-key invalidation when inheritance is wired |
 | unwired: invalidation still deletes exactly one key | clear the cache unconditionally |
 | unwired: the stampede promise still holds (one store read per burst) | move the store read out of the lock on both paths |
@@ -714,8 +720,15 @@ to compile before it is counted.
 | domain-store error, `ErrHierarchyDangling` → propagate | read either as "no authority" |
 | unset `ID` / `Single` never touch either store | the walk's own guard — 12a's mutant, since nothing in 12d can break it |
 
-**`provider_test.go`** — one test per boot guard, asserting the message names the
-field.
+**`provider_inheritance_test.go`** — one test per boot guard (four), each asserting
+the message NAMES the field, plus the fully-wired form booting. What the wiring
+does is proven in the engine suites, where a tenant-scoped provider store can be
+injected; `tamper.New`'s job is validate-and-pass-through, and the signatures
+compile-check the pass-through.
+
+**SAML's differs in one place**, and that is why it has its own suite: the SP
+metadata URL is the second per-tenant seam, so the child's-name proof is
+`Config.MetadataURL`, not the redirect URL.
 
 ---
 

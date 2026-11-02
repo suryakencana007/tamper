@@ -114,13 +114,24 @@ func InheritedDomainAuthority(ctx context.Context, s Store, domains DomainStore,
 		}
 		var best DomainRecord
 		for _, claim := range claims {
-			if !claim.Verified || !IsProperSubdomain(domain, claim.Domain) {
+			// A public domain can never be an authority, however it came to be
+			// marked verified. Checking the INPUT for it is not enough: `x.gmail.com`
+			// is not itself a public domain, so a stored (and mistakenly verified)
+			// `gmail.com` would otherwise confer authority over the whole of Gmail.
+			// Skipped rather than reported, so a child's admin learns nothing about
+			// which public domain another tenant claimed.
+			if !claim.Verified || IsPublicEmailDomain(claim.Domain) || !IsProperSubdomain(domain, claim.Domain) {
 				continue
 			}
 			// Longest parent wins, so the answer does not depend on the store's
 			// row order. Strictly longer: two identical domains would be a
 			// duplicate row, and either answer is the same authority anyway.
 			if len(claim.Domain) > len(best.Domain) {
+				// BoundProviderID rather than the raw field: with the Verified
+				// filter above, the two are equal today, so this is defence in
+				// depth rather than a behaviour — it is what keeps the unproven
+				// binding out if that filter is ever widened, and it is the
+				// documented way to ask (DomainRecord.BoundProviderID).
 				best = claim
 			}
 		}

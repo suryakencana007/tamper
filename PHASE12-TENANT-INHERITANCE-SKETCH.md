@@ -644,10 +644,11 @@ to compile before it is counted.
 |---|---|
 | proper subdomain of a verified ancestor → a `DomainAuthority` naming that ancestor | return the ancestor's `DomainRecord` instead (now compile-impossible: the type has no tenant field) |
 | `evilacme.com` vs `acme.com` → not found | drop the `"."` in `IsProperSubdomain` |
-| the parent's own domain is not inheritable | allow equality |
+| the parent's own domain is not inheritable | **unobservable mutant**: dropping `child != parent` changes nothing, because the dot rule already excludes equality (`"acme.edu"` does not end with `".acme.edu"`). Kept as intent, and annotated as such |
 | an empty parent matches nothing | let `HasSuffix(child, "."+parent)` run with `parent == ""` |
 | unverified ancestor claim → not found | ignore `Verified` |
-| public email domain → not found | drop the public check |
+| public email domain → not found | drop the input check — a fast path; the walk refuses it anyway |
+| a VERIFIED public ancestor claim is not authority, and the walk goes on to a real claim | drop the claim-side check → `x.gmail.com` inherits from a stored `gmail.com` |
 | unnormalised input → `ErrDomainNotNormalised` | normalise silently |
 | no ancestor claims the name → not found | return the nearest ancestor regardless |
 | nearest ancestor's proof wins | take the farthest |
@@ -657,7 +658,7 @@ to compile before it is counted.
 | a tenant with no ancestors never consults the claim store | list claims before walking |
 | `ProviderID` comes from `BoundProviderID()` | return the raw record field |
 | domain-store error, `ErrHierarchyDangling` → propagate | read either as "no authority" |
-| unset `ID` / `Single` never touch either store | walk |
+| unset `ID` / `Single` never touch either store | the walk's own guard — 12a's mutant, since nothing in 12d can break it |
 
 **`provider_test.go`** — one test per boot guard, asserting the message names the
 field.

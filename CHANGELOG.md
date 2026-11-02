@@ -19,7 +19,8 @@ All notable changes to tamper are recorded here. Versions follow
   application still records the child's claim row and writes the audit entry.
   `tenant.IsProperSubdomain` is the check, exported because the dot in it is the
   whole defence against `evilacme.com` being read as a subdomain of `acme.com`.
-  Inheritance for the IdP axis follows; the next release is 0.8.0.
+  A **public** email domain is never an authority, on the input or on an ancestor's
+  stored claim. Inheritance for the IdP axis follows; the next release is 0.8.0.
 
 ---
 

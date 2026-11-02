@@ -56,6 +56,9 @@ func TestIsProperSubdomain(t *testing.T) {
 		{"evilacme.edu", "acme.edu", false, "no dot boundary — the takeover this exists to stop"},
 		{"notacme.edu", "acme.edu", false, "same"},
 		{"acme.edu.evil.test", "acme.edu", false, "the victim's name as a label, not the suffix"},
+		// The shape that actually reaches the guard: without it, "."+"" is ".", and a
+		// trailing-dot child would "be a subdomain" of nothing at all.
+		{"acme.edu.", "", false, "an empty parent matches nothing"},
 		{"sdn05.acme.edu", "", false, "an empty parent matches nothing"},
 		{"", "acme.edu", false, "an empty child is not a subdomain"},
 		{"ACME.EDU", "acme.edu", false, "case matters: normalisation is the caller's job"},
@@ -170,6 +173,39 @@ func TestInheritedDomainAuthority_LongestMatchWithinOneAncestor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A verified claim on a PUBLIC domain is not authority, and the input check cannot
+// catch this: `x.gmail.com` is not itself a public domain. Without the check on the
+// stored claim, a mistaken verification of gmail.com would hand out authority over
+// every name under it — and the login path would then believe the row the
+// application wrote from it.
+func TestInheritedDomainAuthority_PublicAncestorClaimIsNotAuthority(t *testing.T) {
+	t.Run("and the walk goes on to a real claim", func(t *testing.T) {
+		store := &domainStore{claims: map[string][]DomainRecord{
+			"group": {
+				{TenantID: "group", Domain: "gmail.com", Verified: true},
+				{TenantID: "group", Domain: "acme.edu", Verified: true, ProviderID: "okta"},
+			},
+		}}
+		got, err := InheritedDomainAuthority(context.Background(), hierarchy(t), store, New("team"), "x.acme.edu")
+		if err != nil {
+			t.Fatalf("InheritedDomainAuthority: %v", err)
+		}
+		if got.Domain != "acme.edu" {
+			t.Fatalf("Domain = %q, want acme.edu — the public claim is skipped, not fatal", got.Domain)
+		}
+	})
+
+	t.Run("and a name under it gets nothing", func(t *testing.T) {
+		store := &domainStore{claims: map[string][]DomainRecord{
+			"group": {{TenantID: "group", Domain: "gmail.com", Verified: true}},
+		}}
+		_, err := InheritedDomainAuthority(context.Background(), hierarchy(t), store, New("team"), "x.gmail.com")
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound: a public domain is never an authority", err)
+		}
+	})
 }
 
 // An unverified claim in the NEAREST ancestor does not stop the walk: the group's

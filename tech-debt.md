@@ -37,6 +37,7 @@ TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 | TD-26 | #54 | Merged. |
 | TD-06 | #82 | Merged. Opt-in `RequireActiveTenant`; deny is a miss. |
 | TD-05 | #85 | Merged. Opt-in `tenant.AdminStore`; one `Suspend`, status first. |
+| TD-07 | #88 | Merged. Opt-in impersonation; the audit row names the human. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, only
@@ -67,7 +68,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-04 | No tenant hierarchy | gap | P1 | Tamper + application |
 | TD-05 | No tenant lifecycle | fixed by #85 | — | — |
 | TD-06 | Tenant suspension is not enforced on authenticated requests | fixed by #82 | — | — |
-| TD-07 | No impersonation | gap | P1 | Tamper |
+| TD-07 | No impersonation | fixed by #88 | — | — |
 | TD-08 | `Auditor` and `RequireAuth` do not set the tenant | sharp edge | P1 | Tamper |
 | TD-09 | `tamper.New` cannot turn on audit v4 | resolved by #46 | — | — |
 | TD-10 | The TOTP path mints a token without a tenant | sharp edge | P1 | Tamper |
@@ -422,6 +423,42 @@ For ISO 27001 A.8.15, auditors usually ask for exactly this difference.
 `Actor.ImpersonatorID`, and special audit actions when impersonation starts and
 ends. `Actor` is part of the canonical payload, so this change touches
 `canonical_version` and needs a sketch amendment.
+
+**Fix (2026-11-01, #88).** Designed in
+[`PHASE11-IMPERSONATION-SKETCH.md`](PHASE11-IMPERSONATION-SKETCH.md). The
+proposal's second half was **not** taken, and the reason is the first half of
+this item's own evidence: `Actor` is part of the canonical payload, so
+`Actor.ImpersonatorID` is a new `canonical_version`, and v4 is the only version
+`audit` reads or writes — a v5 means every deployment archives its audit DB and
+starts a new file.
+
+- **`act`, next to `sub`.** A token minted by `identity.Core.Impersonate` carries
+  the impersonated user in `sub` (so handlers and `GetUserID` act as them) and
+  the human in `act`. `Entered()` is `htid != "" && act == ""`, so an
+  impersonated token is never mistaken for an entered one.
+- **Attribution is per row and per human.** `espresso.RequireAuth` puts
+  `claims.ActorUserID()` in the audit actor. A row naming the impersonated user
+  would blame the customer while looking complete.
+- **Refused by default.** `RequireTenant` and `RequireTenantAllowEntered` reject
+  the token; a route opts in with `RequireTenantAllowImpersonated` or
+  `RequireTenantAllowEnteredOrImpersonated`, and `DecisionGate.AllowImpersonated`.
+  (Mounting the two single-shape gates does **not** accept both — each refuses
+  the other's shape.)
+- **Opt-in twice.** No `WithImpersonation`, no impersonation
+  (`ErrNoImpersonationPolicy`); and no impersonated token survives a gate that
+  did not ask for it.
+- **No chaining, no refresh session.** The TTL is the whole revocation window,
+  and an over-long one fails `New`.
+- **"As whom" is per bracket, not per row.** The chain stays v4, so a row says
+  who acted and the surrounding `impersonation.start` / `.end` rows (emitted by
+  the application's routes, `resource_id` = the impersonated user) say what they
+  were wearing. That is the cost recorded in sketch §8: per-row attribution would
+  be a v5 and its own migration.
+
+What it does not close: same-tenant impersonation is refused by design (the human
+must be from another tenant, which an entered session is what provides), and
+whether the impersonated user is told is a product decision the framework does
+not make.
 
 ### TD-08 — `Auditor` and `RequireAuth` do not set the tenant *(sharp edge)*
 
@@ -982,7 +1019,7 @@ Suggested slice order if this work moves into Tamper:
 3. **TD-01 + TD-02** — the membership port and `EnterTenant`. Merged (#55).
 4. **TD-03** — the tenant contract for `authz`, with its leak suite. Merged
    (#56).
-5. **TD-07 + TD-11** — impersonation and per-tenant audit queries.
+5. **TD-11** — per-tenant audit queries. (TD-07, impersonation, landed in #88.)
 6. **TD-05** — tenant lifecycle, and TD-06 suspension enforcement: both landed
    (#85, #82). `Admin.Suspend` is the pairing the two were always missing.
 7. **TD-04** — hierarchy, after the product question in sketch §8 item 3 is

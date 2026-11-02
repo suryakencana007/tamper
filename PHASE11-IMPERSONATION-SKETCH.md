@@ -1,7 +1,12 @@
 # Phase 11 — impersonation: a human acting as another user
 
-Status: **draft, for review. Not decided, no code.** This sketch covers TD-07
-from `tech-debt.md`, the last P1 in the platform-admin line.
+Status: **accepted 2026-11-01; implemented in #88** (`crypto/jwt.go`,
+`identity/impersonation.go`, the three espresso gates; 17 tests; nine mutation
+proofs, all red before being reverted). The four questions in §8 were answered as
+they were proposed; they are recorded there.
+
+This sketch covers TD-07 from `tech-debt.md`, the last P1 in the platform-admin
+line.
 
 It follows `PHASE8-PLATFORM-ADMIN-SKETCH.md` (entering a tenant) and
 `PHASE8B-AUTHZ-TENANT-SKETCH.md` (the tenant in every port). Phase 8 named this
@@ -318,15 +323,19 @@ contract requires a single row that states both identities, the answer is
 own decision (the M5 precedent: v4 was cut over because the tenancy evidence
 required it; a support-console convenience does not carry the same weight).
 
-**Open questions for the owner:**
+**The four questions this section left open, as implemented** (`#88`). Each was
+answered by adopting the proposal above; changing one is an amendment to this
+section plus a change in the code.
 
-- **Is bracketing enough for A.8.15 here?** The row says who acted; the bracket
-  says what they were wearing. My reading is yes, and it is why decision 3 keeps
-  v4.
-- **Should the impersonated user be told?** Out of scope above; the product
-  answer may be "yes, an audit row is visible in their export", which the design
-  already gives them.
-- **What TTL?** Proposal: much shorter than an entered token — minutes, not hours.
-- **Does `RequireDecision` need `AllowImpersonated` at all?** If an impersonated
-  token is only ever used on console routes, the answer may be "no route opts in,
-  keep it closed until one does".
+- **Is bracketing enough for A.8.15 here?** Yes, for this deployment: the row says
+  who acted, the bracket says what they were wearing, and both are hashed. That is
+  why decision 3 keeps v4.
+- **Should the impersonated user be told?** Not by the framework. They can see it
+  in their own export, which the design already gives them — the notification
+  itself is the product's.
+- **What TTL?** The application's, via `WithImpersonation`; minutes rather than
+  hours is the recommendation. It is validated against the access token's own TTL
+  at `New`.
+- **Does `RequireDecision` need `AllowImpersonated` at all?** It has the flag, and
+  it defaults to false. No route in this repo opts in yet; the flag exists so that
+  the first console route that does is a one-line change, not a library change.

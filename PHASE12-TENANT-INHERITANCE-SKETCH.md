@@ -597,6 +597,9 @@ to compile before it is counted.
 | union: unlimited vs 40 → unlimited | plain `max` |
 | union: 40 vs 10 → 40 | return the child's |
 | union: a ZERO record states no cap (3 stays 3) | drop the `IsZero` exception → the child gets unlimited |
+| union: the zero record is the identity, for every shape | special-case only the cap |
+| `IsZero` reads a purchased-but-uncapped record as NOT zero | conflate it with the zero record |
+| decorator: a planless ancestor leaves a 3-cap alone; an ancestor that bought uncapped lifts it | collapse the two readings of `MaxIdPConnections == 0` |
 | union: commutative, idempotent, never narrows | any of the above |
 | decorator unions the whole chain | return the child's own only |
 | decorator on a root tenant = inner, one read | walk anyway |

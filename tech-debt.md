@@ -324,17 +324,28 @@ This is decided in
 [`examples/tenanthierarchy/`](examples/tenanthierarchy/): `Store` +
 `Provisioner` materialize the grant,
 `Guard`/`SyncGroup` catch and repair drift, and `Membership` derives
-`EnterTenant` rights from the intent rows. Only the **roles** axis is closed by
-that; the IdP, entitlement and domain axes below are still open.
+`EnterTenant` rights from the intent rows. The **roles** axis is closed by that;
+the **entitlement** axis is closed by slice 12b (`tenant.InheritingEntitlements`,
+below); the IdP and domain axes are still open.
 
 Entitlements and the IdP registry are not `authz` bindings and are not covered
 by that rule, so they can still be wrapped by an adapter that walks up to the
-parent. Decide inheritance for each axis separately. Do not assume the answer
-is the same for all of them.
+parent — for entitlements, tamper now ships that wrapper. Decide inheritance for
+each axis separately. Do not assume the answer is the same for all of them.
 
-**Proposal for Tamper.** First answer the product question the sketch deferred
-(does the parent's IdP serve a child?). Then add `tenant.Store.Ancestors(id)`
-and `Children(id)`. Make inheritance opt-in per axis, with cycle detection like
+**Partly closed (Phase 12, `PHASE12-TENANT-INHERITANCE-SKETCH.md`).** The product
+question was answered per axis on 2026-11-01: plan inheritance is the maximum of
+the chain and needs no switch (D2, shipped in 12b as
+`tenant.InheritingEntitlements` + `Entitlements.Union`); IdP inheritance is
+per-group and OFF by default (D3); a domain may be inherited only as a proper
+subdomain of a verified ancestor claim, with the group's approval (D4). Slice 12a
+already added `tenant.Ancestors(ctx, store, id)` — the walk this item proposed —
+over `Descriptor.ParentID`, amending the Phase 7 invariant that said nothing
+resolves it. `Children(id)` was **not** added: none of the three axes needs it.
+
+**Proposal for Tamper (as written, before that answer).** First answer the product
+question the sketch deferred (does the parent's IdP serve a child?). Then add
+`tenant.Store.Ancestors(id)` and `Children(id)`. Make inheritance opt-in per axis, with cycle detection like
 `scim.DetectCycle`. For roles, the application can already do this today
 (ADR-0001); the port would move the parentage lookup into tamper without
 changing the tenant-scoped binding model.

@@ -43,6 +43,14 @@ app. `tenant.Descriptor.ParentID` tetap **RESERVED** di tamper — tidak
 diresolve, tidak diwarisi, tidak dicabang. App yang membacanya lewat port
 miliknya sendiri.
 
+> **AMENDED (Phase 12 §3.1, slice 12a).** Kalimat di atas berlaku untuk
+> **otorisasi** dan tetap utuh di sana. Untuk tiga sumbu lain — paket, IdP,
+> domain — tamper kini me-resolve `ParentID` lewat `tenant.Ancestors`, karena
+> §5.A sendiri menyebut prasyaratnya ("butuh amend sketch Phase 7 dulu") dan
+> prasyarat itu dipenuhi `PHASE12-TENANT-INHERITANCE-SKETCH.md` §3.1. Penolakan
+> di §5.A dipersempit, bukan dibatalkan: engine RBAC tetap tidak boleh
+> berjalan-menelusuri graph.
+
 ## 2. Konteks teknis yang mengikat (Phase 7 + 8 + 8b)
 
 Ini bukan preferensi; ini batas keras yang sudah settled.

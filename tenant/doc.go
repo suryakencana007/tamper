@@ -1,7 +1,15 @@
 // Package tenant is the tenancy vocabulary for pooled multi-tenant
 // deployments — the neutral Descriptor record, the Store and Resolver
-// persistence ports, the ErrNotFound / ErrSuspended sentinels, and the
-// context helpers that propagate the active tenant across a request.
+// persistence ports, the ErrNotFound / ErrSuspended sentinels, the context
+// helpers that propagate the active tenant across a request, and the
+// parentage walk [Ancestors] with its ErrHierarchyCycle / ErrHierarchyDepth
+// sentinels.
+//
+// Parentage is a graph tamper now reads, for inheritance asked about
+// explicitly and per axis (a plan, a set of IdPs, a claimable domain). It is
+// never an authorization input: no scope is derived from it, and the RBAC
+// engine's per-scope bindings are untouched (ADR-0001 §5.A, narrowed by
+// PHASE12-TENANT-INHERITANCE-SKETCH.md §3.1).
 //
 // A tenant id is an OPAQUE, app-defined string. tamper never validates,
 // parses, namespaces or canonicalizes one; it compares ids for equality

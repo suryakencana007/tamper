@@ -5,10 +5,13 @@ import "context"
 // OrgHierarchy is the app-owned parentage port. It is what turns "the org a
 // request is scoped to" into "the tenant-group that owns it" — nothing more.
 //
-// tamper's own tenant.Store deliberately does not expose this: ParentID is
-// RESERVED there ("Nothing in tamper resolves it, inherits through it, or
-// branches on it", Phase 7 sketch §8 item 3). An application backs this port
-// with its own tenant table or cache, the same way it backs
+// tamper's own tenant.Store deliberately does not expose this, and never will:
+// a Store carries ParentID and resolves nothing through it. Tamper DOES walk the
+// same field through tenant.Ancestors (Phase 12 §3.1 — the Phase 7 "nothing
+// resolves it" invariant amended; ADR-0001 §5.A narrowed, not overturned). That
+// walk answers "who may this tenant inherit from"; it cannot answer "which orgs
+// does this group own", which is what provisioning needs, so an application backs
+// this port with its own tenant table or cache the same way it backs
 // authz.BindingStore.
 //
 // Implementations MUST be safe for concurrent use and SHOULD be cheap or

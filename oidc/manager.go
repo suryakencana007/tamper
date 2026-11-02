@@ -355,11 +355,11 @@ func (m *Manager) TestDiscovery(ctx context.Context, issuerURL string) (*Discove
 // multi-replica convergence would be asymmetric — populated tenants
 // converging within the TTL, empty ones immediately.
 //
-// A non-empty tenantID requires the store to implement
-// the tenant-scoped ProviderStore. It fails rather than falling back to the
-// untenanted list, which would serve every tenant's providers to one
-// tenant. tamper.New already refuses this configuration at boot; this is
-// the second line for a Manager constructed directly.
+// A tenantID is always passed to the store, and that is not optional: there
+// is no unscoped read to fall back to, so a store that cannot scope by
+// tenant fails to compile (store.go). The claim that used to stand here —
+// that tamper.New refuses this at boot — was never true; provider.go
+// validates nil fields only. The compile-time half is the whole guarantee.
 //
 // Returns (nil, nil) when the tenant has no enabled providers.
 func (m *Manager) GetRegistry(ctx context.Context, tenantID tenant.ID) (*ProviderRegistry, error) {

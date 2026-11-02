@@ -256,8 +256,10 @@ go test ./examples/multitenant/...  # drives both tenants end to end
 [`examples/tenanthierarchy`](./examples/tenanthierarchy) shows a three-level
 access model on top of the two-level primitive: **platform admin** →
 **tenant-group admin** (a reseller) → **organization admin**. It is entirely
-application code — Tamper core is unchanged and
-`tenant.Descriptor.ParentID` stays RESERVED, read only by the app's own port.
+application code. Tamper core reads that parentage in exactly one place —
+`tenant.Ancestors`, which walks it for inheritance the application asks about
+explicitly (Phase 12) — and derives no authorization scope from it; the RBAC
+engine's per-scope bindings are untouched.
 
 The mechanism, decided in
 [`ADR-0001`](./ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md) and

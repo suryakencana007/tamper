@@ -265,6 +265,11 @@ per decision 2; one transaction per decision 3.
 ```go
 // OrgHierarchy is the app-owned parentage port. tamper's tenant.Store does
 // NOT expose this (ParentID is reserved there).
+//
+// AMENDED (Phase 12 §3.1): tenant.Store still does not expose it, and never
+// will — but tamper now resolves the same field through tenant.Ancestors, for
+// inheritance asked about explicitly. This port stays the app's, for the
+// operations provisioning needs that a walk upward cannot answer.
 type OrgHierarchy interface {
     ParentOf(ctx context.Context, orgID string) (groupID string, ok bool, err error)
     ChildrenOf(ctx context.Context, groupID string) (orgIDs []string, err error)

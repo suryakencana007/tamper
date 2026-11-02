@@ -175,11 +175,24 @@ Decisions inside it, each of which a test pins:
 `ParentID` is not merely "reserved but unused". Three places in the tree say so in
 the present tense, and `tenant.Ancestors` makes all three false:
 
-| Where | What it says now |
-|---|---|
-| `tenant/tenant.go:21-25` | "RESERVED. Nothing in tamper resolves it, inherits through it, or branches on it." |
-| `tenant/admin.go:56-58` | "tamper does not resolve it, inherit through it, or branch on it" |
-| `tenant/memstore_test.go:165-167` | "ParentID is reserved." |
+| Where | What it says now | How it is handled |
+|---|---|---|
+| `tenant/tenant.go:21-25` | "RESERVED. Nothing in tamper resolves it, inherits through it, or branches on it." | reworded |
+| `tenant/admin.go:56-58` | "tamper does not resolve it, inherit through it, or branch on it" | reworded |
+| `tenant/memstore_test.go:165-167` | "ParentID is reserved." | reworded; the test stays |
+| `examples/tenanthierarchy/hierarchy.go:8-11` | the same quote, as the reason the app's port exists | reworded |
+| `flow.md:56` | "`ParentID` is RESERVED; nothing reads it yet." | reworded |
+| `README.md:258-260` | "`tenant.Descriptor.ParentID` stays RESERVED, read only by the app's own port." | reworded |
+| `tech-debt.md:290-291` | TD-04's evidence quotes the sentence | past tense, with a pointer forward |
+| `MIGRATION-v0.7.md:327-328` | listed under "what this release does not change" | reworded |
+| `ADR-0001:42-43` | "tetap **RESERVED** di tamper — tidak diresolve" | in-place `AMENDED` note, house style |
+| `TENANT-HIERARCHY-MANIFEST.md:265-266` | "(ParentID is reserved there)" | in-place `AMENDED` note |
+
+The first three were the ones found while writing this sketch. The rest were found
+by grepping the tree for the invariant's own words before shipping 12a — six more
+documents, two of them user-facing. A sketch that lists three and a tree that holds
+nine is how the tenth gets missed; the grep is the check, and it is in 12a's
+definition of done.
 
 And `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md` §5.A **rejected**
 resolving `ParentID` in tamper core, for two stated reasons: it violates the

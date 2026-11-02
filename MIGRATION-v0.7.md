@@ -324,8 +324,11 @@ forms for everyone.
 
 ## 7. What this release does **not** change
 
-- **`tenant.Descriptor.ParentID` is still RESERVED.** Nothing in tamper
-  resolves it, inherits through it, or branches on it.
+- **No tenant hierarchy is inherited.** `tenant.Descriptor.ParentID` is no longer
+  "reserved, read by nobody": `tenant.Ancestors` walks it, and the inheritance axes
+  land in later slices. Nothing calls the walk today, no axis inherits, and no
+  authorization scope is derived from parentage. A deployment that sets nothing
+  sees no change.
 - **No tenant hierarchy in the library.** A three-level model
   (platform → tenant-group → organization) is shown in
   [`examples/tenanthierarchy`](./examples/tenanthierarchy), decided in

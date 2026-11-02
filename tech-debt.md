@@ -287,8 +287,11 @@ Left open:
 
 ### TD-04 — No tenant hierarchy
 
-**Evidence.** `Descriptor.ParentID` is marked RESERVED: "Nothing in tamper
-resolves it, inherits through it, or branches on it" (`tenant/tenant.go:19-25`).
+**Evidence.** `Descriptor.ParentID` *was* marked RESERVED — "Nothing in tamper
+resolves it, inherits through it, or branches on it" (`tenant/tenant.go:19-25`) —
+until slice 12a (#91) added `tenant.Ancestors`, which now walks it. That amends the
+invariant (sketch §3.1) without closing this item: nothing *inherits* yet, and the
+walk builds no authorization scope.
 `PHASE7-MULTITENANCY-SKETCH.md:510` (§8 item 3) defers it on purpose.
 `tenant.Store` has only `ByID` and `BySlug` (`tenant/store.go:51`). The RBAC
 engine has no containment graph (`authz/policy.go:38`), and it cannot express

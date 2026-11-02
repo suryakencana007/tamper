@@ -53,7 +53,7 @@ not a separate service. Three properties shape every flow:
 | Function / type | Purpose |
 |---|---|
 | `ID`, `New(s)`, `Single`, `FromStored(s)` | `New("")` is invalid (for untrusted input). `FromStored("")` is `Single` (for values read from storage). |
-| `Descriptor{ID, Slug, ParentID, Status}` | The tenant row as Tamper sees it. `ParentID` is RESERVED; nothing reads it yet. |
+| `Descriptor{ID, Slug, ParentID, Status}` | The tenant row as Tamper sees it. `ParentID` is read by `tenant.Ancestors` and by nothing else, for inheritance asked about explicitly — never for authorization. |
 | `Store` (`ByID`, `BySlug`) | Read port for tenants. |
 | `DomainStore`, `ResolveDomain`, `DomainRecord.BoundProviderID` | Home-realm discovery: email domain → tenant → IdP. Only verified domains resolve. |
 | `NewVerificationToken`, `NewDNSVerifier` | Proof of domain ownership through a DNS TXT record. |

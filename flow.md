@@ -1,8 +1,10 @@
 # Tamper — functions and knowledge flow
 
 This document lists what each Tamper package does and how data moves between
-the functions. It was written from the code at `v0.6.0` (commit `c1af24e`).
-It describes what the code does today. It is not a plan. The gaps for a
+the functions. It was written from the code at `v0.6.0` (commit `c1af24e`) and
+updated in place for 0.7.0 — the parentage walk, plan inheritance, and the
+`ParentID`/`Entitlements` rows. It describes what the code does today. It is not a
+plan. The gaps for a
 cross-tenant platform admin are in [`tech-debt.md`](tech-debt.md).
 
 ## 1. What Tamper is

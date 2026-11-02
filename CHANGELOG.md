@@ -8,12 +8,40 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
-Fixes for sharp edges in pooled deployments, and one breaking change to the
-audit log. Each is a separate change (#39, #40, #43, #46 to #52) and is
-described in `tech-debt.md`.
+Nothing yet. Phase 12 continues with IdP and domain inheritance
+(`PHASE12-TENANT-INHERITANCE-SKETCH.md` slices 12c and 12d); the next release is
+0.8.0.
 
-**Upgrading?** [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md) collects every
-breaking change below into one ordered checklist (version number not cut yet).
+---
+
+## [0.7.0] — 2026-11-02
+
+This release finishes the pooled-tenancy **upgrade** — the breaking changes tenancy
+needed, and the phases that carried them. **Three things break code**, and four
+features are additive and do nothing unless you wire them. What does *not* finish
+here is TD-04: tenant inheritance ships for plans only, and its IdP and domain axes
+follow in 0.8.0.
+
+**The three breaking groups**, each with its own section below:
+
+1. **The audit log is `canonical_version=4` only** (#46) — an audit DB written by
+   an earlier version cannot be opened.
+2. **No compatibility code (TD-28).** Every package carried each API twice, once
+   with a tenant and once without; the unscoped forms are gone (#57–#61).
+3. **The tenant reaches `authz` (TD-03).** Every port takes the scope, and an
+   unset scope is an error (#56).
+
+**The four additive features**, each opt-in: entering another tenant (Phase 8,
+TD-01/TD-02), the tenant lifecycle write port (TD-05), impersonation (TD-07), and
+plan inheritance (Phase 12). The last is **partial in this release**:
+`tenant.Ancestors` and `tenant.InheritingEntitlements` ship here, and the IdP and
+domain axes land in 0.8.0.
+
+Everything else below closes a sharp edge in a pooled deployment; `tech-debt.md`
+has the analysis for each.
+
+**Upgrading?** [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md) collects every breaking
+change below into one ordered checklist, and names the work each one needs.
 
 ### ⚠️ Breaking — the audit log is `canonical_version=4` only (#46)
 

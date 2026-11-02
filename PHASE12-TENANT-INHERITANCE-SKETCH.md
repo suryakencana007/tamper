@@ -89,26 +89,57 @@ three consumers.
 
 ```go
 // tenant/hierarchy.go
-func Ancestors(ctx context.Context, s Store, id string) ([]string, error)
+func Ancestors(ctx context.Context, s Store, id ID) ([]ID, error)
 
 // A group's switch for one axis. Absent policy = deny.
 type Inheritance func(ctx context.Context, id ID) (bool, error)
 ```
 
-`Ancestors` returns the chain **nearest-first**, excluding `id` itself.
+An implementation must also deny on an unset `ID`. `Ancestors` never yields one,
+so that clause is defence in depth — but a policy is an interface the application
+implements, and "no error return may be read as allow" applies to a `bool` too.
+
+`Ancestors` returns the chain **nearest-first**, excluding `id` itself, as
+`tenant.ID` — not as `string`, on either side.
+
+**Why `ID` and not `string`.** `tenant.Store` speaks strings (`ByID(ctx, id
+string)`), and copying that surface here would undo the reason `ID` exists. Its
+own doc opens by saying a bare string cannot distinguish `""` said deliberately
+from `""` because a caller forgot to thread the tenant — an ambiguity "ruled on
+twice in this phase", settled both times as deny (`tenant/id.go`). A `string`
+signature cannot express that, so `Ancestors(ctx, s, "")` would be legal and would
+mean two things at once. It would also push the choice between `tenant.New`
+and `tenant.FromStored` onto all three consumers, and `id.go` is explicit that those two
+conversions must not be shared or duplicated at call sites. With `ID`, both
+consumers that take `ID` — the entitlement store and the registry
+(`ForTenant`, `ListEnabledProviders`) — pass the value straight through.
 
 Decisions inside it, each of which a test pins:
 
-- **`id == ""` returns nothing, always.** `tenant.Single` is a deployment with no
-  tenant rows (`tenant/store.go:45-48`), so it has no ancestors; asking the store
-  would return `ErrNotFound` and turn every single-tenant call into an error.
-  This is the same trap Phase 9 hit.
+- **A zero `ID` returns nothing, always.** `!id.Valid()` means the caller never
+  threaded a tenant through. That is not "root" and not "single-tenant"; it is
+  unset, and unset denies.
+- **`tenant.Single` returns nothing, always.** It is the explicit single-tenant
+  deployment, which has no tenant rows (`tenant/store.go:45-48`), so a store
+  lookup would return `ErrNotFound` and turn every such call into an error. This
+  is the same trap Phase 9 hit. Same outcome as the zero ID, different reason, and
+  both are pinned by their own test.
 - **`Descriptor.ParentID == ""` ends the walk.** That is a root, not an error.
+- **Every ancestor id is read back through `tenant.FromStored`**, because it came
+  out of storage — that function's stated purpose, and the reason its doc says
+  "NEVER call this on untrusted input: a `tid` claim, a routing header ... Those go
+  through New". Its `""` branch returns `Single`, and that branch is
+  **unreachable from this walk**: an empty `ParentID` ends the chain before any
+  conversion. A test pins it, because the way this breaks later is a refactor that
+  converts first and checks afterwards, putting `Single` in an ancestor list.
 - **A parent id that does not resolve is an ERROR**, not a silent root
   (`ErrNotFound`, wrapped). A dangling pointer is corrupt data; treating it as a
   root would quietly change who inherits what.
-- **`ErrNotFound` for the starting id is an error too** — except where the caller
-  needs the other reading (§4.2).
+- **`ErrNotFound` for the starting id is an error**, like any other miss — an
+  unknown tenant has no ancestors, and saying so is not the same as saying "it
+  exists with none". The one consumer that must not see an error is the registry
+  (§4.2), and it translates this one sentinel rather than the walk guessing on its
+  behalf.
 - **A cycle is an error** (`ErrHierarchyCycle`), not a hang; a chain longer than
   `maxHierarchyDepth` (32) is `ErrHierarchyDepth`. Both are new sentinels in
   `tenant`, next to `ErrNotFound`.
@@ -148,7 +179,7 @@ plain store, get today's behaviour.
 **It is uncached, and that is a contract the caller must honour.**
 `EntitlementStore`'s own doc says an implementation should be cheap or cached
 "because a gate consults this on every gated request"
-(`tenant/entitlements.go:48-49`), and this one turns that single read into
+(`tenant/entitlements.go:56-57`), and this one turns that single read into
 1+depth. tamper ships no cache here — there is no clock, TTL or key policy in
 this package to hang one on — so a deployment that gates per request wraps the
 decorator in its own cache, exactly as it would the plain store. Documented on
@@ -173,8 +204,12 @@ Sharp edges, each testable:
 
 ```go
 // oidc and saml, same shape
-func WithInheritance(ancestors AncestorFunc, allow tenant.Inheritance) ManagerOption
+func WithInheritance(s tenant.Store, allow tenant.Inheritance) ManagerOption
 ```
+
+The manager takes the parentage store itself rather than an invented closure
+type: it already imports `tenant`, `tenant.Ancestors` takes exactly this, and a
+second indirection would be a place for the type mismatch of §3 to reappear.
 
 The manager's rebuild already takes a tenant id and a list of records and
 produces a registry for that tenant (`oidc/manager.go:459-503`). Inheritance
@@ -254,6 +289,12 @@ func InheritedDomainAuthority(ctx context.Context, s Store, domains DomainStore,
 
 func IsProperSubdomain(child, parent string) bool   // exported for the admin path
 ```
+
+`tenantID` is an `ID` for the reason above. `DomainStore` is the one port that
+still speaks strings (`ListForTenant(ctx, tenantID string)`), so the helper
+converts at that boundary with `ID.String()` and nowhere else. `IsProperSubdomain`
+stays pure strings: it is about domains, not tenants, and has no validity to
+carry.
 
 `InheritedDomainAuthority` walks ancestors nearest-first and, for each, asks
 `domains.ListForTenant(ancestor)` for a **verified** claim that `domain` is a
@@ -340,7 +381,9 @@ read as allow", a nil one would silently permit.
    request is scoped to, and never grants a permission.
 3. The ancestor walk fails closed: cycle, over-depth, dangling parent, or a
    store error is an error, never "root" and never "allow".
-4. `tenant.Single` (`""`) never walks.
+4. The zero `ID` and `tenant.Single` both never walk — unset and deliberately
+   single-tenant are different facts with the same answer, and neither is an
+   error.
 5. **Selection differs by axis, and deliberately.** IdP and domains take ONE
    source — first match walking up, whole, never a merge — so a child with its
    own providers, or its own matching claim, never consults an ancestor.
@@ -373,7 +416,10 @@ to compile before it is counted.
 |---|---|
 | three-level chain, nearest-first | return the chain root-first |
 | root tenant → empty, no error | treat `ParentID == ""` as an error |
-| `""` → empty, store never called | walk for `""` |
+| zero `ID` → empty, store never called | walk for an unset `ID` |
+| `tenant.Single` → empty, store never called | walk for the single tenant |
+| a `ParentID` of `""` mid-chain stops the walk and never yields `Single` | convert before checking emptiness |
+| every returned id passes `Valid()` | return raw strings through a conversion that can produce unset |
 | dangling parent → error | return the chain so far instead of failing |
 | cycle → `ErrHierarchyCycle` | drop the visited set |
 | depth > 32 → `ErrHierarchyDepth` | drop the bound |

@@ -325,8 +325,9 @@ This is decided in
 `Provisioner` materialize the grant,
 `Guard`/`SyncGroup` catch and repair drift, and `Membership` derives
 `EnterTenant` rights from the intent rows. The **roles** axis is closed by that;
-the **entitlement** axis is closed by slice 12b (`tenant.InheritingEntitlements`,
-below); the IdP and domain axes are still open.
+the **entitlement** axis is closed by slice 12b (`tenant.InheritingEntitlements`)
+and the **domain** axis by slice 12d (`tenant.InheritedDomainAuthority`, below);
+the IdP axis is still open.
 
 Entitlements and the IdP registry are not `authz` bindings and are not covered
 by that rule, so they can still be wrapped by an adapter that walks up to the

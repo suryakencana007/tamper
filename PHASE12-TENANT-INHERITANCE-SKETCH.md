@@ -428,7 +428,15 @@ an unproven claim even if the verified filter were later removed.
 `InheritedDomainAuthority` walks ancestors nearest-first and, for each, asks
 `domains.ListForTenant(ancestor)` for a **verified** claim that `domain` is a
 proper subdomain of, returning the first match as a `DomainAuthority` naming the
-ancestor it came from. A public email domain, no
+ancestor it came from.
+
+**Amended while implementing 12d: within one ancestor, the LONGEST matching domain
+wins.** An ancestor may hold both `acme.edu` and `sub.acme.edu`, both match
+`x.sub.acme.edu`, and only one is the authority the operator meant — and with it,
+which provider is bound. The sketch said "the first match", which for a single
+ancestor means the first row the application's store happened to return, making
+the answer depend on an ordering tamper does not own. Nearest-ancestor-first still
+decides between ancestors; longest-match decides within one. A public email domain, no
 matching claim, and an unverified ancestor claim are all `ErrNotFound` — the same
 three-fold collapse `ResolveDomain` already documents, for the same reason. An
 **unnormalised** input is the one thing said plainly (`ErrDomainNotNormalised`):
@@ -557,7 +565,8 @@ read as allow", a nil one would silently permit.
    A cap never narrows either way.
 8. The union is the EFFECT; `ForTenant` remains the PURCHASE.
 9. A domain is inherited only as a **proper** subdomain of a **Verified**
-   ancestor claim, with the dot boundary intact.
+   ancestor claim, with the dot boundary intact; nearest ancestor first, and the
+   longest matching parent within one.
 10. Three axes, three wirings, independently chosen: turning one on changes no
     other axis's answer, and no axis's wiring can be inferred from another's.
 11. `InheritedDomainAuthority` returns authority and writes nothing; approval and
@@ -633,15 +642,23 @@ to compile before it is counted.
 
 | Test | Mutant |
 |---|---|
-| proper subdomain of a verified ancestor → a `DomainAuthority` naming that ancestor | return the ancestor's `DomainRecord` instead |
+| proper subdomain of a verified ancestor → a `DomainAuthority` naming that ancestor | return the ancestor's `DomainRecord` instead (now compile-impossible: the type has no tenant field) |
 | `evilacme.com` vs `acme.com` → not found | drop the `"."` in `IsProperSubdomain` |
-| the parent's own domain is not inheritable | allow equality |
+| the parent's own domain is not inheritable | **unobservable mutant**: dropping `child != parent` changes nothing, because the dot rule already excludes equality (`"acme.edu"` does not end with `".acme.edu"`). Kept as intent, and annotated as such |
+| an empty parent matches nothing | let `HasSuffix(child, "."+parent)` run with `parent == ""` |
 | unverified ancestor claim → not found | ignore `Verified` |
-| public email domain → not found | drop the public check |
+| public email domain → not found | drop the input check — a fast path; the walk refuses it anyway |
+| a VERIFIED public ancestor claim is not authority, and the walk goes on to a real claim | drop the claim-side check → `x.gmail.com` inherits from a stored `gmail.com` |
 | unnormalised input → `ErrDomainNotNormalised` | normalise silently |
 | no ancestor claims the name → not found | return the nearest ancestor regardless |
-| the returned value has no field usable as the resolved tenant | return the ancestor's `DomainRecord` |
+| nearest ancestor's proof wins | take the farthest |
+| the D4 flow end to end: authority → the app writes the child's row → `ResolveDomain` returns the CHILD | resolve on the authority's ancestor |
+| before that row is written, `ResolveDomain` finds nothing | let authority double as a resolving claim |
+| the longest matching parent within one ancestor wins, either row order | take the first row that matches |
+| a tenant with no ancestors never consults the claim store | list claims before walking |
 | `ProviderID` comes from `BoundProviderID()` | return the raw record field |
+| domain-store error, `ErrHierarchyDangling` → propagate | read either as "no authority" |
+| unset `ID` / `Single` never touch either store | the walk's own guard — 12a's mutant, since nothing in 12d can break it |
 
 **`provider_test.go`** — one test per boot guard, asserting the message names the
 field.

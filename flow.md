@@ -57,7 +57,7 @@ not a separate service. Three properties shape every flow:
 | `ID`, `New(s)`, `Single`, `FromStored(s)` | `New("")` is invalid (for untrusted input). `FromStored("")` is `Single` (for values read from storage). |
 | `Descriptor{ID, Slug, ParentID, Status}` | The tenant row as Tamper sees it. `ParentID` is read by `tenant.Ancestors` and by nothing else, for inheritance asked about explicitly — never for authorization. |
 | `Store` (`ByID`, `BySlug`) | Read port for tenants. |
-| `DomainStore`, `ResolveDomain`, `DomainRecord.BoundProviderID` | Home-realm discovery: email domain → tenant → IdP. Only verified domains resolve. |
+| `DomainStore`, `ResolveDomain`, `DomainRecord.BoundProviderID`, `InheritedDomainAuthority`, `IsProperSubdomain` | Home-realm discovery: email domain → tenant → IdP. Only verified domains resolve, and a claimed name may rest on an ancestor's verified domain — authority only, never approval. |
 | `NewVerificationToken`, `NewDNSVerifier` | Proof of domain ownership through a DNS TXT record. |
 | `Entitlements`, `EntitlementStore.ForTenant`, `Union`, `InheritingEntitlements` | The features a tenant has bought (SSO, SCIM, IdP limit). This is not authorization. `ForTenant` is the PURCHASE; the decorator's answer is the EFFECT — its own unioned with its ancestors'. |
 | `WithTenant` / `FromContext` | Context propagation only. Never used as a permission. |

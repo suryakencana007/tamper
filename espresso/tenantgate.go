@@ -164,12 +164,29 @@ func RequireTenantAllowEntered(resolve func(*http.Request) (tenant.ID, bool)) fu
 // token minted by identity.Core.Impersonate: the request IS the customer's user,
 // and the audit row names the human behind it.
 //
-// It does NOT also accept an entered token, and RequireTenantAllowEntered does
-// not accept an impersonated one. The two powers are separate on purpose — acting
-// as yourself inside a tenant is not acting as one of its users — so a route that
-// wants both mounts both, innermost first, and each contributes its own refusal.
+// It does NOT also accept an entered token, and RequireTenantAllowEntered does not
+// accept an impersonated one. The two powers are separate on purpose — acting as
+// yourself inside a tenant is not acting as one of its users.
+//
+// Mounting both is therefore NOT how a route accepts both: each gate refuses the
+// other's shape, so the stack would refuse every token. A route that genuinely
+// wants both mounts RequireTenantAllowEnteredOrImpersonated, one gate with both
+// flags.
 func RequireTenantAllowImpersonated(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler {
 	return requireTenant(resolve, false, true)
+}
+
+// RequireTenantAllowEnteredOrImpersonated is [RequireTenant] for a route that
+// accepts either shape: an admin acting as themself inside the tenant, and an
+// admin acting as one of its users. Both are guests in the sense that matters
+// here — a token minted outside the tenant — and both are refused by
+// [RequireTenant].
+//
+// It is one gate on purpose. Stacking [RequireTenantAllowEntered] and
+// [RequireTenantAllowImpersonated] would refuse BOTH shapes, because each gate
+// refuses the shape the other invites.
+func RequireTenantAllowEnteredOrImpersonated(resolve func(*http.Request) (tenant.ID, bool)) func(http.Handler) http.Handler {
+	return requireTenant(resolve, true, true)
 }
 
 // EnteredFromContext reports whether the request was made with an

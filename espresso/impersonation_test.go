@@ -158,3 +158,38 @@ func TestImpersonation_LeavesOrdinaryTokensAlone(t *testing.T) {
 		t.Fatalf("ordinary token = %d, want 200", got)
 	}
 }
+
+// A route that accepts both shapes needs ONE gate with both flags. Stacking the
+// two single-shape gates refuses every token, which is the trap the doc names.
+func TestTenantGates_BothShapesNeedTheCombinedGate(t *testing.T) {
+	j := tenantJWT(t)
+	entered, err := j.IssueAccessEntered("ops", impAcme, impPlatform, time.Now().Unix(), crypto.ACRLocalPassword, time.Hour)
+	if err != nil {
+		t.Fatalf("IssueAccessEntered: %v", err)
+	}
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	t.Run("stacked single-shape gates accept neither", func(t *testing.T) {
+		h := RequireAuth(j)(
+			RequireTenantAllowEntered(scopeTo("acme"))(
+				RequireTenantAllowImpersonated(scopeTo("acme"))(ok)))
+		for name, tok := range map[string]string{"entered": entered, "impersonated": impToken(t)} {
+			if got := serveDecision(h, tok); got != http.StatusUnauthorized {
+				t.Fatalf("%s token through stacked gates = %d, want 401 (intersection, not union)", name, got)
+			}
+		}
+	})
+
+	t.Run("the combined gate accepts both", func(t *testing.T) {
+		h := RequireAuth(j)(RequireTenantAllowEnteredOrImpersonated(scopeTo("acme"))(ok))
+		for name, tok := range map[string]string{
+			"entered":      entered,
+			"impersonated": impToken(t),
+			"ordinary":     tokenFor(t, j, impAcme),
+		} {
+			if got := serveDecision(h, tok); got != http.StatusOK {
+				t.Fatalf("%s token through the combined gate = %d, want 200", name, got)
+			}
+		}
+	})
+}

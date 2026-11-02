@@ -198,3 +198,12 @@ func TestImpersonate_RefusesAHomeSession(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// A TTL longer than the access token's own is a boot failure, not a silent cut.
+func TestNew_RefusesAnImpersonationTTLLongerThanTheToken(t *testing.T) {
+	store := NewMemStore()
+	jwt := crypto.NewJWTService(crypto.JWTConfig{Secret: "tamper-identity-impersonation-test", TTL: time.Minute, Issuer: "tamper-test"})
+	if _, err := New(store, jwt, WithImpersonation(policyFunc(allowAll), time.Hour)); err == nil {
+		t.Fatal("want New to refuse a ttl longer than the access token TTL, got nil")
+	}
+}

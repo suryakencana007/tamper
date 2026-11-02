@@ -4,7 +4,7 @@
 > of `CHANGELOG.md`, which remains the authoritative list — this document only
 > puts it in upgrade order.
 
-This release finishes the pooled-tenancy work. Three things break code:
+This release finishes the pooled-tenancy **upgrade** — the breaking changes that tenancy needed, and the phases that carried them. Three things break code:
 
 1. **TD-28 — no compatibility code.** Every package had each API twice, once
    with a tenant and once without, so that pre-tenancy callers kept working.
@@ -368,3 +368,19 @@ forms for everyone.
   exposure ends at its expiry plus the entered TTL.
 - Entering is not throttled, and a refused entry is not recorded by tamper
   (the hook runs on success only).
+
+**Limits this release adds**, all of them deliberate:
+
+- **Impersonation has no revocation list.** The token is valid until it expires,
+  which is the whole window, the impersonated user is not notified, a token cannot
+  be re-impersonated (no chaining) and same-tenant impersonation is refused. Give
+  `WithImpersonation` a TTL in minutes.
+- **Plan inheritance is uncached.** `tenant.InheritingEntitlements` costs 1+depth
+  store reads on every gated request, so wrap it in your own cache, and read the
+  inner store when you show a customer *their* plan rather than their effect.
+- **An ancestor that bought only an uncapped plan reads as having bought nothing**,
+  because `Entitlements` cannot distinguish that from an empty record. Grant a
+  capability alongside a cap.
+- **Corrupt parentage denies.** A cycle, a chain deeper than 32, or a parent id
+  that does not resolve makes every gated request for that tenant fail closed
+  rather than inherit a partial answer. The sentinels are the log line to look for.

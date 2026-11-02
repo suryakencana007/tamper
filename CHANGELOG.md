@@ -16,8 +16,11 @@ Nothing yet. Phase 12 continues with IdP and domain inheritance
 
 ## [0.7.0] — 2026-11-02
 
-This release finishes the pooled-tenancy work. **Three things break code**, and
-four features are additive and do nothing unless you wire them.
+This release finishes the pooled-tenancy **upgrade** — the breaking changes tenancy
+needed, and the phases that carried them. **Three things break code**, and four
+features are additive and do nothing unless you wire them. What does *not* finish
+here is TD-04: tenant inheritance ships for plans only, and its IdP and domain axes
+follow in 0.8.0.
 
 **The three breaking groups**, each with its own section below:
 

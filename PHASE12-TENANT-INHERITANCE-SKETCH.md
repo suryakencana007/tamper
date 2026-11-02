@@ -161,9 +161,10 @@ Sharp edges, each testable:
 - **`MaxIdPConnections` counts the tenant's OWN providers only.** Inherited
   providers are not configured by the child and must not consume its cap, or a
   group with three providers silently blocks a child from adding a fourth of its
-  own. The cap check lives in the app (`AllowsAnotherIdP`), so this is a
-  documented rule plus one example test — tamper cannot enforce it without
-  owning the write path.
+  own. `AllowsAnotherIdP(current int)` takes the count from the caller
+  (`tenant/entitlements.go:40-46`), so this is documentation, not a test: no test
+  in this repo can enforce a number the caller supplies. Said here rather than
+  implied, because it is the kind of rule that reads as enforced.
 - **An error anywhere in the walk fails the lookup.** The gate denies on error,
   so a broken hierarchy closes SSO rather than opening it. (`espresso/routes.go:317`.)
 
@@ -180,19 +181,23 @@ changes **where the records come from**, and — for the lock reason below — *
 they are read*. Nothing else about the build changes:
 
 1. `listEnabled(child)` is empty, and inheritance is wired.
-2. Walk the ancestors nearest-first. For each, ask the group's switch
-   (`allow(ancestor)`); if it is false, **the walk ends here — it does not
-   continue to a grandparent.** A group that keeps its own IdP but has not opted
-   in is saying "children configure their own"; letting a grandparent serve the
-   child would override a decision the group actually made. Rejected: skipping
-   past a refusing ancestor.
-3. The first ancestor whose switch is ON and whose `listEnabled` is non-empty
-   supplies the records. Its own `TenantID` is ignored; only the provider
+2. Walk the ancestors nearest-first. An ancestor with **no enabled providers has
+   nothing to lend**, so the walk continues past it without asking its switch —
+   asking would let a silent middle layer block a decision made further up.
+3. **The first ancestor WITH providers decides, by its switch, and there is no
+   skipping past it.** ON: its records are used. OFF: the walk ends here, and a
+   grandparent's providers are NOT substituted.
+4. The borrowed record's own `TenantID` is ignored; only the provider
    definitions are used.
+
+Step 3 is the rule that is easy to get wrong in the other direction. A group that
+keeps its own IdP and has not opted in is saying *"children configure their own"*.
+Walking past it to a grandparent would override a decision the group actually
+made, so the walk stops — rejected: skip past a refusing ancestor.
 4. The registry is built with **`tenantID = the child`**, so `redirectFor` returns
    the child's callback URL, and the cache entry is stored under the child's key.
 
-Step 4 is the security decision of this axis and it is not a detail. Building the
+The build below is the security decision of this axis and it is not a detail. Building the
 ancestor's registry and handing it to the child would carry the *ancestor's*
 redirect URI into the child's login flow: the IdP would then complete a flow that
 lands in the wrong tenant's context. Borrowing the definition and compiling it for
@@ -251,9 +256,12 @@ func IsProperSubdomain(child, parent string) bool   // exported for the admin pa
 
 `InheritedDomainAuthority` walks ancestors nearest-first and, for each, asks
 `domains.ListForTenant(ancestor)` for a **verified** claim that `domain` is a
-proper subdomain of, returning the first match. Everything else is `ErrNotFound`,
-including a public email domain and an unnormalised input — the same three-fold
-collapse `ResolveDomain` already documents, for the same reason.
+proper subdomain of, returning the first match. A public email domain, no
+matching claim, and an unverified ancestor claim are all `ErrNotFound` — the same
+three-fold collapse `ResolveDomain` already documents, for the same reason. An
+**unnormalised** input is the one thing said plainly (`ErrDomainNotNormalised`):
+it is a caller bug, and `tenant/domain.go` rejects rather than repairs precisely
+so an admin learns it once at the edge.
 
 `IsProperSubdomain` is one line and it is where the takeover lives:
 
@@ -267,7 +275,7 @@ The `.` is the whole guard: without it, `evilacme.com` is a "subdomain" of
 **The boundary this helper deliberately stops at.** It answers *"may this child
 claim this name?"*; it does not approve, store, or audit. The application records
 the child's own claim row (`Verified: true`, plus whatever provenance columns it
-keeps) and emits the audit row — `domain.inherited_claim`, naming the group whose
+keeps) and emits the audit row — `domain.inherit`, naming the group whose
 proof was borrowed. Two rules come with that, and they are the app's obligation:
 
 - **The row is written only after the group admin approves.** A helper that
@@ -315,14 +323,18 @@ a different one; that is a feature, not an oversight.
 
 `Ancestors` and the two constructors panic on a nil store, matching
 `RequireEntitlement`'s precedent (`espresso/routes.go:294-297`): a nil store is a
-wiring bug that would silently permit.
+wiring bug that would silently permit. The same applies to the two functions that
+take one, `InheritingEntitlements` and `InheritedDomainAuthority`.
 
 ---
 
 ## 6. Invariants
 
-1. Inheritance is opt-in per axis; unwired means today's behaviour, byte for
-   byte.
+1. **Wiring is opt-in on every axis; a policy switch exists on one.** No axis is
+   inheritance-by-default: an unwired deployment is today's behaviour, byte for
+   byte. Above that, D3 adds a per-group switch, because an inherited IdP widens
+   *who can authenticate*; D2 and D4 do not need one, because a plan and a name
+   are things the customer has rather than powers over the request.
 2. Inheritance widens what the customer HAS; it never changes which tenant a
    request is scoped to, and never grants a permission.
 3. The ancestor walk fails closed: cycle, over-depth, dangling parent, or a
@@ -414,8 +426,8 @@ field.
    group's decision only: a child opts out by configuring its own providers, which
    is already "first match wins". A per-child consent flow is a bigger product
    change and is not designed here.
-2. **When is the audit row `domain.inherited_claim` emitted — at approval, or at
-   first use?** Approval. First use would need a row per login, and the chain is
+2. **When is the audit row `domain.inherit` emitted — at approval, or at first
+   use?** Approval. First use would need a row per login, and the chain is
    append-only for a reason.
 3. **Do inherited entitlements show on the customer's invoice?** Billing is the
    application's; the union is only the effective value. Nothing here changes what
@@ -431,18 +443,18 @@ field.
 
 ## 9. Slices
 
-- **12a — entitlements** (`Union` + decorator + the cap rules). Smallest, no
-  engine touched, proves the ancestor primitive.
-- **12b — the hierarchy primitive** (`tenant/hierarchy.go`, sentinels, the
-  `oidc/manager.go` doc correction).
+- **12a — the primitive** (`tenant/hierarchy.go`: `Ancestors`, `Inheritance`, the
+  two sentinels) plus the `oidc/manager.go:359-361` doc correction.
+- **12b — entitlements** (`Union` + `InheritingEntitlements`). No engine touched,
+  so the primitive gets a real consumer before any manager depends on it.
 - **12c — IdP** (`oidc` + `saml` options, `tamper.New` wiring and guards, the
-  redirect-in-the-child's-name test).
+  redirect-in-the-child's-name test, the pre-lock walk).
 - **12d — domains** (`IsProperSubdomain` + `InheritedDomainAuthority`).
 - **12e — docs** (TD-04 in `tech-debt.md`, an ADR-0001 §8 note that three axes are
   now decided, `MIGRATION`, `CHANGELOG`, and this sketch to `accepted`).
 
-12a before 12b is deliberate: the decorator is the least risky consumer, so the
-primitive gets exercised before the managers depend on it.
+The primitive lands first because both consumers need it and it is the smallest
+thing that can be wrong in a way the others would inherit.
 
 ---
 

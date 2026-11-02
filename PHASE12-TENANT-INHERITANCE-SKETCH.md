@@ -75,8 +75,9 @@ Two consequences worth naming up front:
 - **`oidc/manager.go:359-361` contradicts `oidc/store.go:71-73`.** The first claims
   `tamper.New` refuses a non-tenant-scoped provider store at boot; the second
   says there is no such assertion, and a `grep` of `provider.go` finds only nil
-  checks. Both cannot be true. Fixed in 12b, because the IdP axis touches that
-  exact paragraph and a reader implementing inheritance must know which is real.
+  checks. Both cannot be true. Fixed in 12a: the correction is a comment, it needs
+  no engine, and a reader implementing inheritance must know which of the two is
+  real before touching that paragraph.
 
 ---
 
@@ -189,15 +190,15 @@ they are read*. Nothing else about the build changes:
    grandparent's providers are NOT substituted.
 4. The borrowed record's own `TenantID` is ignored; only the provider
    definitions are used.
+5. The registry is built with **`tenantID = the child`**, so `redirectFor` returns
+   the child's callback URL, and the cache entry is stored under the child's key.
 
 Step 3 is the rule that is easy to get wrong in the other direction. A group that
 keeps its own IdP and has not opted in is saying *"children configure their own"*.
 Walking past it to a grandparent would override a decision the group actually
 made, so the walk stops — rejected: skip past a refusing ancestor.
-4. The registry is built with **`tenantID = the child`**, so `redirectFor` returns
-   the child's callback URL, and the cache entry is stored under the child's key.
 
-The build below is the security decision of this axis and it is not a detail. Building the
+Step 5 is the security decision of this axis and it is not a detail. Building the
 ancestor's registry and handing it to the child would carry the *ancestor's*
 redirect URI into the child's login flow: the IdP would then complete a flow that
 lands in the wrong tenant's context. Borrowing the definition and compiling it for
@@ -321,10 +322,10 @@ because `tamper.New` has no tenant store today: parentage is the application's
 graph, and this is the first framework code to read it. Each engine may be given
 a different one; that is a feature, not an oversight.
 
-`Ancestors` and the two constructors panic on a nil store, matching
-`RequireEntitlement`'s precedent (`espresso/routes.go:294-297`): a nil store is a
-wiring bug that would silently permit. The same applies to the two functions that
-take one, `InheritingEntitlements` and `InheritedDomainAuthority`.
+`Ancestors`, `InheritingEntitlements` and `InheritedDomainAuthority` panic on a nil
+store, matching `RequireEntitlement`'s precedent (`espresso/routes.go:294-297`): a
+nil store is a wiring bug, and in a package whose rule is "no error return may be
+read as allow", a nil one would silently permit.
 
 ---
 
@@ -347,14 +348,15 @@ take one, `InheritingEntitlements` and `InheritedDomainAuthority`.
    nature (a plan merged with a plan is a plan) while two provider rows with one
    id are ambiguous. A union across the chain is not a merge of two answers to
    one question.
-6. The IDP registry is compiled in the inheriting tenant's name: its redirect
+6. The IdP registry is compiled in the inheriting tenant's name: its redirect
    URLs and its cache key.
 7. `MaxIdPConnections == 0` is unlimited on both sides of a `Union`, and a cap
    never narrows.
 8. The union is the EFFECT; `ForTenant` remains the PURCHASE.
 9. A domain is inherited only as a **proper** subdomain of a **Verified**
    ancestor claim, with the dot boundary intact.
-10. Three axes, three switches: turning one on changes no other axis's answer.
+10. Three axes, three wirings, independently chosen: turning one on changes no
+    other axis's answer, and no axis's wiring can be inferred from another's.
 11. `InheritedDomainAuthority` returns authority and writes nothing; approval and
     the audit row are the application's.
 
@@ -395,6 +397,7 @@ to compile before it is counted.
 | child with no providers inherits the opted-in parent's | never call the ancestors func |
 | child with its own providers ignores the parent | merge both sets |
 | switch off at the parent → no registry, no grandparent | skip past a refusing ancestor |
+| a providerless ancestor is passed over WITHOUT asking its switch (three levels) | ask the switch before checking providers |
 | switch off, no ancestors → `(nil, nil)` | return an error |
 | unknown tenant → `(nil, nil)`, not an error | propagate `ErrNotFound` |
 | the child's redirect URL is used, not the parent's | build with the parent's id |

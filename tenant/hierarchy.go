@@ -61,12 +61,12 @@ type Inheritance func(ctx context.Context, id ID) (bool, error)
 // Ancestors returns the chain of parents above id, nearest first, excluding id
 // itself.
 //
-// Four readings of "no ancestors", and they are deliberately distinct:
+// Four ways this ends, and they are deliberately distinct:
 //
 //	unset ID        nothing, no store call
 //	tenant.Single   nothing, no store call
 //	root            nothing, after reading the row
-//	unknown id      ErrNotFound
+//	unknown id      ErrNotFound — not "no ancestors"
 //
 // The first two are the trap Phase 9 hit. An unset ID means a caller never
 // threaded a tenant through, and Single is the explicit single-tenant
@@ -86,6 +86,11 @@ type Inheritance func(ctx context.Context, id ID) (bool, error)
 // fail-closed means a tenant with corrupt parentage has its gated requests
 // denied, which looks like an outage rather than a data fault, so callers must
 // not discard the error when they deny.
+//
+// A nil Store panics BEFORE any of that, including the two cases that never
+// read it. The guard is about wiring — a caller that reaches this function has
+// already decided to walk — and a nil store must not be able to pass for a
+// hierarchy that happens to inherit nothing.
 //
 // Every returned id has passed through FromStored, because parentage comes out
 // of storage — that is the conversion named for that case. Its "" branch

@@ -201,31 +201,48 @@ func TestAncestors_OneOverTheLimitIsAnError(t *testing.T) {
 	}
 }
 
+// The store's own error must survive the walk, not merely cause one: a caller
+// distinguishes "the hierarchy is corrupt" from "the database is unreachable" by
+// errors.Is, and a wrapper that dropped the sentinel would collapse them.
 func TestAncestors_StoreErrorPropagates(t *testing.T) {
 	s := newSpyStore()
 	s.inner.Seed(Descriptor{ID: "a", ParentID: "boom", Status: StatusActive})
 
-	failing := errStore{Store: s}
-	if _, err := Ancestors(context.Background(), failing, New("a")); err == nil {
-		t.Fatal("a store error was swallowed; no error return may be read as \"root\"")
+	_, err := Ancestors(context.Background(), errStore{Store: s}, New("a"))
+	if !errors.Is(err, errStoreDown) {
+		t.Fatalf("err = %v, want the store's own error to survive (errors.Is errStoreDown)", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatal("the fake store's error masquerades as ErrNotFound; this test would then prove nothing")
 	}
 }
 
-// errStore fails every lookup except the first, so the failure lands mid-walk.
+// errStoreDown is deliberately NOT one of tenant's sentinels, so the assertion
+// above can only pass if the walk propagated rather than invented an error.
+var errStoreDown = errors.New("store is down")
+
+// errStore serves the first row and fails every other lookup, so the failure
+// lands mid-walk rather than on the start id.
 type errStore struct{ Store }
 
-func (errStore) ByID(ctx context.Context, id string) (Descriptor, error) {
+func (errStore) ByID(_ context.Context, id string) (Descriptor, error) {
 	if id == "a" {
 		return Descriptor{ID: "a", ParentID: "boom", Status: StatusActive}, nil
 	}
-	return Descriptor{}, fmt.Errorf("store is down: %w", ErrNotFound)
+	return Descriptor{}, errStoreDown
 }
 
 func TestAncestors_PanicsOnNilStore(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("Ancestors(nil store) did not panic; nil must be a wiring bug, not a silent empty chain")
-		}
-	}()
-	_, _ = Ancestors(context.Background(), nil, New("a"))
+	for name, id := range map[string]ID{"valid": New("a"), "single": Single, "zero": {}} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("Ancestors(nil store) did not panic; nil is a wiring bug, and it must not " +
+						"pass for a hierarchy that happens to inherit nothing")
+				}
+			}()
+			// Not even the cases that never read the store get to skip the guard.
+			_, _ = Ancestors(context.Background(), nil, id)
+		})
+	}
 }

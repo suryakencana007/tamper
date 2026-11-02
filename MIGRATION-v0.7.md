@@ -256,6 +256,17 @@ revokes the tenant's refresh sessions **in that order**, and reports a partial
 state rather than swallowing it. Also opt-in: a deployment that does not
 implement the port is unchanged. Nothing here is breaking.
 
+**Impersonation (TD-07).** `identity.Core.Impersonate` mints a token that is
+another user, with a new `act` claim naming the human behind it — **every audit
+row is attributed to that human**, never to the impersonated user. It is opt-in
+twice over: a Core without `WithImpersonation` cannot impersonate, and
+`RequireTenant` / `RequireTenantAllowEntered` refuse the token until a route
+mounts `RequireTenantAllowImpersonated` (or the combined
+`RequireTenantAllowEnteredOrImpersonated`) and sets
+`DecisionGate.AllowImpersonated`. Tokens minted before this release are
+unchanged: `AccessClaims.Entered()` still means what it meant, because only an
+impersonated token carries `act`. Nothing here is breaking.
+
 ---
 
 ## 5. The isolation contract you now owe

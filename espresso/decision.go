@@ -134,11 +134,12 @@ type DecisionGate struct {
 //     consulted.
 //
 // The token must fit the tenant by the one rule RequireTenant applies
-// (tokenFitsTenant): its tid is exactly the resolved tenant, and an
-// entered token only where AllowEntered is set. Anything else is the
-// 401 RequireTenant writes — including a tenant that did not resolve,
-// and a user id that reached the context without a token. There is no
-// path that guesses a tenant.
+// (tokenFitsTenant): its tid is exactly the resolved tenant; an entered
+// token only where AllowEntered is set; an impersonated one only where
+// AllowImpersonated is set. Anything else is the 401 RequireTenant
+// writes — including a tenant that did not resolve, and a user id that
+// reached the context without a token. There is no path that guesses a
+// tenant.
 func RequireDecision(g DecisionGate) func(http.Handler) http.Handler {
 	if g.Tenant == nil {
 		panic("tamper/espresso: RequireDecision requires DecisionGate.Tenant — " +

@@ -99,6 +99,15 @@ An implementation must also deny on an unset `ID`. `Ancestors` never yields one,
 so that clause is defence in depth — but a policy is an interface the application
 implements, and "no error return may be read as allow" applies to a `bool` too.
 
+**A policy that returns an error aborts the walk, and its `bool` is ignored.**
+Both halves matter and neither is automatic. The walk must not read `(false, err)`
+as a refusal-and-stop (that would turn a broken settings lookup into a silent
+deny, indistinguishable from a group that switched the feature off) and must not
+read `(true, err)` as permission (the obvious bug). The error propagates, the
+tenant gets no inherited providers, and that is the same fail-closed shape as a
+store error. A policy backed by a settings table *will* error the day that table
+is unreachable, so this path is exercised, not theoretical.
+
 `Ancestors` returns the chain **nearest-first**, excluding `id` itself, as
 `tenant.ID` — not as `string`, on either side.
 
@@ -147,6 +156,56 @@ Decisions inside it, each of which a test pins:
   deployment needing more than 32 has a data-modelling problem whose symptom should
   be a named error rather than a slow request.
 - **The store's other errors propagate.** No error return is read as "root".
+- **Those sentinels are the operational face of this rule.** Fail-closed means a
+  tenant with corrupt parentage has every gated request denied, which looks like
+  an outage for that tenant rather than a data fault. The named errors exist so it
+  appears in a log as `ErrHierarchyCycle` or `ErrHierarchyDepth` rather than as a
+  mystery SSO failure, and callers must not discard them when they deny.
+
+### 3.1 The Phase 7 invariant this phase amends
+
+`ParentID` is not merely "reserved but unused". Three places in the tree say so in
+the present tense, and `tenant.Ancestors` makes all three false:
+
+| Where | What it says now |
+|---|---|
+| `tenant/tenant.go:21-25` | "RESERVED. Nothing in tamper resolves it, inherits through it, or branches on it." |
+| `tenant/admin.go:56-58` | "tamper does not resolve it, inherit through it, or branch on it" |
+| `tenant/memstore_test.go:165-167` | "ParentID is reserved." |
+
+And `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md` §5.A **rejected**
+resolving `ParentID` in tamper core, for two stated reasons: it violates the
+Phase 7 invariant, and it "butuh amend sketch Phase 7 dulu" — needs a Phase 7
+sketch amendment first. That precondition is what this section satisfies, and the
+rejection is not being overruled by silence: **§5.A stands for roles** (the RBAC
+engine still must not walk, §10) and is superseded only for the three inheritance
+axes, where the lookup is a point lookup rather than a scope check.
+
+So slice 12a carries four edits that are not follow-up paperwork:
+
+- the `ParentID` comment in `tenant/tenant.go`, reworded to say what is now true —
+  the field is carried by stores and resolved by `Ancestors` for inheritance, while
+  nothing in tamper derives an *authorization* scope from it;
+- the same sentence in `tenant/admin.go`, keeping its last clause ("this is where a
+  hierarchy deployment writes the parentage its own port reads"), which was already
+  written in anticipation of this;
+- the test comment at `tenant/memstore_test.go:165`. The test itself stays: it
+  asserts that `MemStore` carries the field and that a miss does not walk to a
+  parent, and both remain true — `Ancestors` is the resolver, and the store is
+  still forbidden to be one;
+- an ADR-0001 note in §5.A and §8 — in that document, not a new ADR: it is the
+  same ADR's rejection being scoped, and a second document would leave a reader of
+  the first holding an overturned decision with no pointer to where it moved.
+
+A comment that says "nothing in tamper resolves it" while `tenant/hierarchy.go`
+does is exactly the kind of drift this repo treats as a defect rather than as
+stale prose. Shipping it in a later docs slice would be shipping a lie in the
+meantime.
+
+Section 2 is worth re-reading in that light: it quotes `tenant/tenant.go:21-25` as
+support ("the field exists so the answer can be additive when it comes") and the
+same paragraph contains the sentence this phase invalidates. Only the first half
+was quoted there; this section is the second half.
 
 No new port. Ancestors come from `tenant.Store` + `Descriptor.ParentID`, which
 every deployment already has, and `ParentID` exists precisely "so the answer can
@@ -436,8 +495,8 @@ read as allow", a nil one would silently permit.
    are things the customer has rather than powers over the request.
 2. Inheritance widens what the customer HAS; it never changes which tenant a
    request is scoped to, and never grants a permission.
-3. The ancestor walk fails closed: cycle, over-depth, dangling parent, or a
-   store error is an error, never "root" and never "allow".
+3. The ancestor walk fails closed: cycle, over-depth, dangling parent, a store
+   error, or a policy error is an error, never "root" and never "allow".
 4. The zero `ID` and `tenant.Single` both never walk — unset and deliberately
    single-tenant are different facts with the same answer, and neither is an
    error.
@@ -484,6 +543,8 @@ to compile before it is counted.
 | cycle → `ErrHierarchyCycle` | drop the visited set |
 | depth > 32 → `ErrHierarchyDepth` | drop the bound |
 | store error propagates | return nil, nil on any error |
+| policy error aborts the walk | read `(false, err)` as a stop-with-nil |
+| policy error never reaches a grandparent | continue the walk after an error |
 
 **`tenant/entitlements_test.go`**
 
@@ -556,7 +617,9 @@ field.
 ## 9. Slices
 
 - **12a — the primitive** (`tenant/hierarchy.go`: `Ancestors`, `Inheritance`, the
-  two sentinels) plus the `oidc/manager.go:359-361` doc correction.
+  two sentinels), the `oidc/manager.go:359-361` doc correction, and the four
+  statements of the Phase 7 invariant that this amends (§3.1). Those ship in the
+  same commit: the comment and the code that contradicts it must not coexist.
 - **12b — entitlements** (`Union` + `InheritingEntitlements`). No engine touched,
   so the primitive gets a real consumer before any manager depends on it.
 - **12c — IdP** (`oidc` + `saml` options, `tamper.New` wiring and guards, the

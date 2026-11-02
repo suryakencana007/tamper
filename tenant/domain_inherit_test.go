@@ -246,6 +246,45 @@ func TestInheritedDomainAuthority_ErrorsPropagate(t *testing.T) {
 	})
 }
 
+// The D4 flow, end to end, with the application's half played out: the helper
+// answers "the group's acme.edu covers this name", the application writes the
+// child's OWN claim row after approval, and the login path's resolver then returns
+// the CHILD — which is the fact the return type was shaped to protect.
+func TestInheritedDomainAuthority_ProofThenResolvedAsTheChild(t *testing.T) {
+	ancestorClaims := claims(t)
+	child := New("team")
+
+	authority, err := InheritedDomainAuthority(context.Background(), hierarchy(t), ancestorClaims,
+		child, "sdn05.acme.edu")
+	if err != nil {
+		t.Fatalf("InheritedDomainAuthority: %v", err)
+	}
+
+	// What the application does after its group admin approves: a row of its own,
+	// for its own tenant, carrying the provider the authority named.
+	store := &domainStore{claims: map[string][]DomainRecord{
+		"team": {{TenantID: "team", Domain: "sdn05.acme.edu", Verified: true, ProviderID: authority.ProviderID}},
+	}}
+	rec, err := ResolveDomain(context.Background(), store, "sdn05.acme.edu")
+	if err != nil {
+		t.Fatalf("ResolveDomain: %v", err)
+	}
+	if rec.TenantID != "team" {
+		t.Fatalf("ResolveDomain returned tenant %q, want the CHILD — routing on the authority's "+
+			"ancestor would send this user into the group", rec.TenantID)
+	}
+	if rec.BoundProviderID() != "okta" {
+		t.Fatalf("provider = %q, want the authority's okta", rec.BoundProviderID())
+	}
+
+	// And before the application writes that row, the login path resolves nothing:
+	// inherited authority is not itself a resolving claim.
+	if _, err := ResolveDomain(context.Background(), ancestorClaims, "sdn05.acme.edu"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound — an inherited claim is authority, and the "+
+			"child's own row is what the resolver believes", err)
+	}
+}
+
 func TestInheritedDomainAuthority_PanicsOnMisconfiguration(t *testing.T) {
 	t.Run("nil hierarchy", func(t *testing.T) {
 		defer func() {

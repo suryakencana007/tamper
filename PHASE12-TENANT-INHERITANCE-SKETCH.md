@@ -651,6 +651,8 @@ to compile before it is counted.
 | unnormalised input → `ErrDomainNotNormalised` | normalise silently |
 | no ancestor claims the name → not found | return the nearest ancestor regardless |
 | nearest ancestor's proof wins | take the farthest |
+| the D4 flow end to end: authority → the app writes the child's row → `ResolveDomain` returns the CHILD | resolve on the authority's ancestor |
+| before that row is written, `ResolveDomain` finds nothing | let authority double as a resolving claim |
 | the longest matching parent within one ancestor wins, either row order | take the first row that matches |
 | a tenant with no ancestors never consults the claim store | list claims before walking |
 | `ProviderID` comes from `BoundProviderID()` | return the raw record field |

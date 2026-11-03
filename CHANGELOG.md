@@ -8,6 +8,30 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+Nothing yet. What is left in `tech-debt.md` is the four P2 items (TD-11 to TD-14), and
+TD-27, which is Barista's own migration. **Every P1 that was tamper's own work is
+closed.** The next release number is not decided.
+
+---
+
+## [0.9.0] — 2026-11-03
+
+**Breaking.** The last compatibility shims are gone, and this is the release that
+finishes **TD-28**. The rule it applies is the one from 2026-10-05: no compatibility
+code — so nothing is deprecated, the weaker way is **deleted**, and the compiler is the
+migration guide.
+
+`MIGRATION-v0.9.md` puts it in upgrade order, including what to DELETE rather than
+rewrite (the guards the library now does) and the two things that stay the adapter's.
+
+The shape of the whole release in one sentence: **if a method takes a user id or a
+refresh token, it now also takes the tenant the request was routed to** — because that
+check used to live in every adapter, and an adapter that forgot still compiled.
+
+Nothing needs a data migration: the tenant model, the audit format and every table are
+untouched. The work is signatures and deleted helpers, which is why the guide is
+ordered by package rather than by datastore.
+
 ### ⚠️ Breaking — the tenant is in the signature (TD-28)
 
 `identity.Core` no longer offers a second, tenant-less way to reach a user or a
@@ -35,10 +59,6 @@ Behaviour change: `Logout` of another tenant's token answers
 `identity.ErrInvalidSession` instead of `nil`. An **unknown** token still answers
 `nil`, and a refused rotation is **not** revoked — a route wired to the wrong tenant
 must not be able to destroy valid sessions.
-
-Nothing yet. What is left in `tech-debt.md`: the four P2 items (TD-11 to TD-14),
-plus TD-27 (Barista's move to the v4-only audit API) and TD-28's two remaining
-compatibility shims. The next release number is not decided.
 
 ---
 

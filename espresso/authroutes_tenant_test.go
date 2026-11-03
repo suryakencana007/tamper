@@ -9,6 +9,8 @@ import (
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
+	"github.com/suryakencana007/tamper/audit"
+	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/tenant"
 )
@@ -97,7 +99,18 @@ func everyHandler(a *AuthRoutes) map[string]func(ctx context.Context) error {
 	withCookie := func(ctx context.Context) context.Context {
 		return context.WithValue(ctx, namedCookieKey(refreshCookieSlotName), "tok")
 	}
-	withUser := func(ctx context.Context) context.Context { return ContextWithUserID(ctx, "u-1") }
+	// The verified-token path, not a bare user id: ContextWithUserID is gone
+	// (Phase 13, D2), and decorateAuthed is exactly what RequireAuth installs — so
+	// the handler sees the context it would see in production, including the audit
+	// actor and the claims.
+	// Subject is a promoted field, so it is set after construction: the repo's go
+	// directive is 1.26 and a promoted field is not allowed in a composite literal
+	// until 1.27.
+	withUser := func(ctx context.Context) context.Context {
+		claims := &crypto.AccessClaims{TenantID: tenantA}
+		claims.Subject = "u-1"
+		return decorateAuthed(ctx, claims)
+	}
 	return map[string]func(ctx context.Context) error{
 		"Register": func(ctx context.Context) error {
 			_, err := a.Register(ctx, &espressofw.JSON[RegisterReq]{Data: RegisterReq{Email: "a@x", Password: "pw"}})
@@ -212,7 +225,9 @@ func TestFixedTenant_PanicsOnAnUnsetID(t *testing.T) {
 func TestAuthRoutes_CrossTenantOnTOTPVerbsIsNotAServerFault(t *testing.T) {
 	svc := &notHereIdentity{}
 	a := routesFor(t, svc, FixedTenant(tenant.New("acme")))
-	withUser := ContextWithUserID(context.Background(), "u-1")
+	claims := &crypto.AccessClaims{TenantID: tenantA}
+	claims.Subject = "u-1"
+	withUser := decorateAuthed(context.Background(), claims)
 	for name, call := range map[string]func() error{
 		"VerifyTOTP (code)": func() error {
 			_, err := a.VerifyTOTP(context.Background(), &espressofw.JSON[TOTPVerifyReq]{Data: TOTPVerifyReq{SessionToken: "pending", Code: "123456"}})
@@ -281,5 +296,41 @@ func TestNewAuthRoutes_RequiresTenant(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("NewAuthRoutes accepted a config with no Tenant resolver")
+	}
+}
+
+// Phase 13 (D3): the framework's OWN auth routes name the tenant when they report a
+// completed login, so a public-route audit row carries Actor.TenantID. Before, the
+// hook received a bare user id and the row could not say whose it was.
+func TestAuthRoutes_OnAuthenticatedCarriesTheRoutedTenant(t *testing.T) {
+	var got audit.Actor
+	svc := &tenantRecorder{}
+	a, err := NewAuthRoutes(svc, AuthRoutesConfig{
+		MountPrefix: "/api/auth",
+		Tenant:      FixedTenant(tenant.New("acme")),
+		Cookies:     CookieConfig{Name: "app_refresh"},
+		ProjectUser: func(context.Context, *identity.User) json.RawMessage { return nil },
+		OnAuthenticated: func(_ context.Context, actor audit.Actor) {
+			got = actor
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthRoutes: %v", err)
+	}
+	// The TOTP second leg, because this fake's Login answers ErrTOTPRequired on
+	// purpose (it exists to prove every handler reaches the port). The second leg is
+	// the other place a human authenticates mid-request, so it is the other place the
+	// hook must carry the tenant.
+	if _, err := a.VerifyTOTP(context.Background(), &espressofw.JSON[TOTPVerifyReq]{
+		Data: TOTPVerifyReq{SessionToken: "pending", Code: "123456"},
+	}); err != nil {
+		t.Fatalf("VerifyTOTP: %v", err)
+	}
+	if got.TenantID != "acme" {
+		t.Fatalf("OnAuthenticated actor.TenantID = %q, want acme — the route knows the "+
+			"tenant and the row needs it", got.TenantID)
+	}
+	if got.UserID == "" || got.Type != audit.ActorTypeUser {
+		t.Fatalf("actor = %+v, want a user actor with a user id", got)
 	}
 }

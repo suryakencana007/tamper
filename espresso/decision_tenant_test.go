@@ -158,7 +158,11 @@ func TestRequireDecision_RefusesATokenThatDoesNotFitItsTenant(t *testing.T) {
 			a := &recordingAuthorizer{allow: true}
 			h := RequireDecision(thingGate(a, routed, true))(http.HandlerFunc(noContent))
 			req := httptest.NewRequest(http.MethodPost, "/things", nil)
-			req = req.WithContext(ContextWithUserID(req.Context(), "u-1"))
+			// Phase 13 (D2) removed the PUBLIC way to assert a user id with no token,
+			// which is the point of this case: even the internal shape — the context
+			// key decorateAuthed writes — must be refused, because the gate asks the
+			// TOKEN which tenant the subject is from and there is no token.
+			req = req.WithContext(context.WithValue(req.Context(), userIDKey{}, "u-1"))
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			if rec.Code != http.StatusUnauthorized {

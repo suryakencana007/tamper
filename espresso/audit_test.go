@@ -225,17 +225,21 @@ func TestAuditor_SingleTenantEventIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestAuditor_PublicRoutePinnedTenant: a public route (login, TOTP
-// verify) has no token, so there is no actor tenant to record — but the
-// request was still routed to a tenant, and the row belongs in that
-// tenant's log. The user id backfilled through SetUserID is captured as
-// it always was.
+// TestAuditor_PublicRoutePinnedTenant: a public route (login, TOTP verify) has no
+// token, so no TOKEN names an actor tenant — but the request was still routed to a
+// tenant, and the row belongs in that tenant's log. Since Phase 13 (D3) the handler
+// can also name the actor's tenant explicitly, which is what makes a login row
+// answerable on its own rather than only through Event.TenantID.
 func TestAuditor_PublicRoutePinnedTenant(t *testing.T) {
 	rec := newRecordingLogger()
 	h := PinTenant(routeTo(tenantA))(
 		NewAuditor(rec, nil).Mutation(auditTestAction, auditTestResource, "")(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				SetUserID(r.Context(), "u-9")
+				// Phase 13, D3: the handler names the actor AND its tenant, so a
+				// public-route row can carry both. It used to be able to name only
+				// the user id, which left Actor.TenantID empty on exactly the rows
+				// (login, TOTP) where a reviewer first asks whose they are.
+				SetAuditActor(r.Context(), audit.Actor{UserID: "u-9", TenantID: tenantA})
 				w.WriteHeader(http.StatusNoContent)
 			})))
 	serveMutation(t, h, "")
@@ -244,11 +248,15 @@ func TestAuditor_PublicRoutePinnedTenant(t *testing.T) {
 	if ev.TenantID != tenantA {
 		t.Errorf("Event.TenantID = %q, want the pinned tenant %q", ev.TenantID, tenantA)
 	}
-	if ev.Actor.TenantID != "" {
-		t.Errorf("Actor.TenantID = %q, want empty — no token named a tenant for this actor", ev.Actor.TenantID)
+	// D3: the actor names its tenant now. Before, this was empty and the only
+	// tenant on the row was Event.TenantID — which answers "whose log is this in",
+	// not "whose actor is this", and the two differ for a cross-tenant entry.
+	if ev.Actor.TenantID != tenantA {
+		t.Errorf("Actor.TenantID = %q, want %q — the handler named it via SetAuditActor",
+			ev.Actor.TenantID, tenantA)
 	}
 	if ev.Actor.Type != audit.ActorTypeUser || ev.Actor.UserID != "u-9" {
-		t.Errorf("actor = %+v, want the user id captured via SetUserID (u-9)", ev.Actor)
+		t.Errorf("actor = %+v, want the user id captured via SetAuditActor (u-9)", ev.Actor)
 	}
 }
 
@@ -369,5 +377,26 @@ func TestRequireAuth_ActorCarriesTheTokensTenant(t *testing.T) {
 				t.Errorf("%s, token tid %q: actor = %+v, want user actor u-1", name, want, got)
 			}
 		}
+	}
+}
+
+// The slot exists for the routes where a HUMAN authenticated mid-request, so the
+// type is forced rather than taken from the caller's word: a handler that could
+// claim ActorTypeServiceAccount there would be able to mint a non-user actor without
+// any verified principal behind it.
+func TestSetAuditActor_ForcesTheUserType(t *testing.T) {
+	ctx, _ := WithAuditActorCapture(context.Background())
+	SetAuditActor(ctx, audit.Actor{Type: audit.ActorTypeServiceAccount, UserID: "u-1", TenantID: tenantA})
+
+	got, ok := AuditActorFromContext(ctx)
+	if !ok {
+		t.Fatal("AuditActorFromContext found nothing")
+	}
+	if got.Type != audit.ActorTypeUser {
+		t.Fatalf("Type = %q, want %q — the caller must not be able to claim another type "+
+			"through the slot", got.Type, audit.ActorTypeUser)
+	}
+	if got.UserID != "u-1" || got.TenantID != tenantA {
+		t.Fatalf("actor = %+v, want the user id and tenant as given", got)
 	}
 }

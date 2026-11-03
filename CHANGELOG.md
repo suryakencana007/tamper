@@ -8,6 +8,34 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+### ⚠️ Breaking — the tenant is in the signature (TD-28)
+
+`identity.Core` no longer offers a second, tenant-less way to reach a user or a
+refresh session. `Refresh`, `Logout`, `VerifyTOTP`, `VerifyRecoveryCode`,
+`DisableTOTP`, `StartTOTPEnrollment`, `CompleteTOTPEnrollment`,
+`RevokeAllSessions`, `Link`, `Unlink` and `ListIdentities` take a `tenant.ID`
+immediately after `ctx`; `ClearTOTP` and `EnrollTOTP` are **deleted** (one removed a
+second factor with no proof, the other enabled a secret the user never demonstrated).
+`EnterableTenants` stays unscoped on purpose: the question is about the user across
+tenants.
+
+This moves a check out of every adapter and into the library, once. The `Store`
+port's own doc used to assign the comparison to its callers — *"the callers that need
+a tenant check compare `User.TenantID`"* — so an adapter that forgot still compiled,
+and each one wrote its own guard.
+
+**In `espresso`:** `ContextWithUserID` is **gone** (the tenant-aware path is
+`RequireAuth`/`RequireAuthWS` → `decorateAuthed`); `SetUserID` becomes
+`SetAuditActor(ctx, audit.Actor)` so a public-route row can name the actor's tenant
+instead of leaving it empty; `WithUserIDCapture`/`UserIDFromContext` are
+`WithAuditActorCapture`/`AuditActorFromContext`; and `AuthRoutesConfig.OnAuthenticated`
+now receives an `audit.Actor` carrying the routed tenant.
+
+Behaviour change: `Logout` of another tenant's token answers
+`identity.ErrInvalidSession` instead of `nil`. An **unknown** token still answers
+`nil`, and a refused rotation is **not** revoked — a route wired to the wrong tenant
+must not be able to destroy valid sessions.
+
 Nothing yet. What is left in `tech-debt.md`: the four P2 items (TD-11 to TD-14),
 plus TD-27 (Barista's move to the v4-only audit API) and TD-28's two remaining
 compatibility shims. The next release number is not decided.

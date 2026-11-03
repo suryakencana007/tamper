@@ -95,7 +95,7 @@ func (a *Auditor) For(mc MutationContext) func(http.Handler) http.Handler {
 			// verify) can backfill the actor BEFORE the audit row
 			// emits. RequireAuth-gated routes already carry the
 			// JWT-derived id at request entry.
-			ctx, _ = WithUserIDCapture(ctx)
+			ctx, _ = WithAuditActorCapture(ctx)
 			r = r.WithContext(ctx)
 
 			sw := &statusCapturingWriter{ResponseWriter: w, status: http.StatusOK}
@@ -167,23 +167,22 @@ func (w *statusCapturingWriter) Write(b []byte) (int, error) {
 
 // captureActor builds an audit.Actor from the request context + HTTP
 // request. Default path: UserID comes from the JWT claim stashed by
-// RequireAuth (empty for public routes), falling back to the
-// SetUserID capture slot; Email comes from the EmailLookup; IP from
-// the Auditor's IPExtractor.
+// RequireAuth (empty for public routes), falling back to the actor the
+// handler stashed with SetAuditActor; Email comes from the EmailLookup; IP
+// from the Auditor's IPExtractor.
 //
 // When an upstream gate has stashed a non-user actor via
 // audit.WithActor (service accounts, system emissions), that actor
 // wins — the IP is stamped fresh and the row records the non-user
 // attribution honestly.
 //
-// A user actor is still REBUILT rather than passed through, so the
-// id, email and IP keep coming from the sources above. The one field
-// carried over from the context actor is TenantID: it is the actor's
-// home tenant as RequireAuth read it off the token's `tid`, and there
-// is no other place to recover it from here. On a public route no
-// actor was stashed, ActorFromContext returns the bare user default,
-// and the field stays "" — a user id backfilled through SetUserID says
-// who logged in, not which tenant a token of theirs would name.
+// A user actor is still REBUILT rather than passed through, so the id,
+// email and IP keep coming from the sources above. TenantID is the one
+// field carried over, from whichever stashed it: the token's `tid` via
+// RequireAuth, or — on a public route, where no token exists yet — the
+// tenant the handler named in SetAuditActor. Until Phase 13 (D3) the
+// public-route case had no way to say it, which is why a login row's
+// actor carried no tenant at all.
 func (a *Auditor) captureActor(ctx context.Context, r *http.Request) audit.Actor {
 	extract := a.IP
 	if extract == nil {
@@ -196,10 +195,18 @@ func (a *Auditor) captureActor(ctx context.Context, r *http.Request) audit.Actor
 		return ctxActor
 	}
 	userID, _ := GetUserID(ctx)
-	// Public-route fallback: honour the SetUserID slot when GetUserID
-	// came back empty so the row's actor.user_id is populated.
+	tenantID := ctxActor.TenantID
+	// Public-route fallback: honour the slot when GetUserID came back empty, so the
+	// row's actor carries the user AND the tenant the handler named. A token-derived
+	// actor wins over a stashed one — the token is verified, the slot is the
+	// handler's word.
 	if userID == "" {
-		userID = UserIDFromContext(ctx)
+		if stashed, ok := AuditActorFromContext(ctx); ok {
+			userID = stashed.UserID
+			if stashed.TenantID != "" {
+				tenantID = stashed.TenantID
+			}
+		}
 	}
 	email := ""
 	if a.Email != nil && userID != "" {
@@ -207,7 +214,7 @@ func (a *Auditor) captureActor(ctx context.Context, r *http.Request) audit.Actor
 			email = e
 		}
 	}
-	return audit.Actor{Type: audit.ActorTypeUser, UserID: userID, Email: email, IP: ip, TenantID: ctxActor.TenantID}
+	return audit.Actor{Type: audit.ActorTypeUser, UserID: userID, Email: email, IP: ip, TenantID: tenantID}
 }
 
 // eventScope returns the tenant an audit row belongs to — its

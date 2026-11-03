@@ -62,71 +62,86 @@ func AccessClaimsFromContext(ctx context.Context) (*crypto.AccessClaims, bool) {
 	return c, ok && c != nil
 }
 
-// userIDCaptureKey lets the audit middleware learn an authenticated
-// user_id AFTER the handler runs. Without this slot, public routes
-// like /login carry no user_id into the audit middleware, so the
-// login row ships with an empty actor even when the login succeeded.
-type userIDCaptureKey struct{}
+// actorCaptureKey lets the audit middleware learn an authenticated actor AFTER the
+// handler runs. Without this slot, public routes like /login carry no actor into the
+// audit middleware, so the login row ships with an empty one even when the login
+// succeeded.
+type actorCaptureKey struct{}
 
-// userIDSlot is the mutable slot the audit middleware installs at
-// request entry. Handlers that complete authentication mid-request
-// write the just-authenticated user id via SetUserID; the audit
-// middleware reads it back when building the audit.Event actor.
+// actorSlot is the mutable slot the audit middleware installs at request entry.
+// Handlers that complete authentication mid-request write the just-authenticated
+// actor via SetAuditActor; the audit middleware reads it back when building the
+// event's actor.
 //
-// Mutex-guarded because the slot lives across the full request
-// lifetime and a handler may legitimately call SetUserID from a
-// goroutine it spawns.
-type userIDSlot struct {
-	mu     sync.Mutex
-	userID string
+// It carries an audit.Actor, not a bare user id (Phase 13, D3): a login row belongs
+// to a TENANT, and until this change the public-route actor had none — the caller
+// knew the tenant and the middleware had no way to be told. A user id alone cannot
+// express that, which is the same defect as every other compatibility shim: the
+// second way to say who this is, and the second way carries no tenant.
+//
+// Mutex-guarded because the slot lives across the full request lifetime and a
+// handler may legitimately set it from a goroutine it spawns.
+type actorSlot struct {
+	mu    sync.Mutex
+	actor audit.Actor
 }
 
-// WithUserIDCapture returns a derived context carrying a fresh
-// user-id slot, plus a reader for the captured value once the handler
-// has returned. The audit-mutation middleware calls this exactly once
-// per request.
-func WithUserIDCapture(ctx context.Context) (context.Context, *UserIDCapture) {
-	slot := &userIDSlot{}
-	return context.WithValue(ctx, userIDCaptureKey{}, slot), &UserIDCapture{slot: slot}
+// WithAuditActorCapture returns a derived context carrying a fresh actor slot, plus
+// a reader for the captured actor once the handler has returned. The audit-mutation
+// middleware calls this exactly once per request.
+func WithAuditActorCapture(ctx context.Context) (context.Context, *AuditActorCapture) {
+	slot := &actorSlot{}
+	return context.WithValue(ctx, actorCaptureKey{}, slot), &AuditActorCapture{slot: slot}
 }
 
-// UserIDCapture is the middleware-side handle onto the capture slot.
-type UserIDCapture struct{ slot *userIDSlot }
+// AuditActorCapture is the middleware-side handle onto the capture slot.
+type AuditActorCapture struct{ slot *actorSlot }
 
-// Value returns the captured user id, or "" when nothing was stashed.
-func (c *UserIDCapture) Value() string {
+// Value returns the captured actor and whether anything was stashed.
+func (c *AuditActorCapture) Value() (audit.Actor, bool) {
 	if c == nil || c.slot == nil {
-		return ""
+		return audit.Actor{}, false
 	}
 	c.slot.mu.Lock()
 	defer c.slot.mu.Unlock()
-	return c.slot.userID
+	if c.slot.actor == (audit.Actor{}) {
+		return audit.Actor{}, false
+	}
+	return c.slot.actor, true
 }
 
-// SetUserID stashes userID into the slot installed by
-// WithUserIDCapture. Used by handlers that complete authentication
-// mid-request (login, TOTP verify) so the post-handler audit row
-// carries the right actor. No-op when the context wasn't wrapped.
-func SetUserID(ctx context.Context, userID string) {
-	if slot, ok := ctx.Value(userIDCaptureKey{}).(*userIDSlot); ok && slot != nil {
-		slot.mu.Lock()
-		slot.userID = userID
-		slot.mu.Unlock()
+// SetAuditActor stashes the actor that completed authentication mid-request, so the
+// post-handler audit row names it — and the tenant it belongs to. No-op when the
+// context was not wrapped by the audit middleware.
+//
+// The Type is forced to ActorTypeUser: this slot exists for the public routes where
+// a HUMAN authenticated, and a caller that wants to claim another actor type has
+// audit.WithActor for the authenticated path, where the type comes from verified
+// claims rather than from the caller's word.
+func SetAuditActor(ctx context.Context, actor audit.Actor) {
+	slot, ok := ctx.Value(actorCaptureKey{}).(*actorSlot)
+	if !ok || slot == nil {
+		return
 	}
+	actor.Type = audit.ActorTypeUser
+	slot.mu.Lock()
+	slot.actor = actor
+	slot.mu.Unlock()
 }
 
-// UserIDFromContext returns the user_id stashed by SetUserID, or ""
-// when nothing was stashed. Used by the audit middleware after the
-// handler has returned (the public-route case where the user was
-// anonymous at request entry but identified by the time the handler
-// returns). Handlers behind RequireAuth should keep using GetUserID.
-func UserIDFromContext(ctx context.Context) string {
-	if slot, ok := ctx.Value(userIDCaptureKey{}).(*userIDSlot); ok && slot != nil {
-		slot.mu.Lock()
-		defer slot.mu.Unlock()
-		return slot.userID
+// AuditActorFromContext returns the actor stashed by SetAuditActor, and whether one
+// was stashed. Used by the audit middleware after the handler has returned (the
+// public-route case where the request was anonymous at entry but identified by the
+// time it handed back). Handlers behind RequireAuth should keep using GetUserID and
+// the claims.
+func AuditActorFromContext(ctx context.Context) (audit.Actor, bool) {
+	slot, ok := ctx.Value(actorCaptureKey{}).(*actorSlot)
+	if !ok || slot == nil {
+		return audit.Actor{}, false
 	}
-	return ""
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	return slot.actor, slot.actor != (audit.Actor{})
 }
 
 // RequireAuth returns middleware that enforces an
@@ -230,20 +245,6 @@ var (
 type staticErr struct{ msg string }
 
 func (e *staticErr) Error() string { return e.msg }
-
-// ContextWithUserID returns a context carrying userID exactly as
-// RequireAuth stashes it (id only — no claims, no audit actor). Test
-// support for exercising handlers that read GetUserID without minting
-// real JWTs; production code must never call this — authentication is
-// RequireAuth's job.
-//
-// It is NOT enough for the tenant gates or for RequireDecision. They
-// need to know which tenant the subject's token is for, and an id says
-// nothing about that, so they answer 401. Add ContextWithAccessClaims
-// to exercise them.
-func ContextWithUserID(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, userIDKey{}, userID)
-}
 
 // ContextWithAccessClaims returns a context carrying claims exactly
 // as RequireAuth stashes them. Test support for exercising fresh-auth

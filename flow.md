@@ -2,9 +2,10 @@
 
 This document lists what each Tamper package does and how data moves between
 the functions. It was written from the code at `v0.6.0` (commit `c1af24e`) and
-updated in place for 0.7.0 — the parentage walk, plan inheritance, and the
-`ParentID`/`Entitlements` rows. It describes what the code does today. It is not a
-plan. The gaps for a
+updated in place twice since: for 0.7.0 (the parentage walk, plan inheritance, the
+`ParentID`/`Entitlements` rows) and for 0.8.0 (IdP inheritance on the manager row,
+inherited domain authority, and the `GetRegistry` note about the walk running before
+the registry lock). It describes what the code does today. It is not a plan. The gaps for a
 cross-tenant platform admin are in [`tech-debt.md`](tech-debt.md).
 
 ## 1. What Tamper is

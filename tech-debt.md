@@ -21,7 +21,7 @@ chose these limits deliberately. Six items were found as **sharp edges that
 exist today**, with or without a platform admin: TD-08, TD-09, TD-10, TD-15,
 TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 
-**Fix status (latest 2026-11-01).**
+**Fix status (latest 2026-11-02).**
 
 | Item | Pull request | State |
 |---|---|---|

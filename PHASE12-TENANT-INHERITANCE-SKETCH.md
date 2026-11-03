@@ -58,6 +58,13 @@ none of them grants a permission — D1's bindings still decide that.
 
 ## 2. What is true today (verified, not remembered)
 
+**Read the line numbers as of the verification date (2026-11-01), and verify by
+symbol.** The slices this sketch describes moved them: `GetRegistry` was at 365 and
+is at 370 once the wired path entered it, `Reload` went 384 → 413, `rebuildLocked`
+459 → 505 (and is now split in two), `InvalidateTenant` 561 → 619. The FACTS below
+are still the facts; only the pointers aged, which is the cost of citing lines in a
+document that describes code it then changes.
+
 | Fact | Where |
 |---|---|
 | Parentage is a field nothing reads | `tenant/tenant.go:21-25` (`ParentID`, "RESERVED. Nothing in tamper resolves it") |
@@ -395,7 +402,8 @@ shared rule, which the tenant tests cannot see.
 ### 4.2.1 The mechanics, verified against the code before writing any
 
 Four facts, all read out of the tree rather than assumed, and together they change
-two things this section first said.
+two things this section first said. Their line numbers are as of 2026-11-01, before
+12c moved them (§2's note) — the symbols are what to follow.
 
 **`rebuildLocked` is only ever reached holding `mu.Lock`** — from `GetRegistry`
 (`oidc/manager.go:365-381`) and `Reload` (`:384-391`), identically in

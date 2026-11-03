@@ -395,14 +395,14 @@ func TestHandwrittenAdapter_SingleTenantFlows(t *testing.T) {
 	}
 
 	// Refresh rotation, then Logout, then RevokeAllSessions.
-	_, rotated, err := c.Refresh(ctx, tokens.Refresh)
+	_, rotated, err := c.Refresh(ctx, tenant.Single, tokens.Refresh)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if err := c.Logout(ctx, rotated.Refresh); err != nil {
+	if err := c.Logout(ctx, tenant.Single, rotated.Refresh); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
-	if err := c.RevokeAllSessions(ctx, alice.ID); err != nil {
+	if err := c.RevokeAllSessions(ctx, tenant.Single, alice.ID); err != nil {
 		t.Fatalf("RevokeAllSessions: %v", err)
 	}
 
@@ -417,14 +417,14 @@ func TestHandwrittenAdapter_SingleTenantFlows(t *testing.T) {
 	if _, _, found, err := c.ResolveByIdentity(ctx, tenant.Single, "google", "sub-1"); err != nil || !found {
 		t.Fatalf("ResolveByIdentity(hit) = (%v, %v), want (true, nil)", found, err)
 	}
-	if _, err := c.Link(ctx, alice.ID, "saml", "sub-2"); err != nil {
+	if _, err := c.Link(ctx, tenant.Single, alice.ID, "saml", "sub-2"); err != nil {
 		t.Fatalf("Link: %v", err)
 	}
-	if err := c.Unlink(ctx, alice.ID, mustIdentityID(t, c, ctx, alice.ID)); err != nil {
+	if err := c.Unlink(ctx, tenant.Single, alice.ID, mustIdentityID(t, c, ctx, alice.ID)); err != nil {
 		t.Fatalf("Unlink: %v", err)
 	}
 	// A federated-only user cannot unlink their last method.
-	if err := c.Unlink(ctx, fed.ID, ident.ID); !errors.Is(err, ErrLastAuthMethod) {
+	if err := c.Unlink(ctx, tenant.Single, fed.ID, ident.ID); !errors.Is(err, ErrLastAuthMethod) {
 		t.Errorf("Unlink last method err = %v, want ErrLastAuthMethod", err)
 	}
 
@@ -439,7 +439,7 @@ func TestHandwrittenAdapter_SingleTenantFlows(t *testing.T) {
 
 func mustIdentityID(t *testing.T, c *Core, ctx context.Context, userID string) string {
 	t.Helper()
-	list, err := c.ListIdentities(ctx, userID)
+	list, err := c.ListIdentities(ctx, tenant.Single, userID)
 	if err != nil || len(list) == 0 {
 		t.Fatalf("ListIdentities: %v (%d)", err, len(list))
 	}
@@ -514,10 +514,10 @@ func TestHandwrittenAdapter_SentinelParity(t *testing.T) {
 	if _, _, err := c.Login(ctx, tenant.Single, "frank@example.com", "wrong"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("ErrInvalidCredentials not surfaced: %v", err)
 	}
-	if _, _, err := c.Refresh(ctx, "not-a-token"); !errors.Is(err, ErrInvalidSession) {
+	if _, _, err := c.Refresh(ctx, tenant.Single, "not-a-token"); !errors.Is(err, ErrInvalidSession) {
 		t.Errorf("ErrInvalidSession not surfaced: %v", err)
 	}
-	if err := c.Unlink(ctx, "nobody", "nothing"); !errors.Is(err, ErrNotFound) {
+	if err := c.Unlink(ctx, tenant.Single, "nobody", "nothing"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("ErrNotFound not surfaced: %v", err)
 	}
 	// Cross-user link conflict keeps its pre-delegation message.
@@ -528,7 +528,7 @@ func TestHandwrittenAdapter_SentinelParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UserByEmail: %v", err)
 	}
-	if _, err := c.Link(ctx, u.ID, "google", "sub-x"); !errors.Is(err, ErrLinkConflict) {
+	if _, err := c.Link(ctx, tenant.Single, u.ID, "google", "sub-x"); !errors.Is(err, ErrLinkConflict) {
 		t.Errorf("ErrLinkConflict not surfaced: %v", err)
 	}
 }

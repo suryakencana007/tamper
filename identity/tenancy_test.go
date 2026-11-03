@@ -300,8 +300,9 @@ func TestRevokeAllSessionsForTenant_IsNotThePerUserRevoke(t *testing.T) {
 		t.Fatalf("register carol: %v", err)
 	}
 
-	// Alice signs out everywhere. That is HER sessions, nobody else's.
-	if err := c.RevokeAllSessions(ctx, alice.ID); err != nil {
+	// Alice signs out everywhere. That is HER sessions, nobody else's — and she is
+	// acme's, so the call names acme (Phase 13: the tenant is in the signature).
+	if err := c.RevokeAllSessions(ctx, tenant.New(tenantA), alice.ID); err != nil {
 		t.Fatalf("RevokeAllSessions: %v", err)
 	}
 	if n := store.LiveSessionCount(alice.ID); n != 0 {

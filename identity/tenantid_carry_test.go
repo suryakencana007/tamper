@@ -41,7 +41,7 @@ func TestRefresh_PreservesTenantIDOnSuccessor(t *testing.T) {
 		t.Fatalf("fixture: the registered session should carry acme, got %+v (found=%v)", orig, ok)
 	}
 
-	_, rotated, err := c.Refresh(ctx, tokens.Refresh)
+	_, rotated, err := c.Refresh(ctx, tenant.New("acme"), tokens.Refresh)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -111,7 +111,12 @@ func TestRefresh_DeniesSessionInAnotherTenant(t *testing.T) {
 			token := seedSession(t, store, "sess-cross", user.ID, tc.sessionTenant)
 			before := sessionsFor(store, user.ID)
 
-			_, tokens, err := c.Refresh(ctx, token)
+			// The route is the SESSION's tenant, so the routing check passes and the
+			// session-vs-user mismatch TD-19 closed is the one that fires. That is the
+			// check that revokes, and the revoke is what this test asserts. A route that
+			// disagrees with the session is refused EARLIER and does not revoke — see
+			// TestRefresh_RoutingMismatchDoesNotRevoke, which is the other half.
+			_, tokens, err := c.Refresh(ctx, tenant.FromStored(tc.sessionTenant), token)
 			if !errors.Is(err, ErrInvalidSession) {
 				t.Fatalf("Refresh of a session in %q for a user stored in %q: err = %v, want ErrInvalidSession",
 					tc.sessionTenant, tc.userTenant.String(), err)
@@ -143,12 +148,12 @@ func TestRefresh_CrossTenantSessionDoesNotDiscloseInactive(t *testing.T) {
 	}
 	store.SetActive(user.ID, false)
 
-	if _, _, err := c.Refresh(ctx, seedSession(t, store, "sess-cross", user.ID, "acme")); !errors.Is(err, ErrInvalidSession) {
+	if _, _, err := c.Refresh(ctx, tenant.New("globex"), seedSession(t, store, "sess-cross", user.ID, "acme")); !errors.Is(err, ErrInvalidSession) {
 		t.Fatalf("cross-tenant session of an inactive user: err = %v, want ErrInvalidSession "+
 			"(ErrUserInactive here tells acme that the user exists in another tenant)", err)
 	}
 	// In the user's own tenant the inactive answer is unchanged.
-	if _, _, err := c.Refresh(ctx, seedSession(t, store, "sess-own", user.ID, "globex")); !errors.Is(err, ErrUserInactive) {
+	if _, _, err := c.Refresh(ctx, tenant.New("globex"), seedSession(t, store, "sess-own", user.ID, "globex")); !errors.Is(err, ErrUserInactive) {
 		t.Fatalf("own-tenant session of an inactive user: err = %v, want ErrUserInactive", err)
 	}
 }
@@ -163,7 +168,7 @@ func TestRefresh_EmptyTenantStaysEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	_, rotated, err := c.Refresh(ctx, tokens.Refresh)
+	_, rotated, err := c.Refresh(ctx, tenant.Single, tokens.Refresh)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -262,7 +267,7 @@ func TestLink_InheritsTenantFromTargetUser(t *testing.T) {
 
 	store.Seed(User{ID: "u-acme", TenantID: "acme", Email: "frank@acme.com", PasswordHash: "x", Active: true})
 
-	ident, err := c.Link(ctx, "u-acme", "google", "sub-9")
+	ident, err := c.Link(ctx, tenant.New("acme"), "u-acme", "google", "sub-9")
 	if err != nil {
 		t.Fatalf("Link: %v", err)
 	}
@@ -409,7 +414,7 @@ func TestIssueTokensForUser_CarriesTenantIntoJWTAndSession(t *testing.T) {
 
 	// 3. rotation inherits it. This is the end-to-end shape 7b-1 could
 	//    only fake by hand-seeding a row.
-	_, rotated, err := c.Refresh(ctx, tokens.Refresh)
+	_, rotated, err := c.Refresh(ctx, tenant.New("acme"), tokens.Refresh)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -656,7 +661,7 @@ func TestIssueTokensForUser_PendingTokenCannotMintIntoAnotherTenant(t *testing.T
 		t.Error("the globex session verified at acme")
 	}
 	// And the session it persisted rotates inside globex.
-	_, rotated, err := c.Refresh(ctx, tokens.Refresh)
+	_, rotated, err := c.Refresh(ctx, globex, tokens.Refresh)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}

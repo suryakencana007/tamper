@@ -372,7 +372,7 @@ func (c *Core) IssueTokensForUser(ctx context.Context, userID string, tenantID t
 // old row's auth_time + ACR UNCHANGED. A row with no auth_time or no
 // ACR was not written by this package; it is refused as an invalid
 // session and revoked, like a row of the wrong tenant.
-func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, error) {
+func (c *Core) Refresh(ctx context.Context, tenantID tenant.ID, refreshToken string) (User, Tokens, error) {
 	if c.refreshTTL <= 0 {
 		return User{}, Tokens{}, ErrInvalidSession
 	}
@@ -380,12 +380,15 @@ func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, 
 	if err != nil {
 		return User{}, Tokens{}, ErrInvalidSession
 	}
-	session, err := c.store.RefreshSessionByHash(ctx, hash)
+	// tenantID is the tenant the ROUTE resolved. A session minted in another one is
+	// refused here, and NOT revoked (see sessionInTenant for why that differs from
+	// the session-vs-user check below).
+	session, err := c.sessionInTenant(ctx, hash, tenantID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return User{}, Tokens{}, ErrInvalidSession
 		}
-		return User{}, Tokens{}, fmt.Errorf("identity: lookup session: %w", err)
+		return User{}, Tokens{}, err
 	}
 	now := c.now()
 	if session.Revoked() || !session.ExpiresAt.After(now) {
@@ -451,7 +454,7 @@ func (c *Core) Refresh(ctx context.Context, refreshToken string) (User, Tokens, 
 // Idempotent by design: unknown, malformed, already-revoked tokens and
 // disabled refresh all succeed silently so a stale cookie can always be
 // cleared without a noisy error.
-func (c *Core) Logout(ctx context.Context, refreshToken string) error {
+func (c *Core) Logout(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
 	if c.refreshTTL <= 0 || refreshToken == "" {
 		return nil
 	}
@@ -459,12 +462,16 @@ func (c *Core) Logout(ctx context.Context, refreshToken string) error {
 	if err != nil {
 		return nil
 	}
-	session, err := c.store.RefreshSessionByHash(ctx, hash)
+	session, err := c.sessionInTenant(ctx, hash, tenantID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
+			// Unchanged: logging out with a token that does not exist is already
+			// logged out, and a cookie the client still holds must not produce an
+			// error it cannot act on.
 			return nil
 		}
-		return fmt.Errorf("identity: lookup session: %w", err)
+		// A token for ANOTHER tenant: refused, and deliberately not revoked.
+		return err
 	}
 	if session.Revoked() {
 		return nil
@@ -489,9 +496,14 @@ func (c *Core) Logout(ctx context.Context, refreshToken string) error {
 // onto it would silently turn one user's "log out everywhere" into
 // signing out an entire customer. Blast radius is not a scope
 // adjustment, so the tenant-wide operation gets its own name below.
-func (c *Core) RevokeAllSessions(ctx context.Context, userID string) error {
+func (c *Core) RevokeAllSessions(ctx context.Context, tenantID tenant.ID, userID string) error {
 	if userID == "" {
 		return fmt.Errorf("identity: user id is required")
+	}
+	// The user must be the tenant's own before their sessions are revoked. Answered
+	// with ErrNotFound, like every other cross-tenant key in this package.
+	if _, err := c.userInTenant(ctx, userID, tenantID); err != nil {
+		return err
 	}
 	if err := c.store.RevokeAllRefreshSessionsForUser(ctx, userID, c.now()); err != nil {
 		return fmt.Errorf("identity: revoke all sessions: %w", err)

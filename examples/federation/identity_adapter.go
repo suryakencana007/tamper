@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/suryakencana007/tamper/crypto"
 	tamperespresso "github.com/suryakencana007/tamper/espresso"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/tenant"
@@ -51,30 +50,6 @@ func (c coreIdentity) userIn(ctx context.Context, tenantID tenant.ID, userID str
 	return u, nil
 }
 
-// sessionIn refuses a refresh token that does not name a session of
-// tenantID, with ErrInvalidSession. It reads only; the Core does the
-// rotation or the revoke.
-func (c coreIdentity) sessionIn(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
-	hash, err := crypto.HashRefreshToken(refreshToken)
-	if err != nil {
-		return identity.ErrInvalidSession
-	}
-	s, err := c.store.RefreshSessionByHash(ctx, hash)
-	if err != nil {
-		// A missing row is an invalid session. Any other error is the
-		// store's, and it is NOT an invalid session: a transient failure
-		// must not sign the user out.
-		if errors.Is(err, identity.ErrNotFound) {
-			return identity.ErrInvalidSession
-		}
-		return err
-	}
-	if tenant.FromStored(s.TenantID) != tenantID {
-		return identity.ErrInvalidSession
-	}
-	return nil
-}
-
 func (c coreIdentity) Register(ctx context.Context, tenantID tenant.ID, email, password string) (tamperespresso.AuthResult, error) {
 	u, t, err := c.core.Register(ctx, tenantID, email, password)
 	if err != nil {
@@ -105,12 +80,11 @@ func (c coreIdentity) Me(ctx context.Context, tenantID tenant.ID, userID string)
 }
 
 func (c coreIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refreshToken string) (tamperespresso.AuthResult, error) {
-	// A token of another tenant is refused as an unknown one, before
-	// anything rotates or is revoked.
-	if err := c.sessionIn(ctx, tenantID, refreshToken); err != nil {
-		return tamperespresso.AuthResult{}, err
-	}
-	u, t, err := c.core.Refresh(ctx, refreshToken)
+	// Core takes the tenant now and refuses another tenant's session itself, without
+	// revoking it (Phase 13, TD-28). The guard that used to sit here was the only
+	// thing between an acme token and a globex route, and every adapter had to write
+	// its own.
+	u, t, err := c.core.Refresh(ctx, tenantID, refreshToken)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
@@ -118,15 +92,10 @@ func (c coreIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refreshTo
 }
 
 func (c coreIdentity) Logout(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
-	// Logout is idempotent: a token of another tenant is treated like a
-	// stale one and nothing happens.
-	if err := c.sessionIn(ctx, tenantID, refreshToken); err != nil {
-		if errors.Is(err, identity.ErrInvalidSession) {
-			return nil
-		}
-		return err
-	}
-	return c.core.Logout(ctx, refreshToken)
+	// Core refuses another tenant's token (and does not revoke it); an UNKNOWN token
+	// still reads as already logged out.
+
+	return c.core.Logout(ctx, tenantID, refreshToken)
 }
 
 func (c coreIdentity) IssueTokensForUser(ctx context.Context, tenantID tenant.ID, userID string) (tamperespresso.AuthResult, error) {
@@ -149,21 +118,21 @@ func (c coreIdentity) VerifyTOTP(ctx context.Context, tenantID tenant.ID, userID
 	if _, err := c.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return c.core.VerifyTOTP(ctx, userID, code)
+	return c.core.VerifyTOTP(ctx, tenantID, userID, code)
 }
 
 func (c coreIdentity) VerifyRecoveryCode(ctx context.Context, tenantID tenant.ID, userID, code string) error {
 	if _, err := c.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return c.core.VerifyRecoveryCode(ctx, userID, code)
+	return c.core.VerifyRecoveryCode(ctx, tenantID, userID, code)
 }
 
 func (c coreIdentity) EnrollTOTP(ctx context.Context, tenantID tenant.ID, userID string) (tamperespresso.TOTPEnrollment, error) {
 	if _, err := c.userIn(ctx, tenantID, userID); err != nil {
 		return tamperespresso.TOTPEnrollment{}, err
 	}
-	e, err := c.core.EnrollTOTP(ctx, userID)
+	e, err := c.core.StartTOTPEnrollment(ctx, tenantID, userID)
 	if err != nil {
 		return tamperespresso.TOTPEnrollment{}, err
 	}
@@ -174,7 +143,7 @@ func (c coreIdentity) DisableTOTP(ctx context.Context, tenantID tenant.ID, userI
 	if _, err := c.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return c.core.DisableTOTP(ctx, userID, code)
+	return c.core.DisableTOTP(ctx, tenantID, userID, code)
 }
 
 // The session-token two-phase TOTP ceremony is app policy (the token shape +

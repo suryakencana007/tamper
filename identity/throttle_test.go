@@ -249,8 +249,8 @@ func TestThrottle_SecondFactorSurfacesDoNotShareABucket(t *testing.T) {
 		SecondFactorKey: func(uid, step string) string { return step + "|" + uid },
 	}
 
-	_ = c.VerifyTOTP(ctx, userID, "000000")
-	_ = c.VerifyRecoveryCode(ctx, userID, "nope")
+	_ = c.VerifyTOTP(ctx, tenant.Single, userID, "000000")
+	_ = c.VerifyRecoveryCode(ctx, tenant.Single, userID, "nope")
 
 	keys := rt.seen()
 	if len(keys) != 2 {
@@ -278,8 +278,8 @@ func TestThrottle_SecondFactorRefusalIsUniform(t *testing.T) {
 	_, cfg := denyAll(45 * time.Second)
 	c.throttling = cfg
 
-	realErr := c.VerifyTOTP(ctx, userID, "000000")
-	ghostErr := c.VerifyTOTP(ctx, "user-that-never-existed", "000000")
+	realErr := c.VerifyTOTP(ctx, tenant.Single, userID, "000000")
+	ghostErr := c.VerifyTOTP(ctx, tenant.Single, "user-that-never-existed", "000000")
 
 	if realErr == nil || ghostErr == nil {
 		t.Fatalf("throttling did not refuse: real %v ghost %v", realErr, ghostErr)
@@ -292,8 +292,8 @@ func TestThrottle_SecondFactorRefusalIsUniform(t *testing.T) {
 		t.Errorf("VerifyTOTP err = %v, want ErrThrottled", realErr)
 	}
 
-	realRec := c.VerifyRecoveryCode(ctx, userID, "nope")
-	ghostRec := c.VerifyRecoveryCode(ctx, "user-that-never-existed", "nope")
+	realRec := c.VerifyRecoveryCode(ctx, tenant.Single, userID, "nope")
+	ghostRec := c.VerifyRecoveryCode(ctx, tenant.Single, "user-that-never-existed", "nope")
 	if realRec.Error() != ghostRec.Error() {
 		t.Errorf("VerifyRecoveryCode refusal differs by account:\n real: %q\nghost: %q",
 			realRec.Error(), ghostRec.Error())
@@ -311,9 +311,7 @@ func TestThrottle_RecoveryCodeRefusalDoesNotConsumeTheCode(t *testing.T) {
 	ctx := context.Background()
 	c, store, userID := totpCore(t)
 	// totpCore only registers; enrol so there are codes to consume.
-	if _, err := c.EnrollTOTP(ctx, userID); err != nil {
-		t.Fatalf("EnrollTOTP: %v", err)
-	}
+	enrollTOTP(t, c, ctx, userID)
 
 	before, err := store.TOTPState(ctx, userID)
 	if err != nil {
@@ -325,7 +323,7 @@ func TestThrottle_RecoveryCodeRefusalDoesNotConsumeTheCode(t *testing.T) {
 
 	_, cfg := denyAll(time.Minute)
 	c.throttling = cfg
-	if err := c.VerifyRecoveryCode(ctx, userID, "nope"); !errors.Is(err, ErrThrottled) {
+	if err := c.VerifyRecoveryCode(ctx, tenant.Single, userID, "nope"); !errors.Is(err, ErrThrottled) {
 		t.Fatalf("VerifyRecoveryCode err = %v, want ErrThrottled", err)
 	}
 

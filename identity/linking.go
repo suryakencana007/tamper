@@ -94,18 +94,18 @@ func (c *Core) ProvisionUserWithIdentity(ctx context.Context, tenantID tenant.ID
 //
 // The insert races against a concurrent link/sign-in: an ErrIdentityTaken
 // on insert triggers a re-fetch to re-decide idempotent-vs-conflict.
-func (c *Core) Link(ctx context.Context, userID, provider, subject string) (Identity, error) {
+func (c *Core) Link(ctx context.Context, tenantID tenant.ID, userID, provider, subject string) (Identity, error) {
 	// The target user must exist (link attaches to a KNOWN account; a
 	// missing user is a caller error surfaced as ErrNotFound rather
 	// than an opaque FK violation from the insert).
 	// The user is captured, not discarded: the linked identity inherits
 	// its tenant, and this lookup already happens — no extra round trip.
-	target, err := c.store.UserByID(ctx, userID)
+	// userInTenant, not a bare lookup: the same read now also proves the user is
+	// the tenant's own, so linking cannot attach an identity to another tenant's
+	// account. No extra round trip — the lookup happened either way.
+	target, err := c.userInTenant(ctx, userID, tenantID)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return Identity{}, fmt.Errorf("%w: user %s", ErrNotFound, userID)
-		}
-		return Identity{}, fmt.Errorf("identity: link user lookup: %w", err)
+		return Identity{}, err
 	}
 	existing, err := c.store.IdentityByProviderSubject(ctx, tenant.FromStored(target.TenantID), provider, subject)
 	switch {
@@ -151,7 +151,7 @@ func (c *Core) Link(ctx context.Context, userID, provider, subject string) (Iden
 // with a password may unlink even their only identity. A cross-user
 // identity id is masked as ErrNotFound (IDOR defense — never leak that
 // the identity exists under another user).
-func (c *Core) Unlink(ctx context.Context, userID, identityID string) error {
+func (c *Core) Unlink(ctx context.Context, tenantID tenant.ID, userID, identityID string) error {
 	ident, err := c.store.IdentityByID(ctx, identityID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -162,9 +162,11 @@ func (c *Core) Unlink(ctx context.Context, userID, identityID string) error {
 	if ident.UserID != userID {
 		return ErrNotFound // existence masking
 	}
-	user, err := c.store.UserByID(ctx, userID)
+	// Same read, plus the tenant check — before the last-auth-method rule, so a
+	// foreign user cannot probe how many identities they have.
+	user, err := c.userInTenant(ctx, userID, tenantID)
 	if err != nil {
-		return fmt.Errorf("identity: unlink load user: %w", err)
+		return err
 	}
 	if user.PasswordHash == "" {
 		count, err := c.store.CountIdentitiesByUserID(ctx, userID)
@@ -182,7 +184,10 @@ func (c *Core) Unlink(ctx context.Context, userID, identityID string) error {
 }
 
 // ListIdentities returns userID's linked identities, oldest first.
-func (c *Core) ListIdentities(ctx context.Context, userID string) ([]Identity, error) {
+func (c *Core) ListIdentities(ctx context.Context, tenantID tenant.ID, userID string) ([]Identity, error) {
+	if _, err := c.userInTenant(ctx, userID, tenantID); err != nil {
+		return nil, err
+	}
 	out, err := c.store.IdentitiesByUserID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("identity: list identities: %w", err)

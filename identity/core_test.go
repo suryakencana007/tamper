@@ -223,7 +223,7 @@ func TestRefresh(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Register: %v", err)
 		}
-		_, second, err := c.Refresh(ctx, first.Refresh)
+		_, second, err := c.Refresh(ctx, tenant.Single, first.Refresh)
 		if err != nil {
 			t.Fatalf("Refresh: %v", err)
 		}
@@ -231,11 +231,11 @@ func TestRefresh(t *testing.T) {
 			t.Fatal("rotation must mint a new refresh token")
 		}
 		// The old token is dead.
-		if _, _, err := c.Refresh(ctx, first.Refresh); !errors.Is(err, ErrInvalidSession) {
+		if _, _, err := c.Refresh(ctx, tenant.Single, first.Refresh); !errors.Is(err, ErrInvalidSession) {
 			t.Fatalf("old token: err = %v, want ErrInvalidSession", err)
 		}
 		// The new one works.
-		if _, _, err := c.Refresh(ctx, second.Refresh); err != nil {
+		if _, _, err := c.Refresh(ctx, tenant.Single, second.Refresh); err != nil {
 			t.Fatalf("new token: %v", err)
 		}
 	})
@@ -254,7 +254,7 @@ func TestRefresh(t *testing.T) {
 			t.Fatalf("IssueTokensForUser: %v", err)
 		}
 
-		_, rotated, err := c.Refresh(ctx, tokens.Refresh)
+		_, rotated, err := c.Refresh(ctx, tenant.Single, tokens.Refresh)
 		if err != nil {
 			t.Fatalf("Refresh: %v", err)
 		}
@@ -300,7 +300,7 @@ func TestRefresh(t *testing.T) {
 				mod(&row)
 				_ = store.CreateRefreshSession(ctx, row)
 
-				if _, _, err := c.Refresh(ctx, plaintext); !errors.Is(err, ErrInvalidSession) {
+				if _, _, err := c.Refresh(ctx, tenant.Single, plaintext); !errors.Is(err, ErrInvalidSession) {
 					t.Fatalf("Refresh: err = %v, want ErrInvalidSession", err)
 				}
 				if got, _ := store.SessionByHash(hash); !got.Revoked() {
@@ -319,18 +319,18 @@ func TestRefresh(t *testing.T) {
 			t.Fatalf("Register: %v", err)
 		}
 		clock = now.Add(31 * 24 * time.Hour) // past the 30d TTL
-		if _, _, err := c.Refresh(ctx, tokens.Refresh); !errors.Is(err, ErrInvalidSession) {
+		if _, _, err := c.Refresh(ctx, tenant.Single, tokens.Refresh); !errors.Is(err, ErrInvalidSession) {
 			t.Fatalf("err = %v, want ErrInvalidSession", err)
 		}
 	})
 
 	t.Run("unknown / malformed / disabled all collapse", func(t *testing.T) {
 		c, _ := testCore(t)
-		if _, _, err := c.Refresh(ctx, "completely-unknown-token-value-1234567890abcdef"); !errors.Is(err, ErrInvalidSession) {
+		if _, _, err := c.Refresh(ctx, tenant.Single, "completely-unknown-token-value-1234567890abcdef"); !errors.Is(err, ErrInvalidSession) {
 			t.Fatalf("unknown: %v", err)
 		}
 		disabled, _ := New(NewMemStore(), testJWT()) // TTL 0
-		if _, _, err := disabled.Refresh(ctx, "anything"); !errors.Is(err, ErrInvalidSession) {
+		if _, _, err := disabled.Refresh(ctx, tenant.Single, "anything"); !errors.Is(err, ErrInvalidSession) {
 			t.Fatalf("disabled: want ErrInvalidSession")
 		}
 	})
@@ -342,7 +342,7 @@ func TestRefresh(t *testing.T) {
 			t.Fatalf("Register: %v", err)
 		}
 		store.SetActive(user.ID, false)
-		if _, _, err := c.Refresh(ctx, tokens.Refresh); !errors.Is(err, ErrUserInactive) {
+		if _, _, err := c.Refresh(ctx, tenant.Single, tokens.Refresh); !errors.Is(err, ErrUserInactive) {
 			t.Fatalf("err = %v, want ErrUserInactive", err)
 		}
 		hash, _ := crypto.HashRefreshToken(tokens.Refresh)
@@ -361,7 +361,7 @@ func TestLogout(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	if err := c.Logout(ctx, tokens.Refresh); err != nil {
+	if err := c.Logout(ctx, tenant.Single, tokens.Refresh); err != nil {
 		t.Fatalf("Logout: %v", err)
 	}
 	if n := store.LiveSessionCount(user.ID); n != 0 {
@@ -369,7 +369,7 @@ func TestLogout(t *testing.T) {
 	}
 	// Idempotent across every stale shape.
 	for _, token := range []string{tokens.Refresh, "unknown-token", ""} {
-		if err := c.Logout(ctx, token); err != nil {
+		if err := c.Logout(ctx, tenant.Single, token); err != nil {
 			t.Fatalf("Logout(%q) must be idempotent: %v", token, err)
 		}
 	}
@@ -390,14 +390,14 @@ func TestRevokeAllSessions(t *testing.T) {
 		t.Fatalf("live sessions = %d, want 2", n)
 	}
 
-	if err := c.RevokeAllSessions(ctx, user.ID); err != nil {
+	if err := c.RevokeAllSessions(ctx, tenant.Single, user.ID); err != nil {
 		t.Fatalf("RevokeAllSessions: %v", err)
 	}
 	if n := store.LiveSessionCount(user.ID); n != 0 {
 		t.Fatalf("live sessions = %d, want 0 (sign out everywhere)", n)
 	}
 	for _, token := range []string{first.Refresh, second.Refresh} {
-		if _, _, err := c.Refresh(ctx, token); !errors.Is(err, ErrInvalidSession) {
+		if _, _, err := c.Refresh(ctx, tenant.Single, token); !errors.Is(err, ErrInvalidSession) {
 			t.Fatalf("revoked session must reject: %v", err)
 		}
 	}

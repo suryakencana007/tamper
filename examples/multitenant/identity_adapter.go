@@ -66,31 +66,6 @@ func (p pooledIdentity) userIn(ctx context.Context, tenantID tenant.ID, userID s
 	return u, nil
 }
 
-// sessionIn refuses a refresh token that does not name a session of
-// tenantID, with ErrInvalidSession. It uses only public API — hash the
-// presented token, read the row, compare — and reads only; the Core
-// does the rotation or the revoke.
-func (p pooledIdentity) sessionIn(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
-	hash, err := crypto.HashRefreshToken(refreshToken)
-	if err != nil {
-		return identity.ErrInvalidSession
-	}
-	s, err := p.store.RefreshSessionByHash(ctx, hash)
-	if err != nil {
-		// A missing row is an invalid session. Any other error is the
-		// store's, and it is NOT an invalid session: a transient failure
-		// must not sign the user out.
-		if errors.Is(err, identity.ErrNotFound) {
-			return identity.ErrInvalidSession
-		}
-		return err
-	}
-	if tenant.FromStored(s.TenantID) != tenantID {
-		return identity.ErrInvalidSession
-	}
-	return nil
-}
-
 func (p pooledIdentity) Register(ctx context.Context, tenantID tenant.ID, email, password string) (tamperespresso.AuthResult, error) {
 	u, tok, err := p.core.Register(ctx, tenantID, email, password)
 	if err != nil {
@@ -123,31 +98,23 @@ func (p pooledIdentity) Me(ctx context.Context, tenantID tenant.ID, userID strin
 	return &u, nil
 }
 
-// Refresh checks the session's tenant BEFORE rotating. Core.Refresh
-// takes no tenant (rotation is keyed by the token hash), so without this
-// an acme refresh token would rotate happily on a globex route. A
-// wrong-tenant token and an unknown one look the same.
+// Refresh hands the tenant straight to Core, which now takes it and refuses a
+// session minted in another tenant (Phase 13, TD-28). Until that change the guard
+// below was the ONLY thing standing between an acme refresh token and a globex
+// route, and this adapter had to write it — that is the debt the phase removed.
 func (p pooledIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refreshToken string) (tamperespresso.AuthResult, error) {
-	if err := p.sessionIn(ctx, tenantID, refreshToken); err != nil {
-		return tamperespresso.AuthResult{}, err
-	}
-	u, tok, err := p.core.Refresh(ctx, refreshToken)
+	u, tok, err := p.core.Refresh(ctx, tenantID, refreshToken)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
 	return tamperespresso.AuthResult{User: &u, Tokens: tok}, nil
 }
 
-// Logout is idempotent: a token of another tenant is treated like a
-// stale one, and nothing happens.
+// Logout refuses a token of another tenant inside Core — and, unlike the rotation
+// mismatch, refuses without REVOKING it, so a route wired to the wrong tenant cannot
+// destroy sessions that are not its own.
 func (p pooledIdentity) Logout(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
-	if err := p.sessionIn(ctx, tenantID, refreshToken); err != nil {
-		if errors.Is(err, identity.ErrInvalidSession) {
-			return nil
-		}
-		return err
-	}
-	return p.core.Logout(ctx, refreshToken)
+	return p.core.Logout(ctx, tenantID, refreshToken)
 }
 
 // IssueTokensForUser is the mint at the end of the TOTP second leg. The
@@ -174,21 +141,21 @@ func (p pooledIdentity) VerifyTOTP(ctx context.Context, tenantID tenant.ID, user
 	if _, err := p.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return p.core.VerifyTOTP(ctx, userID, code)
+	return p.core.VerifyTOTP(ctx, tenantID, userID, code)
 }
 
 func (p pooledIdentity) VerifyRecoveryCode(ctx context.Context, tenantID tenant.ID, userID, code string) error {
 	if _, err := p.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return p.core.VerifyRecoveryCode(ctx, userID, code)
+	return p.core.VerifyRecoveryCode(ctx, tenantID, userID, code)
 }
 
 func (p pooledIdentity) EnrollTOTP(ctx context.Context, tenantID tenant.ID, userID string) (tamperespresso.TOTPEnrollment, error) {
 	if _, err := p.userIn(ctx, tenantID, userID); err != nil {
 		return tamperespresso.TOTPEnrollment{}, err
 	}
-	e, err := p.core.EnrollTOTP(ctx, userID)
+	e, err := p.core.StartTOTPEnrollment(ctx, tenantID, userID)
 	if err != nil {
 		return tamperespresso.TOTPEnrollment{}, err
 	}
@@ -199,7 +166,7 @@ func (p pooledIdentity) DisableTOTP(ctx context.Context, tenantID tenant.ID, use
 	if _, err := p.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return p.core.DisableTOTP(ctx, userID, code)
+	return p.core.DisableTOTP(ctx, tenantID, userID, code)
 }
 
 // IssueTOTPPending binds the pending token to the tenant the password

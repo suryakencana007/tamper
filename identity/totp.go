@@ -29,11 +29,11 @@ type TOTPEnrollment struct {
 // payload. Restartable: re-invoking overwrites the prior pending
 // envelope (the user re-pairs). Already-enrolled users get
 // ErrTOTPAlreadyEnrolled.
-func (c *Core) StartTOTPEnrollment(ctx context.Context, userID string) (TOTPEnrollment, error) {
+func (c *Core) StartTOTPEnrollment(ctx context.Context, tenantID tenant.ID, userID string) (TOTPEnrollment, error) {
 	if c.keys == nil {
 		return TOTPEnrollment{}, ErrNoKeySet
 	}
-	user, err := c.store.UserByID(ctx, userID)
+	user, err := c.userInTenant(ctx, userID, tenantID)
 	if err != nil {
 		return TOTPEnrollment{}, err
 	}
@@ -73,11 +73,11 @@ func (c *Core) StartTOTPEnrollment(ctx context.Context, userID string) (TOTPEnro
 // returns ErrInvalidTOTP and leaves the staged state intact so the
 // caller can retry without re-pairing; phase 2 before phase 1 is also
 // ErrInvalidTOTP (nothing staged — the caller re-routes to phase 1).
-func (c *Core) CompleteTOTPEnrollment(ctx context.Context, userID, code string) (User, Tokens, error) {
+func (c *Core) CompleteTOTPEnrollment(ctx context.Context, tenantID tenant.ID, userID, code string) (User, Tokens, error) {
 	if c.keys == nil {
 		return User{}, Tokens{}, ErrNoKeySet
 	}
-	user, err := c.store.UserByID(ctx, userID)
+	user, err := c.userInTenant(ctx, userID, tenantID)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -98,7 +98,10 @@ func (c *Core) CompleteTOTPEnrollment(ctx context.Context, userID, code string) 
 	if err := c.store.EnableTOTP(ctx, userID, state.Envelope, state.RecoveryCodeHashes, enrolledAt); err != nil {
 		return User{}, Tokens{}, fmt.Errorf("identity: promote totp enrollment: %w", err)
 	}
-	tokens, err := c.issueTokens(ctx, userID, tenant.FromStored(user.TenantID), enrolledAt.Unix(), c.defaultACR)
+	// tenantID, not FromStored(user.TenantID): they are equal — userInTenant just
+	// proved it — and minting for the tenant the caller asked for is the property
+	// this phase is about.
+	tokens, err := c.issueTokens(ctx, userID, tenantID, enrolledAt.Unix(), c.defaultACR)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -106,56 +109,10 @@ func (c *Core) CompleteTOTPEnrollment(ctx context.Context, userID, code string) 
 	return user, tokens, nil
 }
 
-// EnrollTOTP is the one-shot enrollment (no verification round-trip):
-// mint + seal + enable in a SINGLE store write. Used by flows where the
-// caller verifies pairing out-of-band.
-//
-// Unlike the two-phase ceremony (StartTOTPEnrollment/CompleteTOTPEnrollment,
-// which reject an already-enrolled user with ErrTOTPAlreadyEnrolled),
-// the one-shot is an idempotent OVERWRITE: re-enrolling rotates the
-// secret + recovery codes in place. This is deliberate — it is the
-// direct "reset my authenticator" verb — and the atomicity matters: a
-// single EnableTOTP write means a failure never leaves the user with a
-// half-cleared second factor (a stage-then-enable or clear-then-enroll
-// sequence could strip an existing enrollment on a mid-sequence error).
-func (c *Core) EnrollTOTP(ctx context.Context, userID string) (TOTPEnrollment, error) {
-	if c.keys == nil {
-		return TOTPEnrollment{}, ErrNoKeySet
-	}
-	user, err := c.store.UserByID(ctx, userID)
-	if err != nil {
-		return TOTPEnrollment{}, err
-	}
-	secret, err := crypto.GenerateTOTPSecret()
-	if err != nil {
-		return TOTPEnrollment{}, fmt.Errorf("identity: generate totp secret: %w", err)
-	}
-	envelope, err := c.keys.Seal([]byte(secret))
-	if err != nil {
-		return TOTPEnrollment{}, fmt.Errorf("identity: seal totp secret: %w", err)
-	}
-	codes, err := crypto.GenerateTOTPRecoveryCodes()
-	if err != nil {
-		return TOTPEnrollment{}, fmt.Errorf("identity: generate recovery codes: %w", err)
-	}
-	hashes, err := crypto.HashRecoveryCodes(codes)
-	if err != nil {
-		return TOTPEnrollment{}, fmt.Errorf("identity: hash recovery codes: %w", err)
-	}
-	if err := c.store.EnableTOTP(ctx, userID, envelope, hashes, c.now()); err != nil {
-		return TOTPEnrollment{}, fmt.Errorf("identity: enable totp: %w", err)
-	}
-	return TOTPEnrollment{
-		Secret:        secret,
-		OTPAuthURI:    crypto.OTPAuthURI(secret, user.Email),
-		RecoveryCodes: codes,
-	}, nil
-}
-
 // VerifyTOTP checks a code against the enrolled secret. ErrTOTPNotEnrolled
 // when the user has no enrolled second factor; ErrInvalidTOTP on
 // rejection.
-func (c *Core) VerifyTOTP(ctx context.Context, userID, code string) error {
+func (c *Core) VerifyTOTP(ctx context.Context, tenantID tenant.ID, userID, code string) error {
 	if c.keys == nil {
 		return ErrNoKeySet
 	}
@@ -170,6 +127,12 @@ func (c *Core) VerifyTOTP(ctx context.Context, userID, code string) error {
 	if retryAfter, ok := c.allowSecondFactor(ctx, userID, ThrottleStepTOTP); !ok {
 		return &ThrottledError{RetryAfter: retryAfter}
 	}
+	// AFTER the throttle, deliberately: the limiter must stay the first thing that
+	// answers, so a throttled response comes before any store read and cannot
+	// disclose that the user exists or has a second factor.
+	if _, err := c.userInTenant(ctx, userID, tenantID); err != nil {
+		return err
+	}
 	state, err := c.store.TOTPState(ctx, userID)
 	if err != nil {
 		return err
@@ -182,7 +145,7 @@ func (c *Core) VerifyTOTP(ctx context.Context, userID, code string) error {
 
 // VerifyRecoveryCode checks a recovery code against the stored hash
 // list and consumes it on match (single-use).
-func (c *Core) VerifyRecoveryCode(ctx context.Context, userID, code string) error {
+func (c *Core) VerifyRecoveryCode(ctx context.Context, tenantID tenant.ID, userID, code string) error {
 	// A SEPARATE bucket from VerifyTOTP — see Throttling.SecondFactorKey.
 	// Recovery codes are scarce and single-use, TOTP codes are infinite
 	// and cheap; one shared budget lets an attacker grinding the cheap
@@ -190,6 +153,9 @@ func (c *Core) VerifyRecoveryCode(ctx context.Context, userID, code string) erro
 	// the account they were trying to reach.
 	if retryAfter, ok := c.allowSecondFactor(ctx, userID, ThrottleStepRecovery); !ok {
 		return &ThrottledError{RetryAfter: retryAfter}
+	}
+	if _, err := c.userInTenant(ctx, userID, tenantID); err != nil {
+		return err
 	}
 	state, err := c.store.TOTPState(ctx, userID)
 	if err != nil {
@@ -216,19 +182,11 @@ func (c *Core) VerifyRecoveryCode(ctx context.Context, userID, code string) erro
 
 // DisableTOTP clears the second factor after re-proving possession
 // (defense against a hijacked session disabling 2FA).
-func (c *Core) DisableTOTP(ctx context.Context, userID, currentCode string) error {
-	if err := c.VerifyTOTP(ctx, userID, currentCode); err != nil {
+func (c *Core) DisableTOTP(ctx context.Context, tenantID tenant.ID, userID, currentCode string) error {
+	// The tenant check rides along inside VerifyTOTP — one lookup, not two.
+	if err := c.VerifyTOTP(ctx, tenantID, userID, currentCode); err != nil {
 		return err
 	}
-	if err := c.store.ClearTOTP(ctx, userID); err != nil {
-		return fmt.Errorf("identity: clear totp: %w", err)
-	}
-	return nil
-}
-
-// ClearTOTP is the unconditional (admin/recovery) reset — no code
-// required. The caller owns the authorization decision.
-func (c *Core) ClearTOTP(ctx context.Context, userID string) error {
 	if err := c.store.ClearTOTP(ctx, userID); err != nil {
 		return fmt.Errorf("identity: clear totp: %w", err)
 	}

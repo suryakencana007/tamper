@@ -8,8 +8,9 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
-Nothing yet. The remaining tech-debt items are in `tech-debt.md` (TD-11 and the
-P2s); the next release number is not decided.
+Nothing yet. What is left in `tech-debt.md`: the four P2 items (TD-11 to TD-14),
+plus TD-27 (Barista's move to the v4-only audit API) and TD-28's two remaining
+compatibility shims. The next release number is not decided.
 
 ---
 
@@ -59,9 +60,11 @@ parentage walk (`tenant.Ancestors`) and three opt-in consumers; no new port.
   `MIGRATION-v0.7.md` §7 and its `CHANGELOG` entry for `tenant.Ancestors` both said
   the walk had **no consumers** and listed entitlement inheritance as still open —
   written before plan inheritance landed in the same release. A reader of 0.7.0
-  was told not to expect something it had. Both are corrected, `MIGRATION-v0.7.md`
-  now points here for the two axes it deferred, and `tech-debt.md` records **TD-04
-  closed** with the sketch accepted (`PHASE12-TENANT-INHERITANCE-SKETCH.md`).
+  was told not to expect something it had. Both are corrected in the living copies,
+  and `MIGRATION-v0.7.md` now points here for the two axes it deferred;
+  `tech-debt.md` records **TD-04 closed** with the sketch accepted
+  (`PHASE12-TENANT-INHERITANCE-SKETCH.md`). The `v0.7.0` tag keeps the old text —
+  a tag is a snapshot, so read this release's files rather than that tag's.
 
 ---
 

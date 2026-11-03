@@ -352,8 +352,9 @@ forms for everyone.
   subject or binding is derived from it — roles still come from the per-tenant
   bindings in ADR-0001, because the RBAC engine drops any binding whose scope is not
   the one asked. A deployment that wires none of §4 sees no change.
-- **The IdP and domain axes remain open** (TD-04): 0.7.0 inherits plans only. Both
-  land in 0.8.0.
+- **The IdP and domain axes are not here** (TD-04): 0.7.0 inherits plans only. Both
+  landed in **0.8.0**, which is additive — see that release's `CHANGELOG.md` entry
+  rather than a migration guide, because nothing breaks.
 - **No tenant hierarchy MODEL in the library.** A three-level model
   (platform → tenant-group → organization) is shown in
   [`examples/tenanthierarchy`](./examples/tenanthierarchy), decided in

@@ -559,9 +559,15 @@ func TestAdapterRefusesAnotherTenantsUserWithoutTheGate(t *testing.T) {
 	if _, err := svc.Refresh(ctx, acme, reg.Tokens.Refresh); !errors.Is(err, identity.ErrInvalidSession) {
 		t.Errorf("Refresh of a globex session in acme: err = %v, want ErrInvalidSession", err)
 	}
-	if err := svc.Logout(ctx, acme, reg.Tokens.Refresh); err != nil {
-		t.Errorf("Logout of a globex session in acme: %v, want nil (idempotent)", err)
+	// Logout now REFUSES rather than reporting success: it is the same token oracle
+	// either way, but silence would hide a route wired to the wrong tenant — and the
+	// important half is that it does not REVOKE the session it was handed
+	// (Phase 13, slice 13b).
+	if err := svc.Logout(ctx, acme, reg.Tokens.Refresh); !errors.Is(err, identity.ErrInvalidSession) {
+		t.Errorf("Logout of a globex session in acme: err = %v, want ErrInvalidSession", err)
 	}
+	// That the refused logout left the session intact is asserted below, after the
+	// store-failure block: rotating it here would consume the token those lines use.
 	// A store failure is a store failure, not an invalid session: an
 	// outage must not sign the user out.
 	boom := errors.New("store is down")

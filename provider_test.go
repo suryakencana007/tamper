@@ -15,6 +15,7 @@ import (
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/oidc"
 	"github.com/suryakencana007/tamper/saml"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // validJWT returns a JWT config that passes New's secret check.
@@ -237,7 +238,7 @@ func TestNew_KeySetThreadsIntoIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New (with KEK): %v", err)
 	}
-	if _, err := withKEK.Identity.StartTOTPEnrollment(ctx, "no-such-user"); errors.Is(err, identity.ErrNoKeySet) {
+	if _, err := withKEK.Identity.StartTOTPEnrollment(ctx, tenant.Single, "no-such-user"); errors.Is(err, identity.ErrNoKeySet) {
 		t.Error("KeySet did not thread into the identity Core (got ErrNoKeySet with KEKs configured)")
 	}
 
@@ -248,7 +249,7 @@ func TestNew_KeySetThreadsIntoIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New (no KEK): %v", err)
 	}
-	if _, err := noKEK.Identity.StartTOTPEnrollment(ctx, "no-such-user"); !errors.Is(err, identity.ErrNoKeySet) {
+	if _, err := noKEK.Identity.StartTOTPEnrollment(ctx, tenant.Single, "no-such-user"); !errors.Is(err, identity.ErrNoKeySet) {
 		t.Errorf("expected ErrNoKeySet without KEKs, got %v", err)
 	}
 }

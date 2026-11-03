@@ -110,7 +110,7 @@ func (c coreIdentity) Refresh(ctx context.Context, tenantID tenant.ID, refreshTo
 	if err := c.sessionIn(ctx, tenantID, refreshToken); err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
-	u, t, err := c.core.Refresh(ctx, refreshToken)
+	u, t, err := c.core.Refresh(ctx, tenantID, refreshToken)
 	if err != nil {
 		return tamperespresso.AuthResult{}, err
 	}
@@ -126,7 +126,7 @@ func (c coreIdentity) Logout(ctx context.Context, tenantID tenant.ID, refreshTok
 		}
 		return err
 	}
-	return c.core.Logout(ctx, refreshToken)
+	return c.core.Logout(ctx, tenantID, refreshToken)
 }
 
 func (c coreIdentity) IssueTokensForUser(ctx context.Context, tenantID tenant.ID, userID string) (tamperespresso.AuthResult, error) {
@@ -149,21 +149,21 @@ func (c coreIdentity) VerifyTOTP(ctx context.Context, tenantID tenant.ID, userID
 	if _, err := c.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return c.core.VerifyTOTP(ctx, userID, code)
+	return c.core.VerifyTOTP(ctx, tenantID, userID, code)
 }
 
 func (c coreIdentity) VerifyRecoveryCode(ctx context.Context, tenantID tenant.ID, userID, code string) error {
 	if _, err := c.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return c.core.VerifyRecoveryCode(ctx, userID, code)
+	return c.core.VerifyRecoveryCode(ctx, tenantID, userID, code)
 }
 
 func (c coreIdentity) EnrollTOTP(ctx context.Context, tenantID tenant.ID, userID string) (tamperespresso.TOTPEnrollment, error) {
 	if _, err := c.userIn(ctx, tenantID, userID); err != nil {
 		return tamperespresso.TOTPEnrollment{}, err
 	}
-	e, err := c.core.EnrollTOTP(ctx, userID)
+	e, err := c.core.StartTOTPEnrollment(ctx, tenantID, userID)
 	if err != nil {
 		return tamperespresso.TOTPEnrollment{}, err
 	}
@@ -174,7 +174,7 @@ func (c coreIdentity) DisableTOTP(ctx context.Context, tenantID tenant.ID, userI
 	if _, err := c.userIn(ctx, tenantID, userID); err != nil {
 		return err
 	}
-	return c.core.DisableTOTP(ctx, userID, code)
+	return c.core.DisableTOTP(ctx, tenantID, userID, code)
 }
 
 // The session-token two-phase TOTP ceremony is app policy (the token shape +

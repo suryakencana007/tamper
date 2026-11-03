@@ -482,7 +482,7 @@ func TestEnterTenant_AccessTokenIsNotARefreshToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnterTenant: %v", err)
 	}
-	if _, _, err := c.Refresh(ctx, tok.Access); !errors.Is(err, ErrInvalidSession) {
+	if _, _, err := c.Refresh(ctx, tenant.Single, tok.Access); !errors.Is(err, ErrInvalidSession) {
 		t.Errorf("Refresh with an entered access token: err = %v, want ErrInvalidSession", err)
 	}
 }

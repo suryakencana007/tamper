@@ -114,14 +114,14 @@ func TestLink(t *testing.T) {
 	t.Run("links to a known user; idempotent same-user re-link", func(t *testing.T) {
 		c, store := testCore(t)
 		store.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "hash", Active: true})
-		ident, err := c.Link(ctx, "u1", "oidc-google", "sub-1")
+		ident, err := c.Link(ctx, tenant.Single, "u1", "oidc-google", "sub-1")
 		if err != nil {
 			t.Fatalf("Link: %v", err)
 		}
 		if ident.LastLoginAt != nil {
 			t.Fatal("explicit link must leave LastLoginAt nil")
 		}
-		again, err := c.Link(ctx, "u1", "oidc-google", "sub-1")
+		again, err := c.Link(ctx, tenant.Single, "u1", "oidc-google", "sub-1")
 		if err != nil {
 			t.Fatalf("idempotent re-link must succeed: %v", err)
 		}
@@ -137,7 +137,7 @@ func TestLink(t *testing.T) {
 			t.Fatalf("New: %v", err)
 		}
 		store.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "h", Active: true})
-		if _, err := c.Link(ctx, "u1", "oidc-google", "sub-1"); !errors.Is(err, ErrLinkConflict) {
+		if _, err := c.Link(ctx, tenant.Single, "u1", "oidc-google", "sub-1"); !errors.Is(err, ErrLinkConflict) {
 			t.Fatalf("err = %v, want ErrLinkConflict (a bare ErrNotFound reads as user-not-found to callers)", err)
 		}
 	})
@@ -146,10 +146,10 @@ func TestLink(t *testing.T) {
 		c, store := testCore(t)
 		store.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "h", Active: true})
 		store.Seed(User{ID: "u2", Email: "b@example.com", PasswordHash: "h", Active: true})
-		if _, err := c.Link(ctx, "u1", "oidc-google", "shared-sub"); err != nil {
+		if _, err := c.Link(ctx, tenant.Single, "u1", "oidc-google", "shared-sub"); err != nil {
 			t.Fatalf("first link: %v", err)
 		}
-		if _, err := c.Link(ctx, "u2", "oidc-google", "shared-sub"); !errors.Is(err, ErrLinkConflict) {
+		if _, err := c.Link(ctx, tenant.Single, "u2", "oidc-google", "shared-sub"); !errors.Is(err, ErrLinkConflict) {
 			t.Fatalf("err = %v, want ErrLinkConflict", err)
 		}
 	})
@@ -161,7 +161,7 @@ func TestUnlink(t *testing.T) {
 	t.Run("federated-only user cannot unlink last identity", func(t *testing.T) {
 		c, store := testCore(t)
 		seedFederatedUser(t, store, "u1", "a@example.com", "oidc-google", "sub-1")
-		if err := c.Unlink(ctx, "u1", "u1-id"); !errors.Is(err, ErrLastAuthMethod) {
+		if err := c.Unlink(ctx, tenant.Single, "u1", "u1-id"); !errors.Is(err, ErrLastAuthMethod) {
 			t.Fatalf("err = %v, want ErrLastAuthMethod", err)
 		}
 	})
@@ -169,8 +169,8 @@ func TestUnlink(t *testing.T) {
 	t.Run("password user MAY unlink their last identity", func(t *testing.T) {
 		c, store := testCore(t)
 		store.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "hash", Active: true})
-		linked, _ := c.Link(ctx, "u1", "oidc-google", "sub-1")
-		if err := c.Unlink(ctx, "u1", linked.ID); err != nil {
+		linked, _ := c.Link(ctx, tenant.Single, "u1", "oidc-google", "sub-1")
+		if err := c.Unlink(ctx, tenant.Single, "u1", linked.ID); err != nil {
 			t.Fatalf("password user unlink last identity must succeed: %v", err)
 		}
 	})
@@ -178,12 +178,12 @@ func TestUnlink(t *testing.T) {
 	t.Run("federated user with 2 identities may unlink one", func(t *testing.T) {
 		c, store := testCore(t)
 		seedFederatedUser(t, store, "u1", "a@example.com", "oidc-google", "sub-1")
-		second, _ := c.Link(ctx, "u1", "saml-corp", "sub-2")
-		if err := c.Unlink(ctx, "u1", second.ID); err != nil {
+		second, _ := c.Link(ctx, tenant.Single, "u1", "saml-corp", "sub-2")
+		if err := c.Unlink(ctx, tenant.Single, "u1", second.ID); err != nil {
 			t.Fatalf("unlink one of two: %v", err)
 		}
 		// Now down to one — the guard bites again.
-		if err := c.Unlink(ctx, "u1", "u1-id"); !errors.Is(err, ErrLastAuthMethod) {
+		if err := c.Unlink(ctx, tenant.Single, "u1", "u1-id"); !errors.Is(err, ErrLastAuthMethod) {
 			t.Fatalf("last remaining: err = %v, want ErrLastAuthMethod", err)
 		}
 	})
@@ -193,7 +193,7 @@ func TestUnlink(t *testing.T) {
 		seedFederatedUser(t, store, "u1", "a@example.com", "oidc-google", "sub-1")
 		store.Seed(User{ID: "u2", Email: "b@example.com", PasswordHash: "h", Active: true})
 		// u2 tries to unlink u1's identity.
-		if err := c.Unlink(ctx, "u2", "u1-id"); !errors.Is(err, ErrNotFound) {
+		if err := c.Unlink(ctx, tenant.Single, "u2", "u1-id"); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound (existence masking)", err)
 		}
 		// And u1's identity is untouched.
@@ -205,7 +205,7 @@ func TestUnlink(t *testing.T) {
 	t.Run("unknown identity id is ErrNotFound", func(t *testing.T) {
 		c, store := testCore(t)
 		store.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "h", Active: true})
-		if err := c.Unlink(ctx, "u1", "nope"); !errors.Is(err, ErrNotFound) {
+		if err := c.Unlink(ctx, tenant.Single, "u1", "nope"); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
 		}
 	})
@@ -216,7 +216,7 @@ func TestListIdentities(t *testing.T) {
 	c, store := testCore(t)
 	store.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "h", Active: true})
 
-	empty, err := c.ListIdentities(ctx, "u1")
+	empty, err := c.ListIdentities(ctx, tenant.Single, "u1")
 	if err != nil || empty == nil || len(empty) != 0 {
 		t.Fatalf("no identities must be empty non-nil: %v %v", empty, err)
 	}
@@ -226,14 +226,14 @@ func TestListIdentities(t *testing.T) {
 	clock := now
 	c2, store2 := testCore(t, WithClock(func() time.Time { return clock }))
 	store2.Seed(User{ID: "u1", Email: "a@example.com", PasswordHash: "h", Active: true})
-	if _, err := c2.Link(ctx, "u1", "oidc-google", "sub-1"); err != nil {
+	if _, err := c2.Link(ctx, tenant.Single, "u1", "oidc-google", "sub-1"); err != nil {
 		t.Fatal(err)
 	}
 	clock = now.Add(time.Hour)
-	if _, err := c2.Link(ctx, "u1", "saml-corp", "sub-2"); err != nil {
+	if _, err := c2.Link(ctx, tenant.Single, "u1", "saml-corp", "sub-2"); err != nil {
 		t.Fatal(err)
 	}
-	list, err := c2.ListIdentities(ctx, "u1")
+	list, err := c2.ListIdentities(ctx, tenant.Single, "u1")
 	if err != nil {
 		t.Fatalf("ListIdentities: %v", err)
 	}

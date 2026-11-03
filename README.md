@@ -9,23 +9,25 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.8.0 — pooled tenancy, hierarchy included.** One process, N tenants,
-> deny by default. **v0.8.0 is additive**: no breaking change, no migration guide,
-> and a deployment that wires none of it behaves exactly as v0.7.0 did. It finishes
-> **TD-04**: a tenant's plan, its IdPs and its claimable domains can now be
-> **inherited** from its ancestors, while authorization still comes from ADR-0001's
-> materialized bindings and never from the hierarchy.
+> **Status: v0.9.0 — pooled tenancy, no compatibility shims.** One process, N tenants,
+> deny by default. **v0.9.0 is breaking**: the tenant is now in every signature that
+> names a user or a session, so the cross-tenant check no longer lives in your
+> adapters — follow [`MIGRATION-v0.9.md`](./MIGRATION-v0.9.md).
 >
-> Upgrading from v0.6.0 or earlier? Take **v0.7.0's breaking changes** first:
-> [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md). Coming from v0.2.x, step through
-> **v0.3.0** (drop-in) and [`MIGRATION-v0.4.md`](./MIGRATION-v0.4.md) first; v0.5.0
-> changed one thing worth reading (`VerifyAccess` now denies an unset tenant id) and
-> v0.6.0 is drop-in.
+> v0.8.0 (additive) finished **TD-04**: a tenant's plan, its IdPs and its claimable
+> domains can be inherited from its ancestors, while authorization still comes from
+> ADR-0001's materialized bindings and never from the hierarchy.
+>
+> Upgrading from v0.6.0 or earlier? Take **v0.7.0's breaking changes** first
+> ([`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md)), then v0.9.0's. Coming from v0.2.x,
+> step through **v0.3.0** (drop-in) and
+> [`MIGRATION-v0.4.md`](./MIGRATION-v0.4.md) first; v0.5.0 changed one thing worth
+> reading (`VerifyAccess` now denies an unset tenant id) and v0.6.0 is drop-in.
 
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.8.0
+go get github.com/suryakencana007/tamper@v0.9.0
 ```
 
 ## What's shipped

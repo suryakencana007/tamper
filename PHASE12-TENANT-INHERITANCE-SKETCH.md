@@ -1,14 +1,18 @@
 # Phase 12 — Tenant inheritance across the three open axes
 
-Status: **draft, for review. Not decided, no code.**
+Status: **accepted 2026-11-02; implemented in #91 (12a), #92 (12b), #94 (12d) and
+#96 (12c)** — all four slices, with the mutation proofs and review rounds recorded
+in those pull requests. The five questions §8 left open were answered while
+implementing, and each answer is recorded there.
 
 TD-04 closed one of its four axes (roles, via ADR-0001) and left three open,
 deliberately: `PHASE7-MULTITENANCY-SKETCH.md` §8 item 3 deferred them as a
 product question. The product question has now been answered, per axis, and
 this sketch turns the answers into a design.
 
-The answers are recorded in §1 as **decisions taken**, not proposals. What
-remains open is mechanism, and §8 lists the little that is still a choice.
+The answers are recorded in §1 as **decisions taken**, not proposals. What was
+left to design was the mechanism; §8 keeps the handful of choices that survived
+implementation, each with the answer it got.
 
 ---
 
@@ -751,10 +755,10 @@ metadata URL is the second per-tenant seam, so the child's-name proof is
 
 ## 8. What is still open
 
-1. **Does the group's switch apply per child too?** This sketch reads D3 as the
-   group's decision only: a child opts out by configuring its own providers, which
-   is already "first match wins". A per-child consent flow is a bigger product
-   change and is not designed here.
+1. **Does the group's switch apply per child too?** No, as shipped: D3 is the
+   group's decision, and a child opts out by configuring its own providers — which
+   is "own items win entirely". A per-child consent flow is a bigger product change
+   and remains undesigned; `tech-debt.md` TD-04 lists it as still open.
 2. **When is the audit row `domain.inherit` emitted — at approval, or at first
    use?** Approval. First use would need a row per login, and the chain is
    append-only for a reason.
@@ -773,20 +777,24 @@ metadata URL is the second per-tenant seam, so the child's-name proof is
 
 ## 9. Slices
 
-- **12a — the primitive** (`tenant/hierarchy.go`: `Ancestors`, `Inheritance`, the
-  three sentinels), the `oidc/manager.go:359-361` doc correction, and the four
-  statements of the Phase 7 invariant that this amends (§3.1). Those ship in the
-  same commit: the comment and the code that contradicts it must not coexist.
-- **12b — entitlements** (`Union` + `InheritingEntitlements`). No engine touched,
-  so the primitive gets a real consumer before any manager depends on it.
-- **12c — IdP** (`oidc` + `saml`: `WithInheritance`, the four call paths split into
-  `recordsFor` + `buildAndStoreLocked`, the two `tamper.New` guards, the
-  child's-name tests for redirect and SP metadata, the pre-lock walk with its
-  concurrency test, and the cache-clear invalidation). Largest slice of the phase:
-  two engines, one lock-ordering argument, and a promise amended only when wired.
-- **12d — domains** (`IsProperSubdomain` + `InheritedDomainAuthority`).
-- **12e — docs** (TD-04 in `tech-debt.md`, an ADR-0001 §8 note that three axes are
-  now decided, `MIGRATION`, `CHANGELOG`, and this sketch to `accepted`).
+- **12a — the primitive** — ✅ #91. `tenant/hierarchy.go`: `Ancestors`,
+  `Inheritance`, the three sentinels; the `oidc/manager.go:359-361` doc correction;
+  and the statements of the Phase 7 invariant this amends (§3.1) — **nine** of them,
+  not the three this draft listed, which is why the grep went into the definition of
+  done.
+- **12b — entitlements** — ✅ #92. `Union` + `InheritingEntitlements`. No engine
+  touched, so the primitive got a real consumer before any manager depended on it.
+- **12c — IdP** — ✅ #96. `oidc` + `saml`: `WithInheritance`, the four call paths
+  split into `recordsFor` + `buildAndStoreLocked`, **four** `tamper.New` guards (not
+  two), the child's-name tests for redirect and SP metadata, the pre-lock walk with
+  its concurrency test, and the cache-clear invalidation. Largest slice of the
+  phase. Review found the two `recordsFor` byte-identical, so the policy rules moved
+  to `tenant.Inherited` (§3).
+- **12d — domains** — ✅ #94. `IsProperSubdomain` + `InheritedDomainAuthority`.
+- **12e — docs** — ✅ this change. TD-04 closed in `tech-debt.md`; the ADR-0001
+  §5.A and §8 notes; the `MIGRATION-v0.7.md` §7 and 0.7.0 `CHANGELOG` entries
+  corrected where later slices in the SAME release had made them false; and this
+  sketch to `accepted`.
 
 The primitive lands first because both consumers need it and it is the smallest
 thing that can be wrong in a way the others would inherit.

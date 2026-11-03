@@ -379,8 +379,10 @@ no home tenant. Backfill that column before the upgrade.
   data; an unset `ID` and `tenant.Single` return nothing *without reading the
   store*. Also
   `tenant.Inheritance`, the per-group switch an application implements per axis.
-  Nothing consumes either yet — the three inheritance axes land in later slices —
-  and no behaviour changes: no authorization scope is derived from parentage.
+  Plan inheritance is its first consumer, in this same release
+  (`tenant.InheritingEntitlements`, below); the IdP and domain axes land in 0.8.0.
+  No behaviour changes of its own, and no authorization scope is derived from
+  parentage.
 
 - **`tenant.InheritingEntitlements` — plan inheritance** (Phase 12 slice 12b,
   TD-04, decision D2). A decorator over `tenant.EntitlementStore`, so

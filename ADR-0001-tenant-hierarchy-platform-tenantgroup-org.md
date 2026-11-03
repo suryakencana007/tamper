@@ -272,6 +272,16 @@ revoke "admin tg-acme"  ──BEGIN──▶ hapus binding turunannya
 resolves it, inherits through it, or branches on it") dan
 `TestMemStore_ParentIDCarriedNotResolved`. Butuh amend sketch Phase 7 dulu.
 
+> **DIPERSEMPIT 2026-11-01 (#91, Phase 12 §3.1).** Penolakan ini tetap utuh untuk
+> **otorisasi**, dan itu memang alasan aslinya: engine RBAC membuang binding yang
+> scope-nya bukan yang ditanya, sehingga walk saat runtime tidak bisa menggantikan
+> binding per-scope. Yang dipersempit hanya sumbu **warisan** — paket, IdP, domain —
+> lewat `tenant.Ancestors`, dan §8 di atas mencatat tiap jawabannya. Prasyarat yang
+> disebut penolakan ini sendiri ("butuh amend sketch Phase 7 dulu") dipenuhi
+> `PHASE12-TENANT-INHERITANCE-SKETCH.md` §3.1, yang sekaligus mengoreksi sembilan
+> dokumen lain yang masih menyatakan invariant itu. `TestMemStore_...` tetap ada,
+> dan masih benar: STORE-nya tidak me-resolve apa pun; `Ancestors` yang melakukannya.
+
 ### B. `RequireTenant` menerima banyak tenant sekaligus
 **Ditolak.** Menghilangkan properti 1-token-1-tenant; Phase 8 §3 menguncinya.
 
@@ -353,6 +363,17 @@ single-resource.
   terpisah ("Decide inheritance for each axis separately"). Keputusan ini
   hanya untuk **roles** (`authz`). Pertanyaan produk di sketch Phase 7 §8 item 3
   ("apakah IdP parent melayani anak?") tetap terbuka.
+
+  > **DIPUTUSKAN 2026-11-01, dikirim di #91–#96.** Ketiga sumbu itu kini punya
+  > jawaban, dicatat di `PHASE12-TENANT-INHERITANCE-SKETCH.md` (accepted):
+  > paket = maksimum rantai tanpa switch (D2); IdP = per grup dan **default
+  > mati** (D3); domain = subdomain sah dari klaim terverifikasi leluhur, dengan
+  > persetujuan admin grup (D4). Ketiganya warisan **saat runtime** di `tenant` /
+  > `oidc` / `saml`, dan ketiganya hanya memperlebar apa yang **dimiliki**
+  > pelanggan — tidak satu pun menurunkan scope otorisasi, yang tetap milik §5.A
+  > di dokumen ini. Yang masih terbuka: persetujuan per-anak untuk IdP (§8 di
+  > sketch Phase 12) dan `Children(id)`, yang tidak ditambahkan karena tidak ada
+  > sumbu yang membutuhkannya.
 - **Mekanisme re-sync konkret** (event, outbox, job) — keputusan implementasi,
   bukan ADR.
 - **`MembershipsFor(userID)` tanpa home tenant.** Port identitas hanya menerima

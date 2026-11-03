@@ -71,14 +71,14 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-05 | No tenant lifecycle | fixed by #85 | — | — |
 | TD-06 | Tenant suspension is not enforced on authenticated requests | fixed by #82 | — | — |
 | TD-07 | No impersonation | fixed by #88 | — | — |
-| TD-08 | `Auditor` and `RequireAuth` do not set the tenant | sharp edge | P1 | Tamper |
+| TD-08 | `Auditor` and `RequireAuth` do not set the tenant | fixed by #43 | — | — |
 | TD-09 | `tamper.New` cannot turn on audit v4 | resolved by #46 | — | — |
-| TD-10 | The TOTP path mints a token without a tenant | sharp edge | P1 | Tamper |
+| TD-10 | The TOTP path mints a token without a tenant | fixed by #40 | — | — |
 | TD-11 | The audit log cannot be queried per tenant | gap | P2 | Tamper |
 | TD-12 | A service account has only one tenant | gap | P2 | Tamper |
 | TD-13 | Second-factor policy cannot be set per role | gap | P2 | Tamper |
 | TD-14 | The per-tenant route mounting pattern is static | gap | P2 | example + docs |
-| TD-15 | SCIM tenant scoping is off by default | sharp edge | P1 | Tamper |
+| TD-15 | SCIM tenant scoping is off by default | fixed by #39 | — | — |
 | TD-16 | `Verify` reports tamper on a mixed-version chain | resolved by #46 | — | — |
 | TD-17 | `audit.Filter` fields are ignored by `List` | fixed by #49 | — | — |
 | TD-18 | A not-found from the TOTP mint is a 500 on the wire | fixed by #50 | — | — |
@@ -517,7 +517,7 @@ must be from another tenant, which an entered session is what provides), and
 whether the impersonated user is told is a product decision the framework does
 not make.
 
-### TD-08 — `Auditor` and `RequireAuth` do not set the tenant *(sharp edge)*
+### TD-08 — `Auditor` and `RequireAuth` do not set the tenant *(fixed by #43)*
 
 **Evidence.** `decorateAuthed` sets `audit.Actor{Type, UserID}` without
 `TenantID`, even though `claims.TenantID` is available
@@ -566,7 +566,7 @@ logger built by `tamper.New` does too. `tamper.Config` did not change.
 through `tamper.New` had `canonical_version=3`, and `RedactEvent` returned
 `redacted=false`.
 
-### TD-10 — The TOTP path mints a token without a tenant *(sharp edge)*
+### TD-10 — The TOTP path mints a token without a tenant *(fixed by #40)*
 
 **Evidence.** The `espresso.IdentityService` port has only
 `IssueTokensForUser(ctx, userID)` (`espresso/authroutes.go:50`), and
@@ -620,7 +620,7 @@ still gets a token with no `tid`; the port's doc comments now say so.
   `IssueTokensForUserInTenant(…, acme, …)` then gave a session with
   `tid="acme"`.
 
-### TD-15 — SCIM tenant scoping is off by default *(sharp edge)*
+### TD-15 — SCIM tenant scoping is off by default *(fixed by #39)*
 
 **Evidence.** `SCIMConfig.Tenancy` is `false` by default
 (`espresso/scimroutes.go:72-80`). With the default, every SCIM handler calls

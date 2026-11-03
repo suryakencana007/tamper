@@ -8,6 +8,24 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+Nothing yet. What is left in `tech-debt.md`: the four P2 items (TD-11 to TD-14),
+plus TD-27 (Barista's move to the v4-only audit API) and TD-28's two remaining
+compatibility shims. The next release number is not decided.
+
+---
+
+## [0.8.0] — 2026-11-02
+
+**Additive only.** Nothing breaks, nothing to migrate: there is deliberately no
+`MIGRATION-v0.8.md`, because there is nothing an upgrade guide could tell you that
+the entries below do not. A deployment that wires none of it is byte-identical to
+0.7.0.
+
+This release finishes **TD-04 — tenant hierarchy**, which 0.7.0 shipped one axis of.
+All four axes are now decided and shipped: roles (ADR-0001, unchanged), plans
+(0.7.0), and the two that land here — IdP and domains. The mechanism is one
+parentage walk (`tenant.Ancestors`) and three opt-in consumers; no new port.
+
 ### Added
 
 - **IdP inheritance — `oidc.WithInheritance` / `saml.WithInheritance`** (Phase 12
@@ -34,7 +52,19 @@ All notable changes to tamper are recorded here. Versions follow
   `tenant.IsProperSubdomain` is the check, exported because the dot in it is the
   whole defence against `evilacme.com` being read as a subdomain of `acme.com`.
   A **public** email domain is never an authority, on the input or on an ancestor's
-  stored claim. Inheritance for the IdP axis follows; the next release is 0.8.0.
+  stored claim.
+
+### Fixed
+
+- **Two 0.7.0 documents said the opposite of what 0.7.0 shipped.** Its
+  `MIGRATION-v0.7.md` §7 and its `CHANGELOG` entry for `tenant.Ancestors` both said
+  the walk had **no consumers** and listed entitlement inheritance as still open —
+  written before plan inheritance landed in the same release. A reader of 0.7.0
+  was told not to expect something it had. Both are corrected in the living copies,
+  and `MIGRATION-v0.7.md` now points here for the two axes it deferred;
+  `tech-debt.md` records **TD-04 closed** with the sketch accepted
+  (`PHASE12-TENANT-INHERITANCE-SKETCH.md`). The `v0.7.0` tag keeps the old text —
+  a tag is a snapshot, so read this release's files rather than that tag's.
 
 ---
 

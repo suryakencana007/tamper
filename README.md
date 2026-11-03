@@ -9,22 +9,23 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.7.0 — pooled tenancy.** One process, N tenants, deny by default.
-> v0.7.0 closes the upgrade v0.4.0 began: the compatibility twins are gone (TD-28),
-> `authz` takes the tenant (TD-03), and the audit log is `canonical_version=4` only
-> — **an audit DB written by an earlier version cannot be opened.** The one part
-> of tenancy still open is TD-04's IdP and domain inheritance; plan inheritance
-> shipped here, and the other two axes follow in 0.8.0.
+> **Status: v0.8.0 — pooled tenancy, hierarchy included.** One process, N tenants,
+> deny by default. **v0.8.0 is additive**: no breaking change, no migration guide,
+> and a deployment that wires none of it behaves exactly as v0.7.0 did. It finishes
+> **TD-04**: a tenant's plan, its IdPs and its claimable domains can now be
+> **inherited** from its ancestors, while authorization still comes from ADR-0001's
+> materialized bindings and never from the hierarchy.
 >
-> Upgrading? [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md) is the ordered checklist.
-> Coming from v0.2.x, step through **v0.3.0** (drop-in) and
-> [`MIGRATION-v0.4.md`](./MIGRATION-v0.4.md) first; v0.5.0 changed one thing worth
-> reading (`VerifyAccess` now denies an unset tenant id) and v0.6.0 is drop-in.
+> Upgrading from v0.6.0 or earlier? Take **v0.7.0's breaking changes** first:
+> [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md). Coming from v0.2.x, step through
+> **v0.3.0** (drop-in) and [`MIGRATION-v0.4.md`](./MIGRATION-v0.4.md) first; v0.5.0
+> changed one thing worth reading (`VerifyAccess` now denies an unset tenant id) and
+> v0.6.0 is drop-in.
 
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.7.0
+go get github.com/suryakencana007/tamper@v0.8.0
 ```
 
 ## What's shipped

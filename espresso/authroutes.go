@@ -9,6 +9,7 @@ import (
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 
+	"github.com/suryakencana007/tamper/audit"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/tenant"
 )
@@ -44,14 +45,24 @@ type IdentityService interface {
 	// written or signed in inside that tenant and no other. In a
 	// single-tenant deployment it is tenant.Single on every call.
 	//
-	// Where the adapter reaches a Core method that takes the tenant
-	// (Register, Login, IssueTokensForUser), it passes it through. Where
-	// it reaches one keyed by a bare user id or a bare token (Me,
-	// Refresh, Logout, the TOTP verbs), it checks first that the user, or
-	// the session's user, is stored in that tenant, and answers a
-	// mismatch with identity.ErrNotFound (or ErrInvalidSession for a
-	// token) — the same error a user that does not exist gets. The
-	// examples show the shape.
+	// For almost every method this is now a PASS-THROUGH. Since Phase 13 (TD-28)
+	// identity.Core takes the tenant itself on Register, Login, Refresh, Logout,
+	// IssueTokensForUser and the TOTP verbs, and refuses a user or a session stored
+	// in another tenant with identity.ErrNotFound (or ErrInvalidSession for a
+	// token) — the same answer a thing that does not exist gets. An adapter that
+	// simply forwards the tenant is correct, and the examples are that shape.
+	//
+	// TWO THINGS ARE STILL THE ADAPTER'S, and the compiler cannot enforce either:
+	//
+	//   - Me has no Core equivalent that takes a user id and a tenant in one call,
+	//     so the adapter loads the user and compares User.TenantID itself.
+	//   - A store failure must surface as ITSELF, never folded onto
+	//     ErrNotFound/ErrInvalidSession: an outage must not read as "that user does
+	//     not exist", or a database blip signs everyone out of every tenant.
+	//
+	// Before the phase this paragraph was the other way round: every path from a
+	// bare user id or a bare token needed the check, in every adapter, and an
+	// adapter that forgot still compiled.
 	Register(ctx context.Context, tenantID tenant.ID, email, password string) (AuthResult, error)
 	Login(ctx context.Context, tenantID tenant.ID, email, password string) (AuthResult, error)
 	Me(ctx context.Context, tenantID tenant.ID, userID string) (*identity.User, error)
@@ -141,7 +152,7 @@ type AuthRoutesConfig struct {
 	// login, TOTP verify, session-enroll phase 2) with the user id —
 	// the audit capture-slot backfill. Optional; defaults to
 	// SetUserID.
-	OnAuthenticated func(ctx context.Context, userID string)
+	OnAuthenticated func(ctx context.Context, actor audit.Actor)
 	// OnTOTPEnrolledViaSession fires after a successful enroll-session
 	// phase 2, BEFORE the response ships — the app emits its own audit
 	// vocabulary here. Optional.
@@ -190,7 +201,7 @@ func NewAuthRoutes(svc IdentityService, cfg AuthRoutesConfig) (*AuthRoutes, erro
 		cfg.ValidationMessage = defaultValidationMessage
 	}
 	if cfg.OnAuthenticated == nil {
-		cfg.OnAuthenticated = SetUserID
+		cfg.OnAuthenticated = SetAuditActor
 	}
 	return &AuthRoutes{svc: svc, cfg: cfg}, nil
 }
@@ -320,7 +331,11 @@ func (a *AuthRoutes) Login(ctx context.Context, req *espressofw.JSON[LoginReq]) 
 		}
 		return espressofw.JSON[AuthRes]{}, mapAuthWireError(err, a.cfg.ValidationMessage)
 	}
-	a.cfg.OnAuthenticated(ctx, res.User.ID)
+	a.cfg.OnAuthenticated(ctx, audit.Actor{
+		Type:     audit.ActorTypeUser,
+		UserID:   res.User.ID,
+		TenantID: tid.String(),
+	})
 	return a.authRes(ctx, http.StatusOK, res), nil
 }
 
@@ -394,7 +409,11 @@ func (a *AuthRoutes) VerifyTOTP(ctx context.Context, req *espressofw.JSON[TOTPVe
 		}
 		return espressofw.JSON[AuthRes]{}, mapAuthWireError(err, a.cfg.ValidationMessage)
 	}
-	a.cfg.OnAuthenticated(ctx, res.User.ID)
+	a.cfg.OnAuthenticated(ctx, audit.Actor{
+		Type:     audit.ActorTypeUser,
+		UserID:   res.User.ID,
+		TenantID: tid.String(),
+	})
 	return a.authRes(ctx, http.StatusOK, res), nil
 }
 
@@ -467,7 +486,11 @@ func (a *AuthRoutes) EnrollSession(ctx context.Context, req *espressofw.JSON[TOT
 		}
 	}
 	if phase2 != nil {
-		a.cfg.OnAuthenticated(ctx, phase2.User.ID)
+		a.cfg.OnAuthenticated(ctx, audit.Actor{
+			Type:     audit.ActorTypeUser,
+			UserID:   phase2.User.ID,
+			TenantID: tid.String(),
+		})
 		if a.cfg.OnTOTPEnrolledViaSession != nil {
 			a.cfg.OnTOTPEnrolledViaSession(ctx, phase2.User.ID)
 		}

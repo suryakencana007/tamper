@@ -107,7 +107,7 @@ pass them.
 | Function | Purpose |
 |---|---|
 | `oidc.NewManager`, `saml.NewManager` | Provider CRUD over a `ProviderStore`. Secrets are sealed by the `KeySet`. The live registry has a TTL cache. |
-| `Manager.GetRegistry(ctx, tenant)` | The provider registry of one tenant. |
+| `Manager.GetRegistry(ctx, tenant)` | The provider registry of one tenant. With `WithInheritance` wired, a tenant with no providers of its own serves its nearest ancestor's, compiled in its OWN name; the walk reads the parentage store before the registry lock. |
 | `oidc.NewFlow`, `VerifyIDToken`, `FetchUserinfo`, `ExtractGroups` | PKCE, ID-token verification, group-claim normalisation. |
 | `saml.BuildAuthnRequestURL`, `ParsedAssertion`, `AssertionReplayStore` | AuthnRequest (with step-up), assertion parsing, replay defence. |
 | State cookies (`SignOIDCStateWithSecret`, `SignStateCookieWithSecret`, and the matching `Verify…`) | Tie the start step to the callback step. |

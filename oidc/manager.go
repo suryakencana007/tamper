@@ -106,6 +106,11 @@ type Manager struct {
 	// production.
 	ttl time.Duration
 
+	// inherit, when non-nil, lets a tenant with no enabled providers of its
+	// own serve the nearest ancestor's. Wired by WithInheritance; see
+	// inheritance.go for why the walk must not run under mu.
+	inherit *inheritConfig
+
 	// now and newDiscoveryProvider are test seams. Production wiring
 	// leaves them as time.Now and coreoidc.NewProvider.
 	now                  func() time.Time
@@ -370,22 +375,61 @@ func (m *Manager) GetRegistry(ctx context.Context, tenantID tenant.ID) (*Provide
 		return entry.registry, nil
 	}
 
+	if m.inherit == nil {
+		// The unwired path, unchanged: the store read happens under the lock, so
+		// a stampede for one tenant costs exactly one read.
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if e := m.registries[tenantID]; e != nil && m.cacheFresh(e.cachedAt) {
+			return e.registry, nil
+		}
+		return m.rebuildLocked(ctx, tenantID)
+	}
+
+	// Wired path: the walk reads a SECOND store (the parentage graph), so it
+	// happens before the lock — otherwise every tenant's rebuild would queue
+	// behind one slow hierarchy read. The re-check below still guarantees a
+	// single build; a concurrent burst for the same tenant may repeat the read
+	// and the walk, and that is the price this configuration pays (§4.2.1).
+	recs, err := m.recordsFor(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if e := m.registries[tenantID]; e != nil && m.cacheFresh(e.cachedAt) {
 		return e.registry, nil
 	}
-	return m.rebuildLocked(ctx, tenantID)
+	return m.buildAndStoreLocked(ctx, tenantID, recs)
 }
 
 // Reload is Reload for one tenant's key. It touches no other
 // tenant's entry: an admin editing acme's IdP must not cost globex a
 // discovery round-trip on its next login.
+//
+// The entry is dropped BEFORE the rebuild in both paths, so a failed reload
+// leaves the tenant with nothing cached rather than with the provider the admin
+// just removed.
 func (m *Manager) Reload(ctx context.Context, tenantID tenant.ID) error {
+	if m.inherit == nil {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.registries, tenantID)
+		_, err := m.rebuildLocked(ctx, tenantID)
+		return err
+	}
+
+	m.mu.Lock()
+	delete(m.registries, tenantID)
+	m.mu.Unlock()
+
+	recs, err := m.recordsFor(ctx, tenantID)
+	if err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.registries, tenantID)
-	_, err := m.rebuildLocked(ctx, tenantID)
+	_, err = m.buildAndStoreLocked(ctx, tenantID, recs)
 	return err
 }
 
@@ -452,15 +496,29 @@ func (m *Manager) cacheFresh(cachedAt time.Time) bool {
 // regardless of ttl. Test-seam only.
 const pinnedCacheTimestampYear = 9999
 
-// rebuildLocked is the store read + registry build. Caller MUST hold
-// mu.Lock. Opens each enabled record's secret, maps the app-supplied
-// redirect URL, and builds with partialOK=true so a single
-// unreachable IdP logs + is omitted instead of failing the tick.
+// rebuildLocked is the store read + registry build for the unwired path. Caller
+// MUST hold mu.Lock.
+//
+// The wired path does not call this: it resolves its records (including any
+// inherited ones) before taking the lock and hands them to buildAndStoreLocked, so
+// this is the only place a store read still happens under mu.
 func (m *Manager) rebuildLocked(ctx context.Context, tenantID tenant.ID) (*ProviderRegistry, error) {
 	recs, err := m.listEnabled(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
+	return m.buildAndStoreLocked(ctx, tenantID, recs)
+}
+
+// buildAndStoreLocked builds the registry from already-resolved records and stores
+// it under tenantID. Caller MUST hold mu.Lock. Opens each enabled record's secret,
+// maps the app-supplied redirect URL FOR THIS TENANT, and builds with partialOK=true
+// so a single unreachable IdP logs + is omitted instead of failing the tick.
+//
+// The tenant here is always the one the answer belongs to, which is what makes
+// inheritance safe: a borrowed provider's redirect URL is compiled for the child,
+// never for the group it came from.
+func (m *Manager) buildAndStoreLocked(ctx context.Context, tenantID tenant.ID, recs []ProviderRecord) (*ProviderRegistry, error) {
 	if len(recs) == 0 {
 		// Cache the nil "not configured" sentinel with a fresh
 		// timestamp so a post-Delete rebuild drops the previous
@@ -560,8 +618,19 @@ func (m *Manager) invalidateCache() {
 // row belongs to, so the application — which owns that column — says so.
 func (m *Manager) InvalidateTenant(tenantID tenant.ID) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.inherit != nil {
+		// The changed tenant's providers may be serving every tenant that
+		// inherits them, and those cannot be enumerated without a Children port.
+		// Precise bookkeeping does not rescue it either: a child inheriting from
+		// its grandparent — because its parent has no providers — is not touched
+		// by invalidating the parent, so the transitive case defeats per-entry
+		// tracking. Clearing is one line, takes effect on the next request for
+		// every tenant, and costs only lazy per-tenant rebuilds.
+		m.registries = make(map[tenant.ID]*cachedRegistry)
+		return
+	}
 	delete(m.registries, tenantID)
-	m.mu.Unlock()
 }
 
 // definitionFromRecord opens the sealed secret + projects the record

@@ -10,6 +10,20 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Added
 
+- **IdP inheritance — `oidc.WithInheritance` / `saml.WithInheritance`** (Phase 12
+  slice 12c, TD-04, decision D3). A tenant with no enabled providers of its own
+  serves its nearest ancestor's, compiled **in its own name** — the child's
+  callback URL, and the child's SP metadata URL for SAML — so a borrowed IdP never
+  completes a flow in the group's context. **Off unless wired, and off per group:**
+  `tamper.InheritanceConfig` carries the parentage store and the group's switch,
+  and `tamper.New` refuses a half-configured one at boot. A group that keeps its own
+  IdP without opting in ends the walk rather than passing a grandparent's providers
+  down. With inheritance wired, a provider change clears the registry cache instead
+  of one key, so a group's edit reaches its inheritors on the next request.
+  `tenant.Inherited` is the shared primitive underneath both: the policy rules —
+  whose switch is asked, where the walk stops, which errors propagate — live in one
+  place over the axis's own record type.
+
 - **`tenant.InheritedDomainAuthority` — a claim under an ancestor's domain**
   (Phase 12 slice 12d, TD-04, decision D4). Given a tenant and a name, it reports
   whether an **ancestor's verified** domain covers it — nearest ancestor first,

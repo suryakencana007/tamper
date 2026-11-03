@@ -12,6 +12,7 @@ import (
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/oidc"
 	"github.com/suryakencana007/tamper/saml"
+	"github.com/suryakencana007/tamper/tenant"
 )
 
 // Config is the single boot input for New. It bundles the engine
@@ -87,6 +88,29 @@ type OIDCConfig struct {
 	Store       oidc.ProviderStore
 	RedirectURL func(id string) string
 	TTL         time.Duration
+
+	// Inheritance enables IdP inheritance for this engine. Nil leaves it off,
+	// which is today's behaviour path for path.
+	Inheritance *InheritanceConfig
+}
+
+// InheritanceConfig wires IdP inheritance for one engine: a tenant with no
+// enabled providers of its own serves its nearest ancestor's, when that ancestor
+// allows it.
+//
+// Both fields are required, and tamper.New refuses the half-configured form at
+// boot. The parentage graph travels here rather than at the top level because
+// tamper has no tenant store of its own — parentage is the application's, and this
+// is the first framework code to read it.
+type InheritanceConfig struct {
+	// Store is the parentage graph: the same tenant.Store the application
+	// already implements.
+	Store tenant.Store
+
+	// Allow is the group's per-tenant switch, asked of the ancestor whose
+	// providers are being borrowed. Absent (nil) means deny, and this field is
+	// what makes the feature opt-in per group rather than per deployment.
+	Allow tenant.Inheritance
 }
 
 // SAMLConfig configures the SAML provider Manager. Store is required.
@@ -97,6 +121,7 @@ type SAMLConfig struct {
 	Store             saml.ProviderStore
 	SPMetadataURL     func(id, acsURL string) string
 	TTL               time.Duration
+	Inheritance       *InheritanceConfig
 	AllowIDPInitiated bool
 	SkewTolerance     time.Duration
 }
@@ -148,6 +173,26 @@ func New(cfg Config) (*Provider, error) {
 	}
 	if cfg.SAML != nil && cfg.SAML.SPMetadataURL == nil {
 		return nil, errors.New("tamper: Config.SAML.SPMetadataURL is required when SAML is set")
+	}
+	// IdP inheritance guards. A half-wired InheritanceConfig would be a feature
+	// that silently never inherits — the parentage walk needs both halves, and
+	// the Manager's own option ignores a nil either way, so this is the only place
+	// the mistake is loud.
+	if c := cfg.OIDC; c != nil && c.Inheritance != nil {
+		if c.Inheritance.Store == nil {
+			return nil, errors.New("tamper: Config.OIDC.Inheritance.Store is required when OIDC inheritance is set")
+		}
+		if c.Inheritance.Allow == nil {
+			return nil, errors.New("tamper: Config.OIDC.Inheritance.Allow is required when OIDC inheritance is set")
+		}
+	}
+	if c := cfg.SAML; c != nil && c.Inheritance != nil {
+		if c.Inheritance.Store == nil {
+			return nil, errors.New("tamper: Config.SAML.Inheritance.Store is required when SAML inheritance is set")
+		}
+		if c.Inheritance.Allow == nil {
+			return nil, errors.New("tamper: Config.SAML.Inheritance.Allow is required when SAML inheritance is set")
+		}
 	}
 	// Tenancy boot guard. The optional-interface upgrade is checked once,
 	// here, and the message names the concrete type that failed it —
@@ -203,6 +248,9 @@ func New(cfg Config) (*Provider, error) {
 		if cfg.OIDC.TTL > 0 {
 			mopts = append(mopts, oidc.WithTTL(cfg.OIDC.TTL))
 		}
+		if inh := cfg.OIDC.Inheritance; inh != nil {
+			mopts = append(mopts, oidc.WithInheritance(inh.Store, inh.Allow))
+		}
 		p.OIDC = oidc.NewManager(cfg.OIDC.Store, keySet, mopts...)
 	}
 
@@ -211,6 +259,9 @@ func New(cfg Config) (*Provider, error) {
 		mopts := []saml.ManagerOption{saml.WithSPMetadataURL(cfg.SAML.SPMetadataURL)}
 		if cfg.SAML.TTL > 0 {
 			mopts = append(mopts, saml.WithTTL(cfg.SAML.TTL))
+		}
+		if inh := cfg.SAML.Inheritance; inh != nil {
+			mopts = append(mopts, saml.WithInheritance(inh.Store, inh.Allow))
 		}
 		if cfg.SAML.AllowIDPInitiated {
 			mopts = append(mopts, saml.WithAllowIDPInitiated(true))

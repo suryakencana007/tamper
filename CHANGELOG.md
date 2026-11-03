@@ -28,6 +28,10 @@ The shape of the whole release in one sentence: **if a method takes a user id or
 refresh token, it now also takes the tenant the request was routed to** — because that
 check used to live in every adapter, and an adapter that forgot still compiled.
 
+Nothing needs a data migration: the tenant model, the audit format and every table are
+untouched. The work is signatures and deleted helpers, which is why the guide is
+ordered by package rather than by datastore.
+
 ### ⚠️ Breaking — the tenant is in the signature (TD-28)
 
 `identity.Core` no longer offers a second, tenant-less way to reach a user or a

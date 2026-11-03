@@ -1,6 +1,7 @@
 # Phase 13 — Drop the compatibility shims (TD-28)
 
-Status: **draft, for review. Not decided, no code.**
+Status: **accepted 2026-11-03; D1–D5 decided as recommended.** Slice 13b
+(`identity`) lands with this line; 13c (`espresso`) and 13d (docs, release) follow.
 
 TD-28 is the last P1 in the platform-admin line, and it is the only item in
 `tech-debt.md` that is not a gap in a feature but a **rule** that was applied
@@ -187,16 +188,35 @@ same slice, and one is a security question:
 
 ## 5. Decisions this sketch needs
 
-| # | Question | Recommendation | Consequence |
-|---|---|---|---|
-| **D1** | Add `tenant.ID` to the bare-key `Core` methods? | **Yes** — including the eight §2.2 found, which is a wider change than TD-28 states | **Breaking** for callers, and per rule 1 there is no shim: the next release is `0.9.0` with a `MIGRATION-v0.9.md` |
-| **D2** | `ContextWithUserID`: delete, or make tenant-aware? | **Delete**, if no application verifies tokens outside espresso. `RequireAuth` / `RequireAuthWS` → `decorateAuthed` is the tenant-aware path, and the repo's own tests can use it | Breaking for a token-verifying integration; needs an answer from the Barista side |
-| **D3** | `SetUserID` / `WithUserIDCapture`: stay user-only, or carry the tenant? | **Carry the tenant**, so a public-route row can name `actor.TenantID` explicitly instead of leaving it empty | Touches the audit contract; pairs with TD-08 (closed) and is additive if a `SetAuditActor(ctx, audit.Actor)` shape is used |
-| **D4** | The twins in §4 | **`ClearTOTP` and `EnrollTOTP` go**; `RevokeAllSessions` gets a tenant like the rest | Smaller API, one way per operation |
-| **D5** | Does anything still need an unscoped path at all? | **`EnterableTenants` only** (§2.2), and it is not a shim | Recorded so a future reader does not "fix" it |
+All five are **decided** (2026-11-03), as recommended:
 
-**D2 and D5 are the blocker for the slices**, not the code: both need an answer about
-the one application outside this repo that calls this surface.
+| # | Decision | Consequence |
+|---|---|---|
+| **D1** | Add `tenant.ID` to the bare-key `Core` methods — all of §2.2, not the six TD-28 named | **Breaking**, and per rule 1 there is no shim: the next release is `0.9.0` with a `MIGRATION-v0.9.md`. The parameter goes **immediately after `ctx`**, which is where `Store` and `espresso.IdentityService` already put it, so an adapter's call is a straight pass-through |
+| **D2** | **Delete** `ContextWithUserID`; the tenant-aware path is `RequireAuth` / `RequireAuthWS` → `decorateAuthed` | Breaking for an integration that verifies tokens OUTSIDE espresso, and the decision carries that condition: if such a caller turns out to exist, the answer is a tenant-aware replacement, not a tenant-less helper. `espresso`'s own tests move to the token path |
+| **D3** | `SetUserID` / `WithUserIDCapture` **carry the tenant**, so a public-route row can name `actor.TenantID` instead of leaving it empty | The shape is `SetAuditActor(ctx, audit.Actor)`, which is additive; pairs with TD-08 (closed) |
+| **D4** | **`ClearTOTP` and `EnrollTOTP` are deleted**; `RevokeAllSessions` takes a tenant like the rest | One way per operation. The `Store` port keeps `EnableTOTP` and `ClearTOTP` — the staged flow and `DisableTOTP` still use them |
+| **D5** | **`EnterableTenants` stays unscoped**, and is the only one | Recorded so a future reader does not "fix" it |
+
+Two consequences worth stating because they change the shape of the work:
+
+- **13b is `identity`-only and needs no port change.** `Store.EnableTOTP` and
+  `Store.ClearTOTP` remain used by the staged enrollment and by `DisableTOTP`, and
+  `UserByID` already returns the tenant (§2.4).
+- **Deleting `Core.EnrollTOTP` does not break `espresso`'s code**, because
+  `IdentityService` is an interface the APPLICATION implements. Its own twin — the
+  port exposes both `EnrollTOTP` and `EnrollTOTPViaSession` — is an `espresso`-side
+  question and belongs to 13c, which is also where the port's doc comment ("the
+  adapter checks first that the user … is stored in that tenant") becomes only
+  partly true and must be split into pass-through and still-the-adapter's-job.
+
+**`Refresh` and `Logout` need one more decision, taken while implementing: a routing
+mismatch is refused WITHOUT revoking the session.** TD-19 revokes when a session's
+tenant differs from its *user's* — that is corrupt data and must not be retryable.
+A session whose tenant differs from the *route's* is a caller error: revoking there
+would let a misconfigured route (or anyone holding a leaked token) destroy valid
+sessions. The two mismatches therefore get different treatment, and the code says
+why.
 
 ---
 

@@ -40,6 +40,7 @@ TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 | TD-05 | #85 | Merged. Opt-in `tenant.AdminStore`; one `Suspend`, status first. |
 | TD-07 | #88 | Merged. Opt-in impersonation; the audit row names the human. |
 | TD-04 | #91, #92, #94, #96 | Merged. All four axes decided and shipped: roles (ADR-0001), plans, IdP, domains. |
+| TD-28 | #100, #101 | Merged. The tenant is in the signature; the shims are gone. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, only
@@ -91,7 +92,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-25 | `VerifyLegacy` reports tamper on a mixed-version chain | resolved by #46 | — | — |
 | TD-26 | Generated SQL queries that nothing calls | fixed by #54 | — | — |
 | TD-27 | Barista must move to the v4-only audit API and the tenant-scoped `authz` API | gap | P1 | Barista |
-| TD-28 | Compatibility shims from before 2026-10-05 | gap | P1 | Tamper |
+| TD-28 | Compatibility shims from before 2026-10-05 | fixed by #100, #101 | — | — |
 
 P0 = the feature cannot be built safely without this. P1 = the application can
 work around it, but mistakes are easy. P2 = convenience and completeness.
@@ -1022,7 +1023,35 @@ change is made.
 the one without a tenant. #56 showed the cost: a gate that had to serve both
 ways guessed a tenant, and three reviews could not make the guess safe.
 
-**Proposal.** One change per package (standing rule 7), from the bottom up:
+**Fix (2026-11-03, #100, #101).** Phase 13, designed in
+[`PHASE13-COMPAT-SHIM-REMOVAL-SKETCH.md`](PHASE13-COMPAT-SHIM-REMOVAL-SKETCH.md)
+(accepted). The re-inventory the table above demands turned out to matter: **the list
+was eight methods short**, and the shortfall was there when the list was written, not
+created later — those methods landed 2026-07-09/10, the item was written 2026-10-05.
+
+- **`identity` (#100).** `Refresh`, `Logout`, `VerifyTOTP`, `VerifyRecoveryCode`,
+  `DisableTOTP`, `StartTOTPEnrollment`, `CompleteTOTPEnrollment`,
+  `RevokeAllSessions`, `Link`, `Unlink` and `ListIdentities` take a `tenant.ID`. The
+  comparison moved out of every adapter into one place, because the `Store` port's
+  own doc had assigned it to callers — which is why an adapter that forgot still
+  compiled. `ClearTOTP` and `EnrollTOTP` are **deleted**: the first removed a second
+  factor with no proof, the second enabled a secret the user never demonstrated. The
+  capability behind `ClearTOTP` stays on the `Store`, where it belongs to the
+  application's authorization decision and where `DisableTOTP` still uses it.
+  `EnterableTenants` stays unscoped: the question is about the user across tenants.
+- **`espresso` (#101).** `ContextWithUserID` — an identity with no token — is gone.
+  The audit slot carries an `audit.Actor` instead of a bare user id, so a
+  public-route row names its tenant; `AuthRoutesConfig.OnAuthenticated` receives that
+  actor; the type in the slot is forced to user.
+- **The rule held.** No shim, no deprecation: the weaker way was deleted, and
+  `MIGRATION-v0.9.md` says what to call instead.
+
+What this does **not** change: the `Store` port (it never carried the fix — the fix
+is that the library now DOES the comparison the port's doc asked callers to do), and
+the SCIM/federation route surfaces, which already took the tenant since #59/#61.
+
+**Proposal (as written, before the phase).** One change per package (standing rule 7),
+from the bottom up:
 
 1. `crypto`: one set of functions, all taking a tenant; `purpose` required.
    **Done, #57.**
@@ -1084,7 +1113,8 @@ Suggested slice order if this work moves into Tamper:
    eager per-tenant provisioning, and plans, IdP and domains inherit at runtime in
    `tenant`/`oidc`/`saml`.
 8. **TD-17, TD-18, TD-20, TD-23, TD-26** — merged (#49 to #52, #54).
-9. **TD-12, TD-13, TD-14** — the rest.
+9. **TD-12, TD-13, TD-14** — the rest. **TD-28 closed in #100/#101**, and with it
+   the last item that was purely tamper's own work.
 
 ## Process limits
 

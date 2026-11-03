@@ -364,7 +364,8 @@ single-resource.
   hanya untuk **roles** (`authz`). Pertanyaan produk di sketch Phase 7 §8 item 3
   ("apakah IdP parent melayani anak?") tetap terbuka.
 
-  > **DIPUTUSKAN 2026-11-01, dikirim di #91–#96.** Ketiga sumbu itu kini punya
+  > **DIPUTUSKAN 2026-11-01, dikirim di #91, #92 (paket), #94 (domain), #96 (IdP).**
+  > Ketiga sumbu itu kini punya
   > jawaban, dicatat di `PHASE12-TENANT-INHERITANCE-SKETCH.md` (accepted):
   > paket = maksimum rantai tanpa switch (D2); IdP = per grup dan **default
   > mati** (D3); domain = subdomain sah dari klaim terverifikasi leluhur, dengan

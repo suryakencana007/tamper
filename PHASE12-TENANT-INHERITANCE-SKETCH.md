@@ -1,9 +1,10 @@
 # Phase 12 — Tenant inheritance across the three open axes
 
 Status: **accepted 2026-11-02; implemented in #91 (12a), #92 (12b), #94 (12d) and
-#96 (12c)** — all four slices, with the mutation proofs and review rounds recorded
-in those pull requests. The five questions §8 left open were answered while
-implementing, and each answer is recorded there.
+#96 (12c)** — the four CODE slices, each with its mutation proofs and review rounds
+recorded in its pull request; 12e is the bookkeeping this line sits in. The five
+questions §8 left open were answered while implementing, and each answer sits
+beneath its question.
 
 TD-04 closed one of its four axes (roles, via ADR-0001) and left three open,
 deliberately: `PHASE7-MULTITENANCY-SKETCH.md` §8 item 3 deferred them as a
@@ -753,7 +754,7 @@ metadata URL is the second per-tenant seam, so the child's-name proof is
 
 ---
 
-## 8. What is still open
+## 8. The questions this sketch left open — and what each became
 
 1. **Does the group's switch apply per child too?** No, as shipped: D3 is the
    group's decision, and a child opts out by configuring its own providers — which

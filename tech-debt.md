@@ -14,7 +14,7 @@ exist today are described in [`flow.md`](flow.md).
 Tamper does not support these needs out of the box. Its model is "one user =
 one tenant" and "one token = one tenant", on purpose. The tenant hierarchy is a
 field tamper reads for inheritance and never for authorization (`tenant.Ancestors`;
-TD-04 is closed, #91–#96).
+TD-04 is closed — #91, #92, #94, #96).
 
 Most items below are **gaps against a new requirement**, not bugs. Phase 7
 chose these limits deliberately. Six items were found as **sharp edges that
@@ -39,7 +39,7 @@ TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 | TD-06 | #82 | Merged. Opt-in `RequireActiveTenant`; deny is a miss. |
 | TD-05 | #85 | Merged. Opt-in `tenant.AdminStore`; one `Suspend`, status first. |
 | TD-07 | #88 | Merged. Opt-in impersonation; the audit row names the human. |
-| TD-04 | #91–#96 | Merged. All four axes decided and shipped: roles (ADR-0001), plans, IdP, domains. |
+| TD-04 | #91, #92, #94, #96 | Merged. All four axes decided and shipped: roles (ADR-0001), plans, IdP, domains. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, only
@@ -67,7 +67,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-01 | A user can belong to only one tenant | fixed by #55 | — | — |
 | TD-02 | A token is locked to one tenant; no "enter tenant" flow | fixed by #55 | — | — |
 | TD-03 | `authz` does not know about tenants | fixed by #56 | — | — |
-| TD-04 | No tenant hierarchy | fixed by #91–#96 | — | — |
+| TD-04 | No tenant hierarchy | fixed by #91, #92, #94, #96 | — | — |
 | TD-05 | No tenant lifecycle | fixed by #85 | — | — |
 | TD-06 | Tenant suspension is not enforced on authenticated requests | fixed by #82 | — | — |
 | TD-07 | No impersonation | fixed by #88 | — | — |
@@ -348,10 +348,11 @@ already added `tenant.Ancestors(ctx, store, id)` — the walk this item proposed
 over `Descriptor.ParentID`, amending the Phase 7 invariant that said nothing
 resolves it. `Children(id)` was **not** added: none of the three axes needs it.
 
-**Fix (2026-11-02, #91–#96).** Designed in
+**Fix (2026-11-02, #91, #92, #94, #96).** Designed in
 [`PHASE12-TENANT-INHERITANCE-SKETCH.md`](PHASE12-TENANT-INHERITANCE-SKETCH.md)
 (accepted), and decided per axis on 2026-11-01. All four axes are closed, and the
-mechanism is deliberately small: one walk, three opt-in consumers, no new port.
+mechanism is deliberately small: one walk, three opt-in consumers (plans, IdP,
+domains), no new port.
 
 - **The walk.** `tenant.Ancestors(ctx, store, id)` reads `Descriptor.ParentID`,
   nearest-first, with `ErrHierarchyCycle` / `ErrHierarchyDepth` /
@@ -1078,7 +1079,7 @@ Suggested slice order if this work moves into Tamper:
 5. **TD-11** — per-tenant audit queries. (TD-07, impersonation, landed in #88.)
 6. **TD-05** — tenant lifecycle, and TD-06 suspension enforcement: both landed
    (#85, #82). `Admin.Suspend` is the pairing the two were always missing.
-7. **TD-04** — hierarchy. Merged (#91–#96). The product question in sketch §8
+7. **TD-04** — hierarchy. Merged (#91, #92, #94, #96). The product question in sketch §8
    item 3 was answered per axis on 2026-11-01: the roles axis stays ADR-0001's
    eager per-tenant provisioning, and plans, IdP and domains inherit at runtime in
    `tenant`/`oidc`/`saml`.
@@ -1097,7 +1098,7 @@ reopened explicitly, not bypassed:
   not reopen it: the row stays in one tenant and a membership is added beside
   it;
 - "nested tenants are deferred" (sketch §8 item 3), **superseded by TD-04
-  (#91–#96)**: nested tenants are now read for inheritance — plans, IdPs and
+  (#91, #92, #94, #96)**: nested tenants are now read for inheritance — plans, IdPs and
   domains — while authorization still comes from ADR-0001's materialized bindings.
   `MIGRATION-v0.4.md` §7's "no tenant hierarchy is inherited" is true of 0.4.0 and
   superseded by 0.8.0.

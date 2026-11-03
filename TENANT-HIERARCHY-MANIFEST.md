@@ -838,7 +838,7 @@ orgs' resources, not its own grant list. The operation runs on the group's route
   stands (`Store` + `Provisioner` + `Guard`), and record that the **IdP,
   entitlement and domain axes are still open** — this manifest decided roles only.
 
-  > **AMENDED 2026-11-02 (#91–#96).** Both halves are done. TD-04 now points at
+  > **AMENDED 2026-11-02 (#91, #92, #94, #96).** Both halves are done. TD-04 now points at
   > this manifest's code and is **closed**: the three axes were answered per axis in
   > `PHASE12-TENANT-INHERITANCE-SKETCH.md` (accepted) and shipped — plans in #92,
   > IdP in #96, domains in #94 — with the walks in `tenant`, while THIS manifest's

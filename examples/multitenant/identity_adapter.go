@@ -66,31 +66,6 @@ func (p pooledIdentity) userIn(ctx context.Context, tenantID tenant.ID, userID s
 	return u, nil
 }
 
-// sessionIn refuses a refresh token that does not name a session of
-// tenantID, with ErrInvalidSession. It uses only public API — hash the
-// presented token, read the row, compare — and reads only; the Core
-// does the rotation or the revoke.
-func (p pooledIdentity) sessionIn(ctx context.Context, tenantID tenant.ID, refreshToken string) error {
-	hash, err := crypto.HashRefreshToken(refreshToken)
-	if err != nil {
-		return identity.ErrInvalidSession
-	}
-	s, err := p.store.RefreshSessionByHash(ctx, hash)
-	if err != nil {
-		// A missing row is an invalid session. Any other error is the
-		// store's, and it is NOT an invalid session: a transient failure
-		// must not sign the user out.
-		if errors.Is(err, identity.ErrNotFound) {
-			return identity.ErrInvalidSession
-		}
-		return err
-	}
-	if tenant.FromStored(s.TenantID) != tenantID {
-		return identity.ErrInvalidSession
-	}
-	return nil
-}
-
 func (p pooledIdentity) Register(ctx context.Context, tenantID tenant.ID, email, password string) (tamperespresso.AuthResult, error) {
 	u, tok, err := p.core.Register(ctx, tenantID, email, password)
 	if err != nil {

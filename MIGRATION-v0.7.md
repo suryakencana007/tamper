@@ -346,19 +346,24 @@ forms for everyone.
 
 ## 7. What this release does **not** change
 
-- **No tenant hierarchy is inherited.** `tenant.Descriptor.ParentID` is no longer
-  "reserved, read by nobody": `tenant.Ancestors` walks it, and the inheritance axes
-  land in later slices. Nothing calls the walk today, no axis inherits, and no
-  authorization scope is derived from parentage. A deployment that sets nothing
-  sees no change.
-- **No tenant hierarchy in the library.** A three-level model
+- **No AUTHORIZATION comes from parentage.** `tenant.Descriptor.ParentID` is no
+  longer "reserved, read by nobody": `tenant.Ancestors` walks it and
+  `tenant.InheritingEntitlements` inherits **plans** through it (§4). But no scope,
+  subject or binding is derived from it — roles still come from the per-tenant
+  bindings in ADR-0001, because the RBAC engine drops any binding whose scope is not
+  the one asked. A deployment that wires none of §4 sees no change.
+- **The IdP and domain axes remain open** (TD-04): 0.7.0 inherits plans only. Both
+  land in 0.8.0.
+- **No tenant hierarchy MODEL in the library.** A three-level model
   (platform → tenant-group → organization) is shown in
   [`examples/tenanthierarchy`](./examples/tenanthierarchy), decided in
   [`ADR-0001`](./ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md). It is
   application code: zero tamper-core change. If you want it, vendor the
-  pattern; there is no API to import.
-- **IdP, entitlement and domain inheritance remain open** (TD-04, per axis).
-- **Impersonation, tenant lifecycle, suspension enforcement** (TD-05/06/07).
+  pattern; there is no API to import — and the inheritance above is three
+  independent axes, not that model.
+- **The three other additive features force nothing either**: impersonation, the
+  tenant lifecycle write port, and suspension enforcement (TD-05/06/07) are all
+  opt-in, and §4 is what wires them.
 
 ---
 

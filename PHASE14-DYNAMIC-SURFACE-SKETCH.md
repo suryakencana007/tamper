@@ -1,6 +1,7 @@
 # Phase 14 — A dynamic tenant surface (TD-14)
 
-Status: **draft, for review. Not decided, no code.**
+Status: **accepted 2026-11-03, with A3 replaced by A4** — see §3.1, found while
+starting 14b: A3's boot guard cannot be written in Go.
 
 TD-14 is the last P2 that is tamper's own, and it is the only one whose remaining work
 turned out to be **in the library rather than in the example**. §1 explains why, because
@@ -66,7 +67,9 @@ Invariant to preserve: **Path always equals the concrete mount prefix of the req
 because that equality *is* the CSRF fence. So the fix must make the prefix per-request
 without ever letting the path be computed from something that is not the routing.
 
-Three candidates, and the recommendation is the third:
+Three candidates were considered. **A3 has since been replaced by A4** — see §3.1, which
+records why its guard cannot exist; the table below is kept because the reasoning is the
+record of how A4 was reached.
 
 | | Shape | Verdict |
 |---|---|---|
@@ -108,14 +111,63 @@ RouteTenant func(*http.Request) (tenant.ID, bool)  // NEW, optional: resolve the
 **Fail closed**: `RouteTenant` returns `(zero, false)` ⇒ the route answers the
 `NOT_FOUND` the tenant gates already answer, and no cookie is written.
 
+### 3.1 A3 is unimplementable, and A4 is what replaces it
+
+Starting 14b found the hole in one grep: **`FixedTenant` returns a plain function**
+(`espresso/authroutes.go:218`), and Go cannot compare functions. So "`RouteTenant` +
+`FixedTenant` fails at `New`" — the guard A3 leaned on to stop two disagreeing resolvers —
+**cannot be written**. A guard that cannot exist is exactly what standing rule 6 forbids:
+an upgrade shipped without the test that proves its guard fires.
+
+A3 also still carried the defect it was trying to manage rather than remove: two
+resolvers that *can* disagree, plus a runtime rule that they must not. Removing the
+second resolver is better than policing it, so:
+
+**A4 — one resolver, and a template in the mount prefix.**
+
+```go
+const TenantPathSegment = "{tenant}"        // the placeholder, exported and documented
+
+MountPrefix: "/t/{tenant}/auth"             // a template; unchanged field
+Tenant:      TenantFromRoutedContext        // the ONE resolver, unchanged field
+// per request:  prefix, ok := authPrefixFor(MountPrefix, tid)   // tid from Tenant
+//               cookie.Path = prefix                            // set AND clear
+```
+
+- **No new config field**, so there is no pair to conflict: the tenant that decides the
+  path is the same value `Tenant` already returned and the same one passed to the port.
+  Invariant 1a becomes structural instead of enforced.
+- **`authPrefixFor(mount, tid)`** returns `(mount, true)` when the template has no
+  placeholder (single-tenant and every existing caller, byte-identical), and
+  `(replaced, true)` when it does and `tid` is a real tenant. It returns `("", false)`
+  when the template has the placeholder and `tid` is unset or `tenant.Single` — the
+  `NOT_FOUND` path, no cookie written or cleared.
+- **A dynamic prefix without a dynamic resolver is caught where it can be**: at
+  `NewAuthRoutes`, a `MountPrefix` containing `{tenant}` is accepted (it needs nothing
+  else), but a request that resolves `tenant.Single` under it fails closed instead of
+  writing a cookie at `/t/{tenant}/auth`. That is a shape that *can* be tested, unlike a
+  function comparison.
+- `Set-Cookie` for a template prefix that resolves properly is
+  `/t/acme/auth`; the placeholder never reaches a browser.
+
+**Why `{tenant}` and not `:tenant`.** It is the spelling the repo already reads:
+`examples/tenanthierarchy` resolves its path parameter with `r.PathValue(OrgParam)`
+(Go 1.22 `ServeMux` syntax), so the mount pattern a deployment writes and the template
+this phase substitutes are **the same string**. One constant serves both ends, which is
+also what keeps them from drifting apart.
+
+The cost, stated: `{tenant}` is a literal the app must not accidentally use in a real
+path. It is exported as `TenantPathSegment` so the collision is nameable, and
+`authPrefixFor` refuses rather than guessing when substitution cannot happen.
+
 ---
 
 ## 4. Invariants
 
 1. `cookie.Path` equals the request's concrete mount prefix, **on both the set and the
    clear**. No exception, no caller override.
-1a. One resolver decides the tenant for the whole request: the path, the port's tenant
-    argument and the audit scope all read the same pinned value, never two opinions.
+1a. One resolver decides the tenant for the whole request — structurally: the value that
+    fills `{tenant}` is the same value passed to the port, because there is only one.
 2. The tenant segment comes from **routing**, never from the token, the body, or the
    cookie itself. A token naming another tenant cannot move the cookie path.
 3. A request under tenant X never reads tenant Y's cookie — asserted with a real cookie
@@ -137,7 +189,8 @@ RouteTenant func(*http.Request) (tenant.ID, bool)  // NEW, optional: resolve the
 | an unresolvable tenant sets no cookie and answers `NOT_FOUND` | default to `tenant.Single` on a failed resolve |
 | a token for another tenant cannot move the cookie path | resolve the tenant from the claims |
 | `Logout` clears **that tenant's** path (`MaxAge=-1`) and the jar actually drops it | clear `MountPrefix` verbatim while the set uses the derived prefix |
-| `RouteTenant` + `FixedTenant` fails at `New`, naming the field | accept the pair and pick one silently |
+| a template prefix under an unresolvable tenant sets and clears **no** cookie | substitute anyway with `""` |
+| a static prefix (`/api/auth`) is byte-identical to before | run the substitution unconditionally |
 | single-tenant: byte-identical `Set-Cookie` before and after | (golden header test) |
 
 ---

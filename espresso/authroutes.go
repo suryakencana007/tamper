@@ -242,17 +242,63 @@ func (a *AuthRoutes) tenant(ctx context.Context) (tenant.ID, error) {
 // logout routes read the cookie through (via ReadNamedCookie).
 const refreshCookieSlotName = "tamper_refresh"
 
+// TenantPathSegment is the mount-prefix placeholder a dynamic tenant surface uses:
+//
+//	MountPrefix: "/t/{tenant}/auth"
+//	Tenant:      TenantFromRoutedContext   // the ONE resolver; pins from the request
+//
+// It is spelled the way this repo already reads path parameters — `r.PathValue`, Go
+// 1.22 ServeMux syntax — so the pattern the router mounts and the template substituted
+// here are THE SAME STRING, and cannot drift apart.
+//
+// The substituted value is the tenant `Tenant` resolved for this request, which is also
+// the tenant handed to the IdentityService: one resolver, one value, so the cookie path
+// can never belong to a different tenant than the session it carries.
+//
+// A deployment that resolves the tenant from something other than the route (a token, a
+// header) must not put {tenant} in its prefix: the path would then follow that source,
+// where the routing does not.
+const TenantPathSegment = "{tenant}"
+
+// authPrefixFor returns the mount prefix for one request, and whether it could be
+// derived. It is the single place the cookie's Path comes from — the set AND the clear
+// — so the CSRF fence stays "by construction" rather than by convention.
+//
+// Three outcomes:
+//
+//	no placeholder          the mount, unchanged — single-tenant and every existing
+//	                        caller are byte-identical to before
+//	placeholder + tenant    substituted, e.g. /t/acme/auth
+//	placeholder + no tenant ("", false): unset and tenant.Single cannot fill a tenant
+//	                        segment, so the caller refuses rather than writing a cookie
+//	                        at /t/{tenant}/auth
+func authPrefixFor(mount string, tenantID tenant.ID) (string, bool) {
+	if !strings.Contains(mount, TenantPathSegment) {
+		return mount, true
+	}
+	if !tenantID.Valid() || tenantID.IsSingle() {
+		return "", false
+	}
+	return strings.ReplaceAll(mount, TenantPathSegment, tenantID.String()), true
+}
+
 // refreshCookies returns the Set-Cookie list for a successful auth
 // response; empty when refresh issuance is disabled so no stray
 // cookie ships. Path == MountPrefix by construction.
-func (a *AuthRoutes) refreshCookies(tokens identity.Tokens) []*http.Cookie {
+func (a *AuthRoutes) refreshCookies(tokens identity.Tokens, tenantID tenant.ID) []*http.Cookie {
 	if tokens.Refresh == "" {
+		return nil
+	}
+	prefix, ok := authPrefixFor(a.cfg.MountPrefix, tenantID)
+	if !ok {
+		// The mount is a template and this request resolved no tenant: writing a cookie
+		// at the literal "{tenant}" path would be worse than writing none.
 		return nil
 	}
 	return []*http.Cookie{{
 		Name:     a.cfg.Cookies.Name,
 		Value:    tokens.Refresh,
-		Path:     a.cfg.MountPrefix,
+		Path:     prefix,
 		HttpOnly: true,
 		Secure:   a.cfg.Cookies.Secure,
 		SameSite: http.SameSiteLaxMode,
@@ -263,11 +309,17 @@ func (a *AuthRoutes) refreshCookies(tokens identity.Tokens) []*http.Cookie {
 // clearRefreshCookie instructs the browser to drop the refresh
 // cookie: MaxAge=-1 + empty value with attribute parity (some
 // browsers refuse the overwrite otherwise).
-func (a *AuthRoutes) clearRefreshCookie() *http.Cookie {
+func (a *AuthRoutes) clearRefreshCookie(tenantID tenant.ID) *http.Cookie {
+	// Attribute parity with the set: a clear at a different Path deletes nothing, which
+	// would leave the user logged in on a route that has just signed them out.
+	prefix, ok := authPrefixFor(a.cfg.MountPrefix, tenantID)
+	if !ok {
+		return nil
+	}
 	return &http.Cookie{
 		Name:     a.cfg.Cookies.Name,
 		Value:    "",
-		Path:     a.cfg.MountPrefix,
+		Path:     prefix,
 		HttpOnly: true,
 		Secure:   a.cfg.Cookies.Secure,
 		SameSite: http.SameSiteLaxMode,
@@ -283,12 +335,24 @@ func (a *AuthRoutes) ReadRefreshCookie() func(http.Handler) http.Handler {
 }
 
 // authRes assembles the standard success envelope.
-func (a *AuthRoutes) authRes(ctx context.Context, status int, res AuthResult) espressofw.JSON[AuthRes] {
+func (a *AuthRoutes) authRes(ctx context.Context, status int, res AuthResult, tenantID tenant.ID) espressofw.JSON[AuthRes] {
 	return espressofw.JSON[AuthRes]{
 		StatusCode: status,
 		Data:       AuthRes{Token: res.Tokens.Access, User: a.cfg.ProjectUser(ctx, res.User)},
-		Cookies:    a.refreshCookies(res.Tokens),
+		Cookies:    a.refreshCookies(res.Tokens, tenantID),
 	}
+}
+
+// onlySetCookies drops the ones a failed derivation returned. A nil cookie means "this
+// request cannot name a path" — shipping a nil in the list would panic on write.
+func onlySetCookies(cs ...*http.Cookie) []*http.Cookie {
+	out := make([]*http.Cookie, 0, len(cs))
+	for _, c := range cs {
+		if c != nil {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Register handles POST {prefix}/register: 201 + refresh cookie, 409
@@ -302,7 +366,7 @@ func (a *AuthRoutes) Register(ctx context.Context, req *espressofw.JSON[Register
 	if err != nil {
 		return espressofw.JSON[AuthRes]{}, mapAuthWireError(err, a.cfg.ValidationMessage)
 	}
-	return a.authRes(ctx, http.StatusCreated, res), nil
+	return a.authRes(ctx, http.StatusCreated, res, tid), nil
 }
 
 // Login handles POST {prefix}/login. On identity.ErrTOTPRequired the
@@ -336,7 +400,7 @@ func (a *AuthRoutes) Login(ctx context.Context, req *espressofw.JSON[LoginReq]) 
 		UserID:   res.User.ID,
 		TenantID: tid.String(),
 	})
-	return a.authRes(ctx, http.StatusOK, res), nil
+	return a.authRes(ctx, http.StatusOK, res, tid), nil
 }
 
 // Me handles GET {prefix}/me behind RequireAuth. A valid token whose
@@ -414,7 +478,7 @@ func (a *AuthRoutes) VerifyTOTP(ctx context.Context, req *espressofw.JSON[TOTPVe
 		UserID:   res.User.ID,
 		TenantID: tid.String(),
 	})
-	return a.authRes(ctx, http.StatusOK, res), nil
+	return a.authRes(ctx, http.StatusOK, res, tid), nil
 }
 
 // EnrollTOTP handles POST {prefix}/totp/enroll behind RequireAuth.
@@ -500,7 +564,7 @@ func (a *AuthRoutes) EnrollSession(ctx context.Context, req *espressofw.JSON[TOT
 				Token: phase2.Tokens.Access,
 				User:  a.cfg.ProjectUser(ctx, phase2.User),
 			},
-			Cookies: a.refreshCookies(phase2.Tokens),
+			Cookies: a.refreshCookies(phase2.Tokens, tid),
 		}, nil
 	}
 	return espressofw.JSON[TOTPEnrollSessionRes]{
@@ -530,7 +594,7 @@ func (a *AuthRoutes) Refresh(ctx context.Context) (espressofw.JSON[AuthRes], err
 		// cleared is replayed by the client on every refresh.
 		return espressofw.JSON[AuthRes]{
 			StatusCode: http.StatusUnauthorized,
-			Cookies:    []*http.Cookie{a.clearRefreshCookie()},
+			Cookies:    onlySetCookies(a.clearRefreshCookie(tid)),
 			Data:       AuthRes{User: a.cfg.ProjectUser(ctx, nil)},
 		}, nil
 	}
@@ -544,7 +608,7 @@ func (a *AuthRoutes) Refresh(ctx context.Context) (espressofw.JSON[AuthRes], err
 		if errors.Is(err, identity.ErrUserInactive) {
 			return espressofw.JSON[AuthRes]{
 				StatusCode: http.StatusUnauthorized,
-				Cookies:    []*http.Cookie{a.clearRefreshCookie()},
+				Cookies:    onlySetCookies(a.clearRefreshCookie(tid)),
 				Data:       AuthRes{User: a.cfg.ProjectUser(ctx, nil)},
 			}, nil
 		}
@@ -555,7 +619,7 @@ func (a *AuthRoutes) Refresh(ctx context.Context) (espressofw.JSON[AuthRes], err
 		}
 		return espressofw.JSON[AuthRes]{}, espressofw.ErrInternal("internal error").Wrap(err)
 	}
-	return a.authRes(ctx, http.StatusOK, res), nil
+	return a.authRes(ctx, http.StatusOK, res, tid), nil
 }
 
 // Logout handles POST {prefix}/logout: best-effort revocation +
@@ -564,13 +628,17 @@ func (a *AuthRoutes) Logout(ctx context.Context) (espressofw.JSON[struct{}], err
 	// Idempotent and unconditional: the cookie is cleared whatever else
 	// is true. With no tenant there is nothing to revoke, and the port
 	// is not asked.
-	if tid, err := a.tenant(ctx); err == nil {
+	tid, terr := a.tenant(ctx)
+	if terr == nil {
 		if tok, ok := NamedCookieValue(ctx, refreshCookieSlotName); ok {
 			_ = a.svc.Logout(ctx, tid, tok)
 		}
 	}
+	// The clear still happens when the tenant did not resolve: with a STATIC prefix the
+	// cookie lives at a fixed path and must be cleared regardless; with a template there
+	// is no path to name, and onlySetCookies drops it.
 	return espressofw.JSON[struct{}]{
 		StatusCode: http.StatusNoContent,
-		Cookies:    []*http.Cookie{a.clearRefreshCookie()},
+		Cookies:    onlySetCookies(a.clearRefreshCookie(tid)),
 	}, nil
 }

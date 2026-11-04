@@ -121,7 +121,10 @@ Then tag, release, and check the release notes against the tag's contents.
 
 ## What the sketch usually gets wrong
 
-Four phases, four for four — assume your sketch has one of these:
+Phase 12's four code slices each found one of these, and not one of them was visible
+from the sketch — a better record than "a phase, once". Phase 13 then produced a fifth
+kind, in the item rather than the design: the list of what to change was incomplete and
+had been incomplete when it was written. Assume your sketch has one of these:
 
 1. **The design does not survive the code.** 12a: "resolve before the lock" turned out
    to be a restructure of four call paths, and it breaks one documented promise.
@@ -129,6 +132,10 @@ Four phases, four for four — assume your sketch has one of these:
 3. **Two consumers are byte-identical**, so the logic is already duplicated before it
    ships.
 4. **A security check checks the input but not the stored value.** 12d.
+
+And a fifth, from the item rather than the sketch: **the inventory is short.** TD-28
+named six methods and there were fourteen. Enumerating a type's whole surface takes one
+grep, and it is the cheapest step in the list.
 
 So: pre-flight the riskiest assumption with two greps before writing code, and put
 the finding in the amendment.

@@ -86,3 +86,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// enterTenantFromPath is enterTenant for a DYNAMIC surface: the target comes from
+// the path parameter instead of a closure, so one route serves every pair of
+// tenants. Everything else — the gating, the refusal shapes — is unchanged.
+func enterTenantFromPath(core *identity.Core) http.Handler {
+	inner := func(target string) http.Handler { return enterTenant(core, target) }
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner(r.PathValue("target")).ServeHTTP(w, r)
+	})
+}

@@ -204,6 +204,9 @@ there is no option to turn on.
 POST /login
   └─ AuthRoutes.Login
       ├─ AuthRoutesConfig.Tenant(ctx) ─> tenant.ID     (required; none ─> 404)
+      │   MountPrefix may be a template (/t/{tenant}/auth): {tenant} is filled from
+      │   that same tenant, and the refresh cookie's Path is derived from it — so one
+      │   mounted surface serves every tenant, present and future.
       │     FixedTenant(...) for one tenant, TenantFromContext behind a gate
       └─ IdentityService.Login(tenant, email, pw) (application adapter)
           └─ identity.Core.Login(tenant, email, pw)

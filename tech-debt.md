@@ -41,6 +41,7 @@ TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 | TD-07 | #88 | Merged. Opt-in impersonation; the audit row names the human. |
 | TD-04 | #91, #92, #94, #96 | Merged. All four axes decided and shipped: roles (ADR-0001), plans, IdP, domains. |
 | TD-28 | #100, #101 | Merged. The tenant is in the signature; the shims are gone. |
+| TD-14 | #107, #108 | Merged. One template mount serves tenants created at runtime. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, only
@@ -78,7 +79,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-11 | The audit log cannot be queried per tenant | gap | P2 | Tamper |
 | TD-12 | A service account has only one tenant | gap | P2 | Tamper |
 | TD-13 | Second-factor policy cannot be set per role | gap | P2 | Tamper |
-| TD-14 | The per-tenant route mounting pattern is static | gap | P2 | example + docs |
+| TD-14 | The per-tenant route mounting pattern is static | fixed by #107, #108 | — | — |
 | TD-15 | SCIM tenant scoping is off by default | fixed by #39 | — | — |
 | TD-16 | `Verify` reports tamper on a mixed-version chain | resolved by #46 | — | — |
 | TD-17 | `audit.Filter` fields are ignored by `List` | fixed by #49 | — | — |
@@ -742,6 +743,44 @@ by the platform console gets no routes until the process restarts.
 `PinTenant`, so one surface serves dynamic tenants. That adapter must still
 check the user's stored tenant on the TOTP path (see TD-10).
 
+**Fix (2026-11-03, #107, #108).** Designed in
+[`PHASE14-DYNAMIC-SURFACE-SKETCH.md`](PHASE14-DYNAMIC-SURFACE-SKETCH.md), whose §3
+records three rejected candidates — including one whose guard turned out to be
+**unwritable in Go** (§3.1). The item needed a product decision before code (cookie
+separation by **path**, not by name), and the re-verification found two of its three
+evidence claims stale:
+
+- *"`IdentityService.Login(ctx, email, password)` takes no tenant"* — **false since
+  #59**: the port has taken the tenant on every method since then
+  (`espresso/authroutes.go:67`). A reader who trusted the item would have written a
+  check the port already made.
+- *"that adapter must still check the user's stored tenant on the TOTP path"* —
+  **false twice over**: TD-10 closed in #40, and since #100 the **library** performs
+  the comparison, so the adapter that repeats it is writing what it no longer owes.
+
+What landed:
+
+- **`espresso` (#107).** `MountPrefix` may be a **template** — `/t/{tenant}/auth` —
+  whose `{tenant}` segment is filled from the tenant the existing `Tenant` resolver
+  returned for that request, which is the value the `IdentityService` receives. One
+  resolver, so the refresh cookie's `Path` can never belong to a different tenant than
+  the session it carries. The path is derived at **both** the set and the clear
+  (attribute parity is what makes a deletion work), and a template meeting an unset or
+  `tenant.Single` id writes **no** cookie **and** answers `NOT_FOUND` rather than
+  handing out an access token that can never be renewed. `TenantPathSegment` names the
+  placeholder, spelled the way this repo already reads path parameters
+  (`r.PathValue`). Static prefixes are byte-identical to before.
+- **`examples/multitenant` (#108).** One surface for every tenant, present and future.
+  A tenant created at runtime by the console now has routes without a restart, which
+  was the item's whole complaint. The per-tenant cookie **names** are gone: the path
+  already separates the jars, so a single browser still holds a live session per
+  tenant — asserted end to end by `TestOneBrowserHoldsASessionPerTenant`, which renews
+  both sessions through `/refresh` in one cookie jar.
+
+What it does **not** do: it does not change `EnterTenant`/impersonation, does not make
+the cookie carry a tenant, and does not touch subdomain-based tenancy (the resolver
+still fits there, where isolation comes from the `domain` half of the cookie identity).
+
 ### TD-17 — `audit.Filter` fields are ignored by `List` *(fixed by #49)*
 
 **Evidence.** `audit.Filter` declares `Since`, `Until`, `ActorEmail`, and
@@ -1113,7 +1152,8 @@ Suggested slice order if this work moves into Tamper:
    eager per-tenant provisioning, and plans, IdP and domains inherit at runtime in
    `tenant`/`oidc`/`saml`.
 8. **TD-17, TD-18, TD-20, TD-23, TD-26** — merged (#49 to #52, #54).
-9. **TD-12, TD-13, TD-14** — the rest. **TD-28 closed in #100/#101**, and with it
+9. **TD-12, TD-13** — the rest. **TD-14 closed in #107/#108**, so the dynamic tenant
+   surface ships; **TD-28 closed in #100/#101**, and with it
    the last item that was purely tamper's own work.
 
 ## Process limits

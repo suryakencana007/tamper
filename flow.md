@@ -205,6 +205,9 @@ POST /login
   └─ AuthRoutes.Login
       ├─ AuthRoutesConfig.Tenant(ctx) ─> tenant.ID     (required; none ─> 404)
       │     FixedTenant(...) for one tenant, TenantFromContext behind a gate
+      │   MountPrefix may be a TEMPLATE (/t/{tenant}/auth): {tenant} is filled from the
+      │   tenant that resolver returned, and the refresh cookie's Path is derived from
+      │   it — so one mounted surface serves every tenant, present and future
       └─ IdentityService.Login(tenant, email, pw) (application adapter)
           └─ identity.Core.Login(tenant, email, pw)
               ├─ NormaliseEmail

@@ -10,6 +10,12 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Added
 
+- **`examples/multitenant` shows one surface for every tenant** (Phase 14 slice 14c,
+  TD-14). A tenant created at runtime by the console now has routes without a restart.
+  The per-tenant cookie **names** are gone — the path already separates the jars, so one
+  name is enough and a single browser still holds a live session per tenant, proven end
+  to end by a test that renews both sessions through `/refresh` in one cookie jar.
+
 - **A dynamic tenant surface** (Phase 14 slice 14b, TD-14). `AuthRoutesConfig.MountPrefix`
   may now be a **template** — `/t/{tenant}/auth` — whose `{tenant}` segment is filled from
   the tenant the existing `Tenant` resolver returned for that request, so one mounted
@@ -20,7 +26,7 @@ All notable changes to tamper are recorded here. Versions follow
   placeholder, spelled the way this repo already reads path parameters (`r.PathValue`).
   Static prefixes are unchanged, byte for byte.
 
-Nothing yet. What is left in `tech-debt.md` is the four P2 items (TD-11 to TD-14), and
+Nothing yet. What is left in `tech-debt.md` is the three P2 items (TD-11 to TD-13), and
 TD-27, which is Barista's own migration. **Every P1 that was tamper's own work is
 closed.** The next release number is not decided.
 

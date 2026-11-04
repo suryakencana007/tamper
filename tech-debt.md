@@ -729,7 +729,7 @@ not".
 `acrValues` on every platform route. The local-password ACR does not satisfy
 step-up by design, so platform admins must sign in through an IdP with MFA.
 
-### TD-14 — The per-tenant route mounting pattern is static
+### TD-14 — The per-tenant route mounting pattern is static *(fixed by #107, #108)*
 
 **Evidence.** `examples/multitenant/main.go:122` mounts one auth surface per
 tenant in a loop at boot, with an adapter that closes over the tenant id. The

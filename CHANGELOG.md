@@ -26,7 +26,7 @@ All notable changes to tamper are recorded here. Versions follow
   placeholder, spelled the way this repo already reads path parameters (`r.PathValue`).
   Static prefixes are unchanged, byte for byte.
 
-Nothing yet. What is left in `tech-debt.md` is the four P2 items (TD-11 to TD-14), and
+Nothing yet. What is left in `tech-debt.md` is the three P2 items (TD-11 to TD-13), and
 TD-27, which is Barista's own migration. **Every P1 that was tamper's own work is
 closed.** The next release number is not decided.
 

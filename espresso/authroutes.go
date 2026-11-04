@@ -335,12 +335,22 @@ func (a *AuthRoutes) ReadRefreshCookie() func(http.Handler) http.Handler {
 }
 
 // authRes assembles the standard success envelope.
-func (a *AuthRoutes) authRes(ctx context.Context, status int, res AuthResult, tenantID tenant.ID) espressofw.JSON[AuthRes] {
+func (a *AuthRoutes) authRes(ctx context.Context, status int, res AuthResult,
+	tenantID tenant.ID,
+) (espressofw.JSON[AuthRes], error) {
+	cookies := a.refreshCookies(res.Tokens, tenantID)
+	// A template prefix that cannot name a tenant must refuse, not half-succeed: without
+	// this the client would receive an access token and no refresh cookie — a session it
+	// can never renew — and nothing would say why. Invariant 4: no cookie AND NOT_FOUND,
+	// indistinguishable from a tenant that does not exist.
+	if res.Tokens.Refresh != "" && cookies == nil {
+		return espressofw.JSON[AuthRes]{}, espressofw.ErrNotFound("not found").WithCode("NOT_FOUND")
+	}
 	return espressofw.JSON[AuthRes]{
 		StatusCode: status,
 		Data:       AuthRes{Token: res.Tokens.Access, User: a.cfg.ProjectUser(ctx, res.User)},
-		Cookies:    a.refreshCookies(res.Tokens, tenantID),
-	}
+		Cookies:    cookies,
+	}, nil
 }
 
 // onlySetCookies drops the ones a failed derivation returned. A nil cookie means "this
@@ -366,7 +376,7 @@ func (a *AuthRoutes) Register(ctx context.Context, req *espressofw.JSON[Register
 	if err != nil {
 		return espressofw.JSON[AuthRes]{}, mapAuthWireError(err, a.cfg.ValidationMessage)
 	}
-	return a.authRes(ctx, http.StatusCreated, res, tid), nil
+	return a.authRes(ctx, http.StatusCreated, res, tid)
 }
 
 // Login handles POST {prefix}/login. On identity.ErrTOTPRequired the
@@ -400,7 +410,7 @@ func (a *AuthRoutes) Login(ctx context.Context, req *espressofw.JSON[LoginReq]) 
 		UserID:   res.User.ID,
 		TenantID: tid.String(),
 	})
-	return a.authRes(ctx, http.StatusOK, res, tid), nil
+	return a.authRes(ctx, http.StatusOK, res, tid)
 }
 
 // Me handles GET {prefix}/me behind RequireAuth. A valid token whose
@@ -478,7 +488,7 @@ func (a *AuthRoutes) VerifyTOTP(ctx context.Context, req *espressofw.JSON[TOTPVe
 		UserID:   res.User.ID,
 		TenantID: tid.String(),
 	})
-	return a.authRes(ctx, http.StatusOK, res, tid), nil
+	return a.authRes(ctx, http.StatusOK, res, tid)
 }
 
 // EnrollTOTP handles POST {prefix}/totp/enroll behind RequireAuth.
@@ -619,7 +629,7 @@ func (a *AuthRoutes) Refresh(ctx context.Context) (espressofw.JSON[AuthRes], err
 		}
 		return espressofw.JSON[AuthRes]{}, espressofw.ErrInternal("internal error").Wrap(err)
 	}
-	return a.authRes(ctx, http.StatusOK, res, tid), nil
+	return a.authRes(ctx, http.StatusOK, res, tid)
 }
 
 // Logout handles POST {prefix}/logout: best-effort revocation +

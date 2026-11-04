@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"encoding/json"
+	"errors"
 
 	espressofw "github.com/suryakencana007/espresso/v2"
 	"github.com/suryakencana007/tamper/identity"
@@ -77,6 +78,40 @@ func TestAuthRoutes_TemplateMountScopesTheCookieToTheTenant(t *testing.T) {
 	// the value that reached `refreshCookies`, which in the handler IS the tenant passed
 	// to the port — there is one resolver, and no second opinion to compare against.
 	_ = svc
+}
+
+// Fail closed, the whole way: a template that cannot name a tenant must NOT hand out an
+// access token with no refresh cookie — that is a session the client can never renew,
+// with nothing saying why. It answers NOT_FOUND, like a tenant that does not exist.
+func TestAuthRoutes_TemplateWithoutATenantRefusesTheLogin(t *testing.T) {
+	svc := &mintIdentity{}
+	a := routesOnTemplate(t, svc, tenant.Single)
+
+	_, err := a.VerifyTOTP(context.Background(), &espressofw.JSON[TOTPVerifyReq]{
+		Data: TOTPVerifyReq{SessionToken: "pending", Code: "123456"},
+	})
+	if err == nil {
+		t.Fatal("want NOT_FOUND: a template with no tenant cannot scope a refresh cookie, so " +
+			"the login must refuse rather than return a token that can never be renewed")
+	}
+	if !errors.Is(err, espressofw.ErrNotFound("x")) {
+		// the framework's sentinel is comparable through errors.Is on its own error type
+		if err.Error() != espressofw.ErrNotFound("not found").Error() {
+			t.Fatalf("err = %v, want the NOT_FOUND envelope", err)
+		}
+	}
+}
+
+// mintIdentity issues REAL tokens, so the envelope path under test is the one a
+// deployment reaches.
+type mintIdentity struct{ tenantRecorder }
+
+func (m *mintIdentity) VerifyTOTPPending(_ context.Context, _ tenant.ID, _ string) (string, error) {
+	return "u-1", nil
+}
+
+func (m *mintIdentity) IssueTokensForUser(_ context.Context, _ tenant.ID, _ string) (AuthResult, error) {
+	return AuthResult{User: &identity.User{ID: "u-1"}, Tokens: identity.Tokens{Access: "a", Refresh: "r"}}, nil
 }
 
 // Fail closed: a template that cannot be filled writes no cookie at all, rather than one

@@ -142,8 +142,14 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 	// routeTenant is the ONE resolver. It reads the path parameter; everything
 	// downstream reads the pin. There is deliberately no second resolver to
 	// disagree with it.
+	// The bool is the resolver's honest answer about whether it FOUND a tenant.
+	// tenant.New("") is the invalid zero id, not the single tenant, so an empty
+	// segment reports false and PinTenant answers NOT_FOUND. Returning true
+	// unconditionally would compile and behave the same here — and would teach the
+	// wrong contract to the application copying this file.
 	routeTenant := func(r *http.Request) (tenant.ID, bool) {
-		return tenant.New(r.PathValue("tenant")), true
+		id := tenant.New(r.PathValue("tenant"))
+		return id, id.Valid()
 	}
 	pin := tamperespresso.PinTenant(routeTenant)
 

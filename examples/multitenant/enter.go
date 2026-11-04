@@ -42,12 +42,13 @@ func enterTenant(core *identity.Core, target string) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, errorBody{"user is inactive"})
 		default:
 			// Includes a failed membership lookup. Never a yes.
-			// %q, not %s: since the target comes from a PATH PARAMETER it is user
-			// input, and gosec is right that a raw value can inject newlines into the
-			// log. It was a boot-time constant before Phase 14 made this route
-			// dynamic, which is exactly the kind of change that turns a benign
-			// log line into a sink.
-			log.Printf("multitenant: enter %q: %v", target, err)
+			// The target is NOT logged: since Phase 14 made this route dynamic it is
+			// user input, and gosec's taint analysis (G706, log injection) is right that
+			// a value from the path can forge log lines — quoting it with %q did not
+			// satisfy the analyser. The lesson for an example is the stronger one: a
+			// request-scoped identifier a caller chose does not belong in a log line.
+			// The tenant that WAS resolved is already in the audit row this app writes.
+			log.Printf("multitenant: enter failed: %v", err)
 			writeJSON(w, http.StatusInternalServerError, errorBody{"internal error"})
 		}
 	})

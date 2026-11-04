@@ -85,9 +85,7 @@ func run() error {
 	defer stop()
 
 	log.Println("multitenant: listening on :8080")
-	for _, t := range tenants {
-		log.Printf("  tenant %-8s POST /t/%s/auth/register  /login  /refresh  /logout  /enter/{tenant}   GET /t/%s/auth/me  /t/%s/whoami", t, t, t, t)
-	}
+	log.Printf("  tenants %v share ONE surface: POST /t/{tenant}/auth/{register,login,refresh,logout,enter/{target}}  GET /t/{tenant}/auth/me  /t/{tenant}/whoami", tenants)
 	return router.BrewContext(ctx,
 		espresso.WithAddr(":8080"),
 		espresso.WithReadTimeout(15*time.Second),
@@ -132,59 +130,83 @@ func buildHandler(store *tenantStore, jwtSecret string) (*espresso.Router, *tamp
 	svc := newPooledIdentity(provider, store)
 
 	r := espresso.Portafilter()
-	for _, tenantID := range tenants {
-		prefix := "/t/" + tenantID + "/auth"
-		surfaces, serr := tamperespresso.Routes(provider, tamperespresso.RouteConfig{
-			Auth: tamperespresso.AuthRoutesConfig{
-				MountPrefix: prefix,
-				// The prefix is the tenant's, so the tenant is fixed for
-				// every request under it. It is never read from the token.
-				Tenant: tamperespresso.FixedTenant(tenant.New(tenantID)),
-				// Per-tenant cookie name: one browser must be able to hold a
-				// session in each tenant without them overwriting each other.
-				Cookies:     tamperespresso.CookieConfig{Name: "mt_" + tenantID + "_refresh"},
-				ProjectUser: projectUser,
-			},
-			Identity: svc,
-		})
-		if serr != nil {
-			_ = provider.Close()
-			return nil, nil, serr
-		}
+	// ONE auth surface for every tenant, present and future. This is Phase 14's
+	// point (TD-14): the old shape mounted a surface per tenant in a loop at boot,
+	// so a tenant created at runtime by the console had no routes until a restart.
+	//
+	// The prefix is a TEMPLATE. TenantPathSegment is filled per request from the
+	// tenant the resolver below pins — the same value the port receives and the
+	// same one the refresh cookie's Path is derived from, so neither can drift.
+	const authPrefix = "/t/" + tamperespresso.TenantPathSegment + "/auth"
 
-		auth := surfaces.Auth
-		readCookie := auth.ReadRefreshCookie()
-		r.Post(prefix+"/register", espresso.Doppio(auth.Register))
-		r.Post(prefix+"/login", espresso.Doppio(auth.Login))
-		// Every authenticated route gets BOTH gates. RequireAuth says the
-		// token is genuine; RequireTenant says it was minted for THIS
-		// tenant, by comparing its `tid` with the tenant the route names.
-		// The route's tenant comes from the route, never from the token.
-		// A route that has only RequireAuth accepts any tenant's token —
-		// add RequireTenant to every route you mount beside this one.
-		requireTenant := tamperespresso.RequireTenant(tamperespresso.FixedRequestTenant(tenant.New(tenantID)))
-		r.Get(prefix+"/me", surfaces.RequireAuth(requireTenant(espresso.HandlerCtx(auth.Me))))
-		r.Post(prefix+"/refresh", readCookie(espresso.HandlerCtx(auth.Refresh)))
-		r.Post(prefix+"/logout", readCookie(espresso.HandlerCtx(auth.Logout)))
-
-		// Phase 8. whoami is the one route here that platform admins may
-		// use: RequireTenantAllowEntered accepts this tenant's own tokens
-		// AND tokens entered into it. Every route above uses RequireTenant,
-		// which refuses an entered token — they are "my account" routes,
-		// and an entered admin has no account in this tenant.
-		guestsToo := tamperespresso.RequireTenantAllowEntered(tamperespresso.FixedRequestTenant(tenant.New(tenantID)))
-		r.Get("/t/"+tenantID+"/whoami", surfaces.RequireAuth(guestsToo(http.HandlerFunc(whoami))))
-		// One enter route per other tenant, mounted on the HOME tenant and
-		// gated like every other route of it: the caller proves who they
-		// are with their home session, then asks to go somewhere else.
-		for _, target := range tenants {
-			if target == tenantID {
-				continue
-			}
-			r.Post(prefix+"/enter/"+target,
-				surfaces.RequireAuth(requireTenant(enterTenant(provider.Identity, target))))
-		}
+	// routeTenant is the ONE resolver. It reads the path parameter; everything
+	// downstream reads the pin. There is deliberately no second resolver to
+	// disagree with it.
+	// The bool is the resolver's honest answer about whether it FOUND a tenant.
+	// tenant.New("") is the invalid zero id, not the single tenant, so an empty
+	// segment reports false and PinTenant answers NOT_FOUND. Returning true
+	// unconditionally would compile and behave the same here — and would teach the
+	// wrong contract to the application copying this file.
+	routeTenant := func(r *http.Request) (tenant.ID, bool) {
+		id := tenant.New(r.PathValue("tenant"))
+		return id, id.Valid()
 	}
+	pin := tamperespresso.PinTenant(routeTenant)
+
+	surfaces, serr := tamperespresso.Routes(provider, tamperespresso.RouteConfig{
+		Auth: tamperespresso.AuthRoutesConfig{
+			MountPrefix: authPrefix,
+			// The same pin the gates read, from the context form the config takes:
+			// one resolver fills {tenant}, and the port receives that value.
+			Tenant: tamperespresso.TenantFromContext,
+			// ONE cookie name: the PATH separates the tenants' jars, so a single
+			// browser still holds a live session per tenant. The old example used a
+			// per-tenant name, which the path had already made unnecessary.
+			Cookies:     tamperespresso.CookieConfig{Name: "mt_refresh"},
+			ProjectUser: projectUser,
+		},
+		Identity: svc,
+	})
+	if serr != nil {
+		_ = provider.Close()
+		return nil, nil, serr
+	}
+
+	auth := surfaces.Auth
+	readCookie := auth.ReadRefreshCookie()
+
+	// The public legs. pin is mandatory on every one of them: without a pinned
+	// tenant the template cannot be filled, and the auth routes refuse rather
+	// than write a cookie at a path no route would send it to.
+	r.Post(authPrefix+"/register", pin(espresso.Doppio(auth.Register)))
+	r.Post(authPrefix+"/login", pin(espresso.Doppio(auth.Login)))
+	r.Post(authPrefix+"/refresh", pin(readCookie(espresso.HandlerCtx(auth.Refresh))))
+	r.Post(authPrefix+"/logout", pin(readCookie(espresso.HandlerCtx(auth.Logout))))
+
+	// Every authenticated route gets BOTH gates. RequireAuth says the token is
+	// genuine; RequireTenant says it was minted for THIS tenant, by comparing its
+	// `tid` with the pinned tenant. The tenant comes from the ROUTE, never from
+	// the token. A route with only RequireAuth accepts any tenant's token — add
+	// RequireTenant to every route you mount beside this one.
+	requireTenant := tamperespresso.RequireTenant(tamperespresso.TenantFromRoutedContext)
+	r.Get(authPrefix+"/me", pin(surfaces.RequireAuth(requireTenant(espresso.HandlerCtx(auth.Me)))))
+
+	// Phase 8: whoami is the one route a platform admin may use. It accepts this
+	// tenant's own tokens AND token entered into it; every route above uses
+	// RequireTenant, which refuses an entered token — they are "my account"
+	// routes, and an entered admin has no account in this tenant.
+	guestsToo := tamperespresso.RequireTenantAllowEntered(tamperespresso.TenantFromRoutedContext)
+	r.Get("/t/"+tamperespresso.TenantPathSegment+"/whoami",
+		pin(surfaces.RequireAuth(guestsToo(http.HandlerFunc(whoami)))))
+
+	// One enter route for every target: the caller proves who they are with their
+	// home session, then asks to go elsewhere. The target is a path parameter, and
+	// the Core refuses a target it does not hold a membership for.
+	// {target}, not the tenant placeholder again: a pattern cannot repeat a wildcard
+	// name, and the two segments mean different things — the tenant the caller acts
+	// FROM, and the one they ask to enter.
+	r.Post(authPrefix+"/enter/{target}",
+		pin(surfaces.RequireAuth(requireTenant(enterTenantFromPath(provider.Identity)))))
 
 	return r, provider, nil
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -581,5 +582,80 @@ func TestAdapterRefusesAnotherTenantsUserWithoutTheGate(t *testing.T) {
 	store.failSessionReads(nil)
 	if _, err := svc.Refresh(ctx, globex, reg.Tokens.Refresh); err != nil {
 		t.Errorf("the globex session was touched by acme's logout: %v", err)
+	}
+}
+
+// TestOneBrowserHoldsASessionPerTenant is the reason the dynamic surface separates
+// cookies by PATH rather than by name (Phase 14, TD-14 option A): ONE jar, two
+// tenants, both sessions alive at once. With a single shared cookie slot the second
+// login would evict the first and the stale tab's next refresh would rotate a
+// session that no longer existed.
+func TestOneBrowserHoldsASessionPerTenant(t *testing.T) {
+	srv, _ := newServer(t)
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar: %v", err)
+	}
+	client := &http.Client{Jar: jar}
+
+	login := func(tenantID string) {
+		wantPath := "Path=/t/" + tenantID + "/auth"
+		body := `{"email":"two@example.com","password":"` + password + `"}`
+		req, rerr := http.NewRequest(http.MethodPost,
+			srv.URL+"/t/"+tenantID+"/auth/register", strings.NewReader(body))
+		if rerr != nil {
+			t.Fatalf("request: %v", rerr)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, rerr := client.Do(req)
+		if rerr != nil {
+			t.Fatalf("register %s: %v", tenantID, rerr)
+		}
+		defer func() { _ = res.Body.Close() }()
+		if sc := res.Header.Get("Set-Cookie"); !strings.Contains(sc, wantPath) {
+			t.Fatalf("%s: Set-Cookie = %q, want the tenant's path (%s) — the cookie must be "+
+				"scoped to the route that issued it", tenantID, sc, wantPath)
+		}
+		if res.StatusCode/100 != 2 {
+			// A second registration in the same tenant is a conflict; a login is what
+			// matters here, so fall through to it.
+			lreq, _ := http.NewRequest(http.MethodPost,
+				srv.URL+"/t/"+tenantID+"/auth/login", strings.NewReader(body))
+			lreq.Header.Set("Content-Type", "application/json")
+			lres, lerr := client.Do(lreq)
+			if lerr != nil {
+				t.Fatalf("login %s: %v", tenantID, lerr)
+			}
+			defer func() { _ = lres.Body.Close() }()
+			if lres.StatusCode/100 != 2 {
+				t.Fatalf("login %s: status %d", tenantID, lres.StatusCode)
+			}
+		}
+	}
+
+	login("acme")
+	login("globex")
+
+	// Both sessions still RENEW: /refresh reads the cookie for the path it is called
+	// on, so a jar holding two tenants' cookies is exactly what makes this work. With
+	// one shared slot the second login would have evicted the first, and the first
+	// /refresh below would be a 401.
+	for _, tenantID := range []string{"acme", "globex"} {
+		req, rerr := http.NewRequest(http.MethodPost,
+			srv.URL+"/t/"+tenantID+"/auth/refresh", strings.NewReader("{}"))
+		if rerr != nil {
+			t.Fatalf("request: %v", rerr)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, rerr := client.Do(req)
+		if rerr != nil {
+			t.Fatalf("refresh %s: %v", tenantID, rerr)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("refresh %s: status %d — the two tenants' sessions did not coexist",
+				tenantID, res.StatusCode)
+		}
 	}
 }

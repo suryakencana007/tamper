@@ -42,7 +42,13 @@ func enterTenant(core *identity.Core, target string) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, errorBody{"user is inactive"})
 		default:
 			// Includes a failed membership lookup. Never a yes.
-			log.Printf("multitenant: enter %s: %v", target, err)
+			// The target is NOT logged: since Phase 14 made this route dynamic it is
+			// user input, and gosec's taint analysis (G706, log injection) is right that
+			// a value from the path can forge log lines — quoting it with %q did not
+			// satisfy the analyser. The lesson for an example is the stronger one: a
+			// request-scoped identifier a caller chose does not belong in a log line.
+			// The tenant that WAS resolved is already in the audit row this app writes.
+			log.Printf("multitenant: enter failed: %v", err)
 			writeJSON(w, http.StatusInternalServerError, errorBody{"internal error"})
 		}
 	})
@@ -85,4 +91,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// enterTenantFromPath is enterTenant for a DYNAMIC surface: the target comes from
+// the path parameter instead of a closure, so one route serves every pair of
+// tenants. Everything else — the gating, the refusal shapes — is unchanged.
+func enterTenantFromPath(core *identity.Core) http.Handler {
+	inner := func(target string) http.Handler { return enterTenant(core, target) }
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner(r.PathValue("target")).ServeHTTP(w, r)
+	})
 }

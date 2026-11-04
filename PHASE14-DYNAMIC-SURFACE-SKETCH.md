@@ -31,10 +31,16 @@ library change.** §2 is why.
 
 ## 2. The blocker, and the decision taken
 
-The refresh cookie's `Path` **is** `MountPrefix`, by construction
-(`espresso/authroutes.go:255`, and the unconfigurability is deliberate: "the CSRF fence
-cannot be misconfigured"). A single surface serving dynamic tenants has a per-request
-prefix, so it needs a per-request `Path` — and `MountPrefix` is a `string`.
+The refresh cookie's `Path` **is** `MountPrefix`, by construction, and the
+unconfigurability is deliberate: "the CSRF fence cannot be misconfigured". It is written
+at **two** sites — the set (`espresso/authroutes.go:255`) and the **clear**
+(`:270`, `MaxAge: -1`), which must carry attribute parity or some browsers ignore the
+deletion. Both therefore need the per-request prefix, and the clear is the easy one to
+miss: a logout that clears the wrong path deletes nothing and leaves the user logged in
+on a route that has already signed them out.
+
+A single surface serving dynamic tenants has a per-request prefix, so it needs a
+per-request `Path` — and `MountPrefix` is a `string`.
 
 **Product decision (2026-11-03): the cookie stays separated by PATH, not by name.**
 
@@ -72,6 +78,20 @@ A3 keeps the single-source-of-truth property in the library and puts the *app-sp
 part (where the tenant lives in the URL) where it already lives: a resolver function of
 the same shape the tenant gates take.
 
+**But A3 has a trap of its own, and it is the same trap A1 was rejected for.** `Tenant`
+and `RouteTenant` are two resolvers; if they can disagree, the cookie path can belong to
+one tenant while the session is minted for another — and the request would then be
+writing tenant A's cookie slot with tenant B's session, which is worse than either
+candidate above. So A3 carries a hard rule:
+
+- **With `RouteTenant` set, `Tenant` must be `TenantFromRoutedContext`** — the pin, not a
+  second opinion. One resolver reads the request, pins the tenant, and everything after
+  (the port's tenant argument, the cookie path, the audit scope) reads that pin.
+- `RouteTenant` set together with `FixedTenant` is a **wiring error and fails at `New`**
+  (standing rule 6: the guard ships with a test that it fires). A fixed tenant cannot
+  serve a dynamic path, so the pair is not a configuration — it is a bug that would
+  otherwise show up as one tenant's cookie under another tenant's path.
+
 Sketch-level shape (not final until reviewed):
 
 ```go
@@ -92,8 +112,10 @@ RouteTenant func(*http.Request) (tenant.ID, bool)  // NEW, optional: resolve the
 
 ## 4. Invariants
 
-1. `cookie.Path` equals the request's concrete mount prefix. No exception, no caller
-   override.
+1. `cookie.Path` equals the request's concrete mount prefix, **on both the set and the
+   clear**. No exception, no caller override.
+1a. One resolver decides the tenant for the whole request: the path, the port's tenant
+    argument and the audit scope all read the same pinned value, never two opinions.
 2. The tenant segment comes from **routing**, never from the token, the body, or the
    cookie itself. A token naming another tenant cannot move the cookie path.
 3. A request under tenant X never reads tenant Y's cookie — asserted with a real cookie
@@ -114,6 +136,8 @@ RouteTenant func(*http.Request) (tenant.ID, bool)  // NEW, optional: resolve the
 | a jar holding both tenants' cookies sends only the matching one to each route | set `Path=/` |
 | an unresolvable tenant sets no cookie and answers `NOT_FOUND` | default to `tenant.Single` on a failed resolve |
 | a token for another tenant cannot move the cookie path | resolve the tenant from the claims |
+| `Logout` clears **that tenant's** path (`MaxAge=-1`) and the jar actually drops it | clear `MountPrefix` verbatim while the set uses the derived prefix |
+| `RouteTenant` + `FixedTenant` fails at `New`, naming the field | accept the pair and pick one silently |
 | single-tenant: byte-identical `Set-Cookie` before and after | (golden header test) |
 
 ---

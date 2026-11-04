@@ -8,6 +8,20 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+Nothing yet. What is left in `tech-debt.md` is the three P2 items (TD-11 to TD-13), and
+TD-27, which is Barista's own migration.
+
+---
+
+## [0.10.0] — 2026-11-03
+
+**Additive.** No breaking change, no migration guide: a template mount prefix is opt-in,
+and every static prefix is byte-identical to 0.9.0. This release closes **TD-14**.
+
+The shape of it: an application no longer mounts one auth surface per tenant. One surface
+serves every tenant, present and future — a tenant created at runtime by a console has
+routes without a restart (`examples/multitenant`).
+
 ### Added
 
 - **`examples/multitenant` shows one surface for every tenant** (Phase 14 slice 14c,

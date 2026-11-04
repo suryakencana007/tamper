@@ -212,7 +212,7 @@ the present tense, and `tenant.Ancestors` makes all three false:
 | `TENANT-HIERARCHY-MANIFEST.md:265-266` | "(ParentID is reserved there)" | in-place `AMENDED` note |
 
 The first three were the ones found while writing this sketch. The rest were found
-by grepping the tree for the invariant's own words before shipping 12a — six more
+by grepping the tree for the invariant's own words before shipping 12a — seven more
 documents, two of them user-facing. A sketch that lists three and a tree that holds
 nine is how the tenth gets missed; the grep is the check, and it is in 12a's
 definition of done.
@@ -788,7 +788,7 @@ metadata URL is the second per-tenant seam, so the child's-name proof is
 
 - **12a — the primitive** — ✅ #91. `tenant/hierarchy.go`: `Ancestors`,
   `Inheritance`, the three sentinels; the `oidc/manager.go:359-361` doc correction;
-  and the statements of the Phase 7 invariant this amends (§3.1) — **nine** of them,
+  and the statements of the Phase 7 invariant this amends (§3.1) — **ten** of them,
   not the three this draft listed, which is why the grep went into the definition of
   done.
 - **12b — entitlements** — ✅ #92. `Union` + `InheritingEntitlements`. No engine

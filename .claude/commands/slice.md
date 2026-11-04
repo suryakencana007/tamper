@@ -71,8 +71,8 @@ lists. Grep the tree for its own words — not for the concept:
 grep -rn "the sentence the old invariant used" --include="*.md" --include="*.go" .
 ```
 
-Phase 12 found **nine** documents where the sketch named three, two of them
-user-facing. Current-state documents get reworded; decisions and manifests get an
+Phase 12's tree held **ten** documents stating the invariant, where the sketch named
+three, two of them user-facing — and the slice's own summary then miscounted it twice. Current-state documents get reworded; decisions and manifests get an
 in-place `AMENDED <date>` note (the house style `PHASE7-*` already uses).
 
 Also grep for the numbers you are about to claim: PR ranges, test counts, method

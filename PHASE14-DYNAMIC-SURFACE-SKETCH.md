@@ -150,6 +150,12 @@ Tenant:      TenantFromRoutedContext        // the ONE resolver, unchanged field
 - `Set-Cookie` for a template prefix that resolves properly is
   `/t/acme/auth`; the placeholder never reaches a browser.
 
+**Why `{tenant}` and not `:tenant`.** It is the spelling the repo already reads:
+`examples/tenanthierarchy` resolves its path parameter with `r.PathValue(OrgParam)`
+(Go 1.22 `ServeMux` syntax), so the mount pattern a deployment writes and the template
+this phase substitutes are **the same string**. One constant serves both ends, which is
+also what keeps them from drifting apart.
+
 The cost, stated: `{tenant}` is a literal the app must not accidentally use in a real
 path. It is exported as `TenantPathSegment` so the collision is nameable, and
 `authPrefixFor` refuses rather than guessing when substitution cannot happen.

@@ -8,6 +8,18 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **A dynamic tenant surface** (Phase 14 slice 14b, TD-14). `AuthRoutesConfig.MountPrefix`
+  may now be a **template** — `/t/{tenant}/auth` — whose `{tenant}` segment is filled from
+  the tenant the existing `Tenant` resolver returned for that request, so one mounted
+  surface serves tenants created at runtime. The refresh cookie's `Path` is derived from
+  it at **both** the set and the clear, which is the CSRF fence staying "by construction";
+  a template that meets an unset or `tenant.Single` id writes and clears **no** cookie
+  instead of one at the literal placeholder path. `tenant.TenantPathSegment` names the
+  placeholder, spelled the way this repo already reads path parameters (`r.PathValue`).
+  Static prefixes are unchanged, byte for byte.
+
 Nothing yet. What is left in `tech-debt.md` is the four P2 items (TD-11 to TD-14), and
 TD-27, which is Barista's own migration. **Every P1 that was tamper's own work is
 closed.** The next release number is not decided.

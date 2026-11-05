@@ -21,6 +21,11 @@ All notable changes to tamper are recorded here. Versions follow
   partial index by carrying its predicate, since SQLite uses a partial index only when the
   WHERE implies it.
 
+  **Two fields were added to an exported struct**, so this is source-compatible for keyed
+  literals and **breaking for unkeyed ones** — verified: a caller writing
+  `audit.Filter{t0, t1, "", …}` with the old arity no longer compiles. None exist in this
+  repository; a caller outside it must switch to keyed fields.
+
 Nothing yet. What is left in `tech-debt.md` is the three P2 items (TD-11 to TD-13), and
 TD-27, which is Barista's own migration.
 

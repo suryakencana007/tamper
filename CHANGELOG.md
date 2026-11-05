@@ -8,6 +8,19 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **`audit.Filter.TenantID` and `Filter.ActorTenantID`** (Phase 15 slice 15b,
+  TD-11). A console can finally ask *"activity in tenant X this week"* and *"what did
+  platform staff do inside customer tenants"* without pulling the whole export.
+  `TenantID` filters the row's **scope**; `ActorTenantID` filters the **actor's** tenant,
+  which differs on a cross-tenant request. Both are `tenant.ID`: the zero value means
+  **no filter**, `tenant.Single` selects the rows whose tenant is `""`, and a caller who
+  forgot to thread a tenant through gets no filter rather than an empty result. A
+  migration adds `idx_events_actor_tenant_id`; the scope filter keeps using the existing
+  partial index by carrying its predicate, since SQLite uses a partial index only when the
+  WHERE implies it.
+
 Nothing yet. What is left in `tech-debt.md` is the three P2 items (TD-11 to TD-13), and
 TD-27, which is Barista's own migration.
 

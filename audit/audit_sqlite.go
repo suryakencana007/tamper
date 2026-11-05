@@ -373,41 +373,12 @@ func (l *SQLiteLogger) list(ctx context.Context, f Filter, where []string, args 
 		limit = 50
 	}
 
-	add := func(cond string, vals ...any) {
-		where = append(where, cond)
-		args = append(args, vals...)
+	cond, condArgs, werr := filterWhere(f)
+	if werr != nil {
+		return Page{}, werr
 	}
-	if !f.Since.IsZero() {
-		add("at >= ?", f.Since.UTC())
-	}
-	if !f.Until.IsZero() {
-		add("at < ?", f.Until.UTC())
-	}
-	if f.ActorUserID != "" {
-		add("actor_user_id = ?", f.ActorUserID)
-	}
-	if f.ActorEmail != "" {
-		add("actor_email = ?", f.ActorEmail)
-	}
-	if f.Action != "" {
-		add("action = ?", string(f.Action))
-	}
-	if f.ResourceType != "" {
-		add("resource_type = ?", string(f.ResourceType))
-	}
-	if f.ResourceID != "" {
-		add("resource_id = ?", f.ResourceID)
-	}
-	if f.RequestID != "" {
-		add("request_id = ?", f.RequestID)
-	}
-	if f.Cursor != "" {
-		cursorAt, cursorID, perr := parseCursor(f.Cursor)
-		if perr != nil {
-			return Page{}, fmt.Errorf("audit: parse cursor: %w", perr)
-		}
-		add("(at < ? OR (at = ? AND id < ?))", cursorAt, cursorAt, cursorID)
-	}
+	where = append(where, cond...)
+	args = append(args, condArgs...)
 
 	// gosec reads the concatenation below as possible injection. It is
 	// not: query is built only from eventColumns, the fixed condition
@@ -720,4 +691,71 @@ func (l *SQLiteLogger) insertEventDirect(ctx context.Context, e Event) error {
 // needed from it.
 func IsUniqueViolation(err error) bool {
 	return sqlitestore.IsUniqueViolation(err)
+}
+
+// filterWhere returns the WHERE fragments and bound arguments for f, in the
+// order the placeholders appear.
+//
+// Extracted so a test can assert the query PLAN the logger actually runs: a
+// degraded plan returns the right rows, so no assertion on results can catch it
+// (see tenantfilter_test.go, and finding F1 in the Phase 15 sketch).
+func filterWhere(f Filter) ([]string, []any, error) {
+	var where []string
+	var args []any
+	add := func(cond string, vals ...any) {
+		where = append(where, cond)
+		args = append(args, vals...)
+	}
+	if !f.Since.IsZero() {
+		add("at >= ?", f.Since.UTC())
+	}
+	if !f.Until.IsZero() {
+		add("at < ?", f.Until.UTC())
+	}
+	if f.ActorUserID != "" {
+		add("actor_user_id = ?", f.ActorUserID)
+	}
+	if f.ActorEmail != "" {
+		add("actor_email = ?", f.ActorEmail)
+	}
+	if f.Action != "" {
+		add("action = ?", string(f.Action))
+	}
+	if f.ResourceType != "" {
+		add("resource_type = ?", string(f.ResourceType))
+	}
+	if f.ResourceID != "" {
+		add("resource_id = ?", f.ResourceID)
+	}
+	if f.RequestID != "" {
+		add("request_id = ?", f.RequestID)
+	}
+	// A tenant term ALWAYS carries the redundant "<col> <> ''" as well. Both
+	// indexes are partial over non-empty values, and SQLite uses a partial index
+	// only when the WHERE implies its predicate — an equality alone does not
+	// (measured: equality scans, equality-plus-predicate searches). Without the
+	// second term the filter is correct and the query is a full scan, which no
+	// assertion on results can catch.
+	if f.TenantID.Valid() {
+		if f.TenantID.IsSingle() {
+			add("tenant_id = ''")
+		} else {
+			add("tenant_id = ? AND tenant_id <> ''", f.TenantID.String())
+		}
+	}
+	if f.ActorTenantID.Valid() {
+		if f.ActorTenantID.IsSingle() {
+			add("actor_tenant_id = ''")
+		} else {
+			add("actor_tenant_id = ? AND actor_tenant_id <> ''", f.ActorTenantID.String())
+		}
+	}
+	if f.Cursor != "" {
+		cursorAt, cursorID, perr := parseCursor(f.Cursor)
+		if perr != nil {
+			return nil, nil, fmt.Errorf("audit: parse cursor: %w", perr)
+		}
+		add("(at < ? OR (at = ? AND id < ?))", cursorAt, cursorAt, cursorID)
+	}
+	return where, args, nil
 }

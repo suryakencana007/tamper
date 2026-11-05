@@ -9,10 +9,13 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.9.0 — pooled tenancy, no compatibility shims.** One process, N tenants,
-> deny by default. **v0.9.0 is breaking**: the tenant is now in every signature that
-> names a user or a session, so the cross-tenant check no longer lives in your
-> adapters — follow [`MIGRATION-v0.9.md`](./MIGRATION-v0.9.md).
+> **Status: v0.10.0 — pooled tenancy, one surface for every tenant.** One process, N
+> tenants, deny by default. **v0.10.0 is additive**: `AuthRoutesConfig.MountPrefix` may be
+> a template (`/t/{tenant}/auth`), so one mounted surface serves tenants created at
+> runtime; static prefixes are unchanged.
+>
+> Coming from 0.8.0? **v0.9.0 was breaking** — the tenant is in every signature that names
+> a user or a session: follow [`MIGRATION-v0.9.md`](./MIGRATION-v0.9.md).
 >
 > v0.8.0 (additive) finished **TD-04**: a tenant's plan, its IdPs and its claimable
 > domains can be inherited from its ancestors, while authorization still comes from
@@ -27,7 +30,7 @@ table, owns a cookie brand, or freezes your audit vocabulary.
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.9.0
+go get github.com/suryakencana007/tamper@v0.10.0
 ```
 
 ## What's shipped

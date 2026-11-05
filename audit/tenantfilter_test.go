@@ -68,6 +68,36 @@ func mustList(t *testing.T, l Logger, f Filter) []string {
 	return idsOf(p)
 }
 
+// queryPlanWith is queryPlan plus an extra raw WHERE fragment, for the cursor shape.
+func queryPlanWith(t *testing.T, l *SQLiteLogger, f Filter, extra string) string {
+	t.Helper()
+	where, args, err := filterWhere(f)
+	if err != nil {
+		t.Fatalf("filterWhere: %v", err)
+	}
+	where = append(where, extra)
+	q := "EXPLAIN QUERY PLAN SELECT " + eventColumns + " FROM events WHERE " + strings.Join(where, " AND ") +
+		" ORDER BY at DESC, id DESC LIMIT ?"
+	args = append(args, int64(50))
+
+	rows, err := l.store.DB.QueryContext(context.Background(), q, args...)
+	if err != nil {
+		t.Fatalf("EXPLAIN: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var b strings.Builder
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan row: %v", err)
+		}
+		b.WriteString(detail)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func TestList_TenantIDReturnsOnlyThatTenantsRows(t *testing.T) {
 	l := newSQLiteLoggerForTest(t)
 	seedTenants(t, l)
@@ -280,5 +310,69 @@ func TestList_TenantFilterKeepsBoundArgumentsAligned(t *testing.T) {
 		if strings.HasPrefix(id, "globex") || id == "single-1" || id == "acme-1" {
 			t.Fatalf("rows = %v — a term bound to the wrong column", got)
 		}
+	}
+}
+
+// Phase 15 follow-up, issue #113 option 2: the tenant index is composite
+// (tenant_id, at DESC, id DESC), so the page is served in index order — no sort of
+// the whole matching set, and the cursor really prunes. Measured: 1844µs -> 13µs on a
+// 20k-row tenant, for +13% file size (the single-column index is REPLACED, not joined).
+func TestListPlan_TenantFilterIsServedInIndexOrder(t *testing.T) {
+	l := newSQLiteLoggerForTest(t)
+	sl, ok := l.(*SQLiteLogger)
+	if !ok {
+		t.Fatalf("logger is %T, want *SQLiteLogger", l)
+	}
+	seedTenants(t, l)
+
+	plan := queryPlan(t, sl, Filter{TenantID: acmeT})
+	if strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatalf("plan still sorts:\n%s\n"+
+			"The tenant index must be composite (tenant_id, at DESC, id DESC) so the "+
+			"page comes out in order and LIMIT stops early.", plan)
+	}
+	if !strings.Contains(plan, "idx_events_tenant_id") {
+		t.Fatalf("plan does not use idx_events_tenant_id:\n%s", plan)
+	}
+}
+
+func TestListPlan_TenantCursorPrunesWithinTheIndex(t *testing.T) {
+	l := newSQLiteLoggerForTest(t)
+	sl, ok := l.(*SQLiteLogger)
+	if !ok {
+		t.Fatalf("logger is %T, want *SQLiteLogger", l)
+	}
+	seedTenants(t, l)
+
+	// A cursor at the oldest seeded row: the plan must use `at<?` inside the index
+	// rather than reading the tenant's rows and discarding them.
+	// Parenthesised, exactly as filterWhere builds it: without the outer parens the
+	// OR binds looser than the AND beside it and the predicate means something else.
+	cursor := "(at < '2026-06-01 09:00:02' OR (at = '2026-06-01 09:00:02' AND id < 'x'))"
+	plan := queryPlanWith(t, sl, Filter{TenantID: acmeT}, cursor)
+	if !strings.Contains(plan, "at<?") && !strings.Contains(plan, "at<") {
+		t.Fatalf("cursor does not prune inside the index:\n%s", plan)
+	}
+	if strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatalf("cursor query still sorts:\n%s", plan)
+	}
+}
+
+// The composite is PARTIAL over non-empty tenants, so a single-tenant page still
+// scans. Recorded as a test so that a future change which fixes it (a non-partial
+// index, issue #113 option 4) has to change this expectation deliberately.
+func TestListPlan_TenantSingleStillScans(t *testing.T) {
+	l := newSQLiteLoggerForTest(t)
+	sl, ok := l.(*SQLiteLogger)
+	if !ok {
+		t.Fatalf("logger is %T, want *SQLiteLogger", l)
+	}
+	seedTenants(t, l)
+
+	plan := queryPlan(t, sl, Filter{TenantID: tenant.Single})
+	if !strings.Contains(plan, "SCAN events") {
+		t.Fatalf("plan changed for tenant.Single:\n%s\n"+
+			"If this is now an index search, the partial predicate was dropped: good news, "+
+			"and issue #113 option 4 should be closed with this test updated.", plan)
 	}
 }

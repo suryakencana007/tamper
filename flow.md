@@ -129,9 +129,12 @@ pass them.
 |---|---|
 | `NewSQLiteLogger(path, opts)`, `NewNoopLogger` | SQLite hash-chain logger. Every row is `canonical_version=4`. It refuses a DB that holds rows at an older version (#46). |
 | `Logger.Log` | Appends in one `BEGIN IMMEDIATE` transaction: `hash = sha256(prevHash ‖ canonical payload)`. |
-| `List`, `ListScoped(clusterIDs, filter)` | Paged reads. Only some `Filter` fields are applied (see TD-17). |
+| `List`, `ListScoped(clusterIDs, filter)` | Paged reads. `Filter` applies time, actor, action,
+  resource, request, **tenant scope and actor tenant**, and the cursor; every applied field is
+  listed in the type (TD-17 closed the ones that were silently ignored). |
 | `Verify`, `VerifyChainPostMigration` | Walks every row from the first one and recomputes each hash. Tamper does not call these by itself. The application must call `VerifyChainPostMigration` at boot. |
-| `ExportForTenant(tenant)` | One tenant's slice of the log, filtered on `Event.TenantID`. |
+| `ExportForTenant(tenant)` | One tenant's WHOLE slice of the log, unbounded. For a bounded
+  question ("activity in acme this week") use `List(Filter{TenantID: acme, Since: …})`. |
 | `Redact`, `RedactEvent`, `VerifyCommitments`, `ComputeCommitments`, `NewRowSalt` | Erases PII through salted commitments without breaking the chain. |
 | `ComputeHash` | For a `Logger` implemented over another store (for example Postgres). |
 | `PruneOlderThan` | Retention. |

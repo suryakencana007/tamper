@@ -42,6 +42,7 @@ TD-16, and TD-17. All six are fixed or resolved; see the fix status below.
 | TD-04 | #91, #92, #94, #96 | Merged. All four axes decided and shipped: roles (ADR-0001), plans, IdP, domains. |
 | TD-28 | #100, #101 | Merged. The tenant is in the signature; the shims are gone. |
 | TD-14 | #107, #108 | Merged. One template mount serves tenants created at runtime. |
+| TD-11 | #112, #114 | Merged. `Filter.TenantID` / `ActorTenantID`; the tenant index is composite. |
 
 Ten more items (TD-18 to TD-27) were found while the fixes were written and
 reviewed. They are listed after TD-17. Of all the sharp edges found, only
@@ -76,7 +77,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-08 | `Auditor` and `RequireAuth` do not set the tenant | fixed by #43 | — | — |
 | TD-09 | `tamper.New` cannot turn on audit v4 | resolved by #46 | — | — |
 | TD-10 | The TOTP path mints a token without a tenant | fixed by #40 | — | — |
-| TD-11 | The audit log cannot be queried per tenant | gap | P2 | Tamper |
+| TD-11 | The audit log cannot be queried per tenant | fixed by #112, #114 | — | — |
 | TD-12 | A service account has only one tenant | gap | P2 | Tamper |
 | TD-13 | Second-factor policy cannot be set per role | gap | P2 | Tamper |
 | TD-14 | The per-tenant route mounting pattern is static | fixed by #107, #108 | — | — |
@@ -705,6 +706,40 @@ returns every row with no paging.
 type `tenant.ID`, so that an unset value means "no filter" only when the caller
 says so explicitly.
 
+**Fix (2026-11-05, #112, #114).** Designed in
+[`PHASE15-AUDIT-TENANT-QUERY-SKETCH.md`](PHASE15-AUDIT-TENANT-QUERY-SKETCH.md). Both
+fields are `tenant.ID`, and the proposal's last clause was **rejected**: the type already
+makes "explicit" structural — nothing written means no filter, `tenant.Single` means the
+rows whose scope is `""` — so a second opt-in flag would have given one fact two
+spellings.
+
+- **`Filter.TenantID`** filters the row's **scope** (`Event.TenantID`);
+  **`Filter.ActorTenantID`** filters the **actor's** tenant. They differ exactly on a
+  cross-tenant request: a platform admin working inside acme is `TenantID=acme`,
+  `ActorTenantID=platform`. Both are tested from both sides, together and separately.
+- **A partial index is only used when the WHERE implies its predicate.** Measured, not
+  assumed: `tenant_id = 'acme'` scans; `tenant_id = 'acme' AND tenant_id <> ''` searches.
+  Every tenant term therefore carries that redundant predicate, and the plan is asserted
+  directly — a degraded plan returns the right rows, so no assertion on results can catch
+  it.
+- **Migration 007** adds `idx_events_actor_tenant_id`. **Migration 008 replaces**
+  `idx_events_tenant_id` with the composite `(tenant_id, at DESC, id DESC)`, because the
+  single-column index made every page sort the tenant's whole matching set: measured
+  1844 µs → 13 µs on a 20k-row tenant, and the deep page got *more* expensive before
+  (2519 µs) while it is flat after (15 µs).
+
+What it does **not** do, recorded rather than implied:
+
+- **`TenantID = tenant.Single` still scans** — that bucket is excluded from the partial
+  index by design, and a test pins the behaviour so making it indexed has to be
+  deliberate (issue #113, option 4).
+- **`ActorTenantID` cannot separate an entered admin from an impersonated one**: both mint
+  `htid` and `ActorTenantID()` answers it for both. That distinction lives in the `act`
+  claim at write time and in the `impersonation.start`/`.end` rows (Phase 11).
+- **Adding fields to an exported struct breaks UNKEYED literals** from other packages.
+  Verified with an external module; none exist in this repository. Recorded in
+  `CHANGELOG.md` under 0.11.0.
+
 ### TD-12 — A service account has only one tenant
 
 **Evidence.** `Principal.TenantID` is a single value
@@ -801,8 +836,8 @@ too, and the cursor pages within the filter. The query is assembled in the
 `audit` package; only fixed fragments and placeholders are concatenated, and
 every value is bound.
 
-A caller that relied on a field being ignored gets fewer rows now. A tenant
-filter is still TD-11.
+A caller that relied on a field being ignored gets fewer rows now. The tenant filters
+that were missing here landed in TD-11 (#112).
 
 **Proof.** In `TestTD08_AuditorStampsTenant`,
 `List(Filter{Action: "td.proof.mutation"})` returned 2 rows. Only 1 had that
@@ -1144,7 +1179,8 @@ Suggested slice order if this work moves into Tamper:
 3. **TD-01 + TD-02** — the membership port and `EnterTenant`. Merged (#55).
 4. **TD-03** — the tenant contract for `authz`, with its leak suite. Merged
    (#56).
-5. **TD-11** — per-tenant audit queries. (TD-07, impersonation, landed in #88.)
+5. **TD-11** — per-tenant audit queries. Merged (#112, #114): `Filter.TenantID` /
+   `ActorTenantID` plus a composite tenant index. (TD-07, impersonation, landed in #88.)
 6. **TD-05** — tenant lifecycle, and TD-06 suspension enforcement: both landed
    (#85, #82). `Admin.Suspend` is the pairing the two were always missing.
 7. **TD-04** — hierarchy. Merged (#91, #92, #94, #96). The product question in sketch §8

@@ -12,7 +12,7 @@ table, owns a cookie brand, or freezes your audit vocabulary.
 > **Status: v0.11.0 — pooled tenancy, and a queryable audit log.** One process, N tenants,
 > deny by default. **v0.11.0 is additive**: `audit.Filter` gained `TenantID` and
 > `ActorTenantID`, so a console can ask "activity in tenant X" without the whole export —
-> and a composite index makes those pages ~150× cheaper. Positional `audit.Filter`
+> and a composite index makes those pages ~140× cheaper (measured 1844 µs → 13 µs). Positional `audit.Filter`
 > literals must become keyed ones.
 >
 > Coming from 0.8.0? **v0.9.0 was breaking** — the tenant is in every signature that names

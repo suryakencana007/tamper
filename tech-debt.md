@@ -692,7 +692,7 @@ DB with a v3 anchor, switching `Tenancy` on and logging one row gave
 
 ## P2
 
-### TD-11 — The audit log cannot be queried per tenant
+### TD-11 — The audit log cannot be queried per tenant *(fixed by #112, #114)*
 
 **Evidence.** `audit.Filter` has no tenant field (`audit/audit.go:364`).
 `ListScoped` filters on `clusterIDs`, a concept inherited from Barista

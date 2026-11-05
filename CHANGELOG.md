@@ -17,9 +17,16 @@ All notable changes to tamper are recorded here. Versions follow
   which differs on a cross-tenant request. Both are `tenant.ID`: the zero value means
   **no filter**, `tenant.Single` selects the rows whose tenant is `""`, and a caller who
   forgot to thread a tenant through gets no filter rather than an empty result. A
-  migration adds `idx_events_actor_tenant_id`; the scope filter keeps using the existing
-  partial index by carrying its predicate, since SQLite uses a partial index only when the
-  WHERE implies it.
+  Migration `007` adds `idx_events_actor_tenant_id`; migration `008` **replaces**
+  `idx_events_tenant_id` with the composite `(tenant_id, at DESC, id DESC)` — the single
+  column index made every page sort all of the tenant's matching rows, so a page cost
+  grew with the tenant's size and the cursor pruned nothing. Measured on a 20k-row
+  tenant: **1844 µs → 13 µs**, deep page 2519 µs → 15 µs, for **+13% file size** (the
+  composite supersedes the old index rather than joining it; adding it beside would have
+  cost +19%). Both filters still carry the redundant `<> ''` predicate, because SQLite
+  uses a partial index only when the WHERE implies it. A `tenant.Single` page still
+  scans — that bucket is excluded from the partial index by design; issue #113 option 4
+  covers it.
 
   **Two fields were added to an exported struct**, so this is source-compatible for keyed
   literals and **breaking for unkeyed ones** — verified: a caller writing

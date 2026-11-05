@@ -15,12 +15,14 @@ TD-27, which is Barista's own migration.
 
 ## [0.10.0] — 2026-11-03
 
-**Additive.** No breaking change, no migration guide: a template mount prefix is opt-in,
-and every static prefix is byte-identical to 0.9.0. This release closes **TD-14**.
+**Nothing to change on your side.** An application that wires none of this behaves
+exactly as it did on 0.9.0: the new mounting mode is optional, and an existing mount
+prefix keeps working untouched.
 
-The shape of it: an application no longer mounts one auth surface per tenant. One surface
-serves every tenant, present and future — a tenant created at runtime by a console has
-routes without a restart (`examples/multitenant`).
+**What it unlocks.** You no longer have to mount one auth surface per tenant at boot. One
+surface can serve every tenant — including a tenant created at runtime, which previously
+had no routes until the process restarted. `examples/multitenant` now shows that shape,
+and its test logs in to two tenants in the same browser and keeps both sessions alive.
 
 ### Added
 

@@ -338,6 +338,30 @@ type Filter struct {
 	ResourceID   string
 	RequestID    string
 
+	// TenantID limits rows to one tenant's LOG — Event.TenantID, the row's
+	// scope. The zero value means NO FILTER; tenant.Single selects the rows
+	// whose scope is "", which is a different, much narrower question.
+	//
+	// A tenant.ID rather than a string, so the two cannot be confused: a string
+	// would let "" mean "no filter" and "the empty tenant" at once, and one of
+	// the two callers would silently get the other's rows.
+	TenantID tenant.ID
+
+	// ActorTenantID limits rows to one tenant's ACTORS — Actor.TenantID, the
+	// tenant the actor was acting IN. It differs from TenantID exactly on a
+	// cross-tenant request: a platform admin (actor tenant platform) working
+	// inside acme produces TenantID=acme, ActorTenantID=platform, so "what did
+	// platform staff do inside customer tenants" is ActorTenantID set with
+	// TenantID unset.
+	//
+	// What it CANNOT tell you: whether that admin acted as themselves (an
+	// entered token) or as a customer's user (an impersonated one). Both mint
+	// `htid`, and ActorTenantID() answers `htid` for both, so the actor tenant
+	// is the human's home tenant either way. That distinction lives in the
+	// `act` claim at write time and in the impersonation.start/.end bracket
+	// rows; an A.8.15 review that needs it filters on those actions.
+	ActorTenantID tenant.ID
+
 	// Limit is the page size; 50 when zero.
 	Limit int
 	// Cursor is opaque — pass back Page.NextCursor to get the next,

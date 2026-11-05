@@ -12,7 +12,7 @@ plus its consequences, and the decision is about zero values.
 
 | The item says | Verified |
 |---|---|
-| *"`audit.Filter` has no tenant field (`audit/audit.go:364`)"* | **True.** `Filter` carries `Since`/`Until`, `ActorUserID`, `ActorEmail`, `Action`, … and no tenant |
+| *"`audit.Filter` has no tenant field (`audit/audit.go:364`)"* | **True, but the line is stale**: `Filter` starts at `audit/audit.go:324`. It carries `Since`/`Until`, `ActorUserID`, `ActorEmail`, `Action`, `ClusterIDs`-era scope, `Limit`, `Cursor` — and no tenant |
 | *"`ListScoped` filters on `clusterIDs`"* | **True** — `audit/audit_sqlite.go:341`, a concept inherited from Barista; orthogonal to tenancy and stays |
 | *"the only per-tenant path is `ExportForTenant`, which returns every row with no paging"* | **True** — `audit/export.go:97` |
 
@@ -42,6 +42,13 @@ type Filter struct {
 	// a platform admin (actor tenant = platform) acting in acme has
 	// TenantID=acme and ActorTenantID=platform, so "what did platform staff do
 	// inside any customer tenant" is ActorTenantID=platform AND TenantID unset.
+	//
+	// What it CANNOT tell you: whether the admin acted as themselves (an entered
+	// token) or as a customer's user (an impersonated token). Both mint `htid`,
+	// and ActorTenantID() answers `htid` for both (crypto/jwt.go:394-399), so the
+	// actor tenant is the human's home in each case. That distinction lives in the
+	// `act` claim at WRITE time and in the `impersonation.start`/`.end` bracket rows
+	// — not in this filter. An A.8.15 review that needs it filters by those actions.
 	ActorTenantID tenant.ID
 }
 ```
@@ -76,10 +83,14 @@ discipline `ExportForTenant` already has (see §4).
 
 ## 3. What the two fields must not do
 
-- **They must not change the query's meaning for existing callers.** `Filter` is a struct;
-  adding fields is source-compatible for keyed literals, and every existing call site
-  leaves them zero, which §2 defines as "no filter". A deployment that never sets them
-  sees identical `Page` results — that is a test, not a promise.
+- **They must not change the query's meaning for existing callers**, and they must not
+  *break* them either. Adding fields to an exported struct is compatible for **keyed**
+  literals and incompatible for **unkeyed** ones — Go allows unkeyed literals from other
+  packages, so a caller writing `audit.Filter{t0, t1, "u-1", ...}` would stop compiling.
+  None exist in this repo (the only literals are `Filter{}`), so the risk is external.
+  It is recorded rather than papered over: **this is why 15b is a minor-version change
+  with a note, not a "purely additive" one.** Every call site that leaves the new fields
+  zero keeps the behaviour it has today, and that is a test.
 - **They must not displace `clusterIDs`.** `ListScoped` keeps its own filter; the two
   compose with AND. Removing the cluster path is a different item (it is Barista's
   vocabulary, not tamper's), and this phase does not touch it.
@@ -108,12 +119,22 @@ Two mechanical properties, both testable:
   (`audit/internal/sqlitestore/schema.sql:62`). Two consequences, both worth stating
   because neither is obvious from the item:
 
-  - the **scope** filter (`Filter.TenantID`) is served by that index for every real
-    tenant, and **not** for `tenant.Single`: `tenant_id = ''` falls outside the partial
-    predicate, so that one query scans. Accepted — a single-tenant deployment's rows all
-    have `''`, so the "selective" query is the whole table in the deployment that has one
-    tenant, and a second index would exist only to speed up the case where there is
-    nothing to filter.
+  - **A partial index is not used by equality alone**, and this is the finding that
+    changes the SQL. Measured with `EXPLAIN QUERY PLAN` against the real schema:
+
+    | Query | Plan |
+    |---|---|
+    | `WHERE tenant_id = 'acme'` | `SCAN events` |
+    | `WHERE tenant_id = 'acme' AND tenant_id <> ''` | `SEARCH events USING INDEX idx_events_tenant_id (tenant_id=?)` |
+
+    So the scope filter must carry the **redundant** `AND tenant_id <> ''` term. Without
+    it the feature ships and every console query full-scans the log — the exact outcome
+    §4 exists to prevent. The redundancy is not noise: it is what lets the planner prove
+    the index's predicate.
+  - **`tenant.Single` is served by no index at all**, deliberately: its rows have
+    `tenant_id = ''`, which the partial predicate excludes. Accepted — in a single-tenant
+    deployment every row has `''`, so there is nothing to filter, and an index would
+    exist only to speed up a query that returns the table.
   - **`actor_tenant_id` has no index at all**, so `Filter.ActorTenantID` — the field that
     answers *"what did platform staff do inside customers' tenants"* — would scan. The
     slice **adds** `idx_events_actor_tenant_id ON events (actor_tenant_id) WHERE
@@ -134,6 +155,9 @@ how *"we can query per tenant"* becomes *"we cannot query per tenant in practice
 | zero `TenantID` returns every row (existing behaviour preserved) | treat zero as `Single` |
 | `ActorTenantID=platform` + `TenantID` unset returns cross-tenant admin rows, which `TenantID=platform` does not | compare against `Event.TenantID` only |
 | the query plan uses `idx_events_actor_tenant_id` for `ActorTenantID` | ship without it (the plan test fails) |
+| the plan for `TenantID=acme` is a `SEARCH … USING INDEX`, not a `SCAN` | omit the `AND tenant_id <> ''` term — the filter still works, only the plan changes, which is why this must be asserted and not eyeballed |
+| page 2 of a filtered list stays inside the tenant (`Filter.Cursor` + `TenantID` compose) | drop the filter when a cursor is present |
+| the bound arguments stay aligned: adding a tenant term does not shift the existing scope/window bindings | append the tenant argument in the wrong position (the classic positional-bind bug, and it fails silently by matching the wrong column) |
 | the scope filter uses `idx_events_tenant_id` for a named tenant | (and a note, not a test: `tenant.Single` scans by the partial predicate, deliberately) |
 | `Page` paging still applies inside a tenant filter | ignore the window when a tenant filter is set |
 

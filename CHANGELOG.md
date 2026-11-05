@@ -8,6 +8,56 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+Nothing yet. What is left in `tech-debt.md` is **TD-12** (a service account has one tenant)
+and **TD-13** (2FA policy per role) — both need a product decision — plus TD-27, which is
+Barista's migration.
+
+---
+
+## [0.11.0] — 2026-11-05
+
+**Additive, with one database index change.** Nothing to rewrite in your code unless you
+build `audit.Filter` **positionally** (see "If that's you" below). A deployment that never
+sets the new fields behaves exactly as it did on 0.10.0.
+
+**What it unlocks.** A console can ask *"activity in tenant X this week"* and *"what did
+platform staff do inside customer tenants"* — questions that previously needed the whole
+per-tenant export pulled into memory.
+
+```go
+page, err := logger.List(ctx, audit.Filter{
+    TenantID: acme,          // the row's scope
+    Since:    weekStart,     // plus the existing time/actor/action filters
+    Limit:    50,
+})
+```
+
+`ActorTenantID` is the other half: it filters by the tenant the **actor** was acting in, so
+`ActorTenantID: platform` with no scope filter returns a platform admin's work inside every
+customer tenant.
+
+**Two things worth knowing before you rely on it:**
+
+- **`tenant.Single` is a filter, not a wildcard.** `TenantID: tenant.Single` selects the
+  rows whose scope is `""`; leaving the field unset selects everything. A caller that
+  forgot to thread a tenant through gets *all* rows, never a silently empty result.
+- **`ActorTenantID` cannot tell you whether the admin acted as themselves or as a
+  customer's user.** Both shapes carry `htid`, so the actor tenant is the human's home
+  either way; that distinction is the `act` claim and the `impersonation.start`/`.end`
+  rows.
+
+**Faster pages, measured.** Migration `008` replaces the tenant index with the composite
+`(tenant_id, at DESC, id DESC)`, so a page comes out in index order instead of sorting the
+tenant's whole log. On a 20k-row tenant: **1844 µs → 13 µs** for page 1, and the deep page
+went from *more* expensive (2519 µs) to flat (15 µs). Cost: +13% file size, because the
+composite supersedes the old index rather than joining it. Both migrations run
+automatically at open (index build on a 50k-row log took 15 ms).
+
+**If that's you: unkeyed `Filter` literals.** Two fields were added to an exported struct,
+so `audit.Filter{t0, t1, "", …}` written positionally no longer compiles — keyed literals are
+unaffected, and there are none unkeyed in this repository. Switching to keyed fields is the
+whole fix.
+
 ### Added
 
 - **`audit.Filter.TenantID` and `Filter.ActorTenantID`** (Phase 15 slice 15b,

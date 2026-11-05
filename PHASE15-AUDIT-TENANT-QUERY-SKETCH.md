@@ -1,8 +1,10 @@
 # Phase 15 — Query the audit log per tenant (TD-11)
 
-Status: **draft, for review. Not decided, no code.**
+Status: **accepted 2026-11-05; implemented in #112 (15b) and #114 (the composite index
+that issue #113 option 2 asked for)**. The proposal's wording was rejected in §2 and the
+reasons are kept there; the measured numbers that changed the design are in issue #113.
 
-TD-11 is a P2 gap, not a defect: nothing is wrong with today's rows. What is missing is a
+TD-11 was a P2 gap, not a defect: nothing was wrong with the rows. What was missing was a
 way to *ask a question* about them. This sketch is short because the design is one decision
 plus its consequences, and the decision is about zero values.
 

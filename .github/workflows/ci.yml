@@ -109,7 +109,67 @@ jobs:
       # where a mismatched toolchain either misreports the stdlib or fails
       # outright with "package requires newer Go version".
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+        # GO-2026-6909 (crewjam/saml through v0.5.1, "Fixed in: N/A") is allow-listed
+        # NARROWLY, and only because both halves are handled on our side:
+        #
+        #   1. nil <Issuer> panic in validateAssertion — reachable only when
+        #      ExpectedIDPEntityID is set (tamper never sets it), and caught by the
+        #      recover barrier in saml/parse.go regardless.
+        #   2. namespace-blind Subject.NameID — CLOSED by saml/nameid_ns.go, which
+        #      rejects any NameID outside the assertion namespace before the library
+        #      reads it (tests in saml/nameid_ns_test.go).
+        #
+        # Anything else still fails the build. Drop this allowance when a fixed
+        # crewjam/saml release exists.
+        run: |
+          set -uo pipefail
+          ALLOW="GO-2026-6909"
+          out="$(mktemp)"
+          rc=0
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > "$out" 2>/dev/null || rc=$?
+          # govulncheck exits 0 (clean) or 1 (findings). Anything else is the SCANNER
+          # failing — a network or toolchain problem — and a scanner that did not run
+          # must never read as a clean bill of health.
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+            echo "govulncheck failed to run (exit $rc):" >&2
+            head -5 "$out" >&2
+            exit 1
+          fi
+          if ! grep -q '"config"' "$out"; then
+            echo "govulncheck produced no report — treating as failure, not as clean" >&2
+            exit 1
+          fi
+          python3 - "$out" "$ALLOW" <<'PY'
+          import json, sys
+          path, allow = sys.argv[1], {a for a in sys.argv[2].split(",") if a}
+          found, allowed = [], []
+          with open(path) as fh:
+              for line in fh:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      obj = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  # govulncheck's -json stream mixes message kinds, and a line that
+                  # decodes may be a string rather than an object; only a finding object
+                  # with an osv id is interesting here.
+                  if not isinstance(obj, dict):
+                      continue
+                  finding = obj.get("finding")
+                  if not isinstance(finding, dict):
+                      continue
+                  osv = finding.get("osv", "")
+                  if not isinstance(osv, str):
+                      continue
+                  (allowed if osv in allow else found).append(osv)
+          if found:
+              print("vulnerabilities:", ", ".join(sorted(set(found))))
+              sys.exit(1)
+          if allowed:
+              print("allow-listed (see the comment in ci.yml):", ", ".join(sorted(set(allowed))))
+          PY
 
       # Drift guard: the checked-in sqlc output (audit/sqlitestore) must be
       # byte-reproducible from sqlc.yaml with the pinned generator. Single

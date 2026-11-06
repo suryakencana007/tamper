@@ -1,10 +1,13 @@
 package saml
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"testing"
+
+	crewjamsaml "github.com/crewjam/saml"
 )
 
 // GO-2026-6909: crewjam/saml (through v0.5.1, no fixed release) matches Subject's
@@ -72,5 +75,18 @@ func TestRejectForeignNameID_LeavesUndecodableInputToTheLibrary(t *testing.T) {
 	}
 	if err := rejectForeignNameID(base64.StdEncoding.EncodeToString([]byte("<not-xml"))); err != nil {
 		t.Fatalf("err = %v, want nil", err)
+	}
+}
+
+// The guard is only worth anything if ParseAssertion actually calls it. This test fails
+// closed on the foreign NameID BEFORE any signature work — which is both the desired
+// order and the reason no valid signed fixture is needed here.
+func TestParseAssertion_RefusesForeignNameIDBeforeVerification(t *testing.T) {
+	p := &Provider{Config: ProviderConfig{ID: "test"}, SP: &crewjamsaml.ServiceProvider{}}
+	body := base64.StdEncoding.EncodeToString([]byte(`<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"><saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Subject><evil:NameID xmlns:evil="urn:attacker">alice</evil:NameID></saml:Subject></saml:Assertion></samlp:Response>`))
+
+	_, err := p.ParseAssertion(context.Background(), body, "", "")
+	if !errors.Is(err, ErrAssertionInvalid) {
+		t.Fatalf("err = %v, want ErrAssertionInvalid — ParseAssertion must call the guard", err)
 	}
 }

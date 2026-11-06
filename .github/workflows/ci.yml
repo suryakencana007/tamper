@@ -125,7 +125,20 @@ jobs:
           set -uo pipefail
           ALLOW="GO-2026-6909"
           out="$(mktemp)"
-          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > "$out" 2>/dev/null || true
+          rc=0
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > "$out" 2>/dev/null || rc=$?
+          # govulncheck exits 0 (clean) or 1 (findings). Anything else is the SCANNER
+          # failing — a network or toolchain problem — and a scanner that did not run
+          # must never read as a clean bill of health.
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+            echo "govulncheck failed to run (exit $rc):" >&2
+            head -5 "$out" >&2
+            exit 1
+          fi
+          if ! grep -q '"config"' "$out"; then
+            echo "govulncheck produced no report — treating as failure, not as clean" >&2
+            exit 1
+          fi
           python3 - "$out" "$ALLOW" <<'PY'
           import json, sys
           path, allow = sys.argv[1], {a for a in sys.argv[2].split(",") if a}

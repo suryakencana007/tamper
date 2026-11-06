@@ -8,6 +8,17 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **`amr` on access tokens** (Phase 16 slice 16b, TD-13). `crypto.AccessClaims.AMR` names the
+  authentication **methods** a session proved — `AMRPassword`, `AMROTP`, `AMRSAML` — while
+  `acr` keeps meaning the **policy class**. The two are different questions, and keeping them
+  apart is what lets a gate ask "did this session prove a second factor?" without a new ACR
+  value that would silently stop matching existing `acrValues` lists. `HasMethod` is the way
+  to ask, because a token minted before this claim has no `AMR` at all. The mints take the
+  methods **variadically**, so every existing call compiles and produces the same bytes: a
+  token with no methods carries no `amr` key on the wire.
+
 ### Security
 
 - **SAML: a `<NameID>` outside the assertion namespace now invalidates the assertion**

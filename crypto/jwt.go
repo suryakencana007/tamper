@@ -305,6 +305,16 @@ func (j *JWTService) parseClaims(tokenStr string, claims jwt.Claims) error {
 type AccessClaims struct {
 	AuthTime int64  `json:"auth_time"`
 	ACR      string `json:"acr"`
+	// AMR names the authentication METHODS this session actually proved — the OIDC
+	// `amr` claim. ACR says which policy CLASS was satisfied; AMR says what was
+	// done. Keeping them apart is what lets a gate ask "did this session prove a
+	// second factor?" without inventing an ACR value that lies about the class
+	// (Phase 16, D3').
+	//
+	// Values are the standard short names: AMRPassword, AMROTP, AMRSAML. Absent on
+	// tokens minted before this claim existed, which is why HasMethod — not a direct
+	// slice read — is the way to ask.
+	AMR []string `json:"amr,omitempty"`
 	// Purpose discriminates an access JWT from the other token shapes
 	// this service mints under the SAME secret — currently the
 	// totp-pending session token (IssueTOTPPending). ParseAccess accepts
@@ -365,7 +375,7 @@ type AccessClaims struct {
 // equal to the target (ErrSelfImpersonation).
 //
 // ttl is cut to the service TTL, as an entered token's is.
-func (j *JWTService) IssueAccessImpersonated(target, actor string, tenantID, actorHome tenant.ID, authTime int64, acr string, ttl time.Duration) (string, error) {
+func (j *JWTService) IssueAccessImpersonated(target, actor string, tenantID, actorHome tenant.ID, authTime int64, acr string, ttl time.Duration, amr ...string) (string, error) {
 	if target == "" || actor == "" {
 		return "", fmt.Errorf("%w: an impersonated token needs a target and an actor", ErrInvalidToken)
 	}
@@ -381,7 +391,7 @@ func (j *JWTService) IssueAccessImpersonated(target, actor string, tenantID, act
 	if ttl <= 0 || ttl > j.ttl {
 		ttl = j.ttl
 	}
-	return j.issueAccessWithActor(target, actor, tenantID.String(), actorHome.String(), authTime, acr, ttl)
+	return j.issueAccessWithActor(target, actor, tenantID.String(), actorHome.String(), authTime, acr, ttl, amr...)
 }
 
 // ActorTenantID returns the tenant the token's subject is from: the
@@ -436,6 +446,29 @@ const (
 	ACRSAMLPassword = "urn:oasis:names:tc:SAML:2.0:ac:classes:Password" //nolint:gosec // G101: well-known URN identifier, not a credential
 )
 
+// AMR method names. The OIDC registry's short values, so a token of ours reads the same
+// way as one from an IdP; tamper compares them and never interprets them.
+const (
+	AMRPassword = "pwd"  // a password was verified
+	AMROTP      = "otp"  // a one-time code was verified (TOTP or a recovery code)
+	AMRSAML     = "saml" // a federated SAML login
+)
+
+// HasMethod reports whether this session proved the given method. It exists so callers
+// never index the slice directly: an old token has no AMR at all, and a nil slice read
+// as an empty answer is a silent "no" that looks like a bug at the call site.
+func (c *AccessClaims) HasMethod(method string) bool {
+	if c == nil || method == "" {
+		return false
+	}
+	for _, m := range c.AMR {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
 // IssueAccess mints an access JWT for userID in tenantID.
 //
 // tenant.Single is a tenant like any other here; its token carries no
@@ -452,11 +485,11 @@ const (
 //
 // Rejected with ErrInvalidToken: an empty userID, a non-positive
 // authTime, an empty acr.
-func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int64, acr string) (string, error) {
+func (j *JWTService) IssueAccess(userID string, tenantID tenant.ID, authTime int64, acr string, amr ...string) (string, error) {
 	if !tenantID.Valid() {
 		return "", ErrTenantRequired
 	}
-	return j.issueAccess(userID, tenantID.String(), "", authTime, acr, j.ttl)
+	return j.issueAccess(userID, tenantID.String(), "", authTime, acr, j.ttl, amr...)
 }
 
 // ErrEnteredTenants — IssueAccessEntered was asked for a pair of
@@ -492,7 +525,7 @@ var ErrSelfImpersonation = errors.New("auth: an impersonated token needs an acto
 // single tenant, and they must differ (ErrEnteredTenants). An entered
 // token with an empty htid would be indistinguishable from an ordinary
 // one, and a token "entering" its own home tenant is an ordinary token.
-func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID tenant.ID, authTime int64, acr string, ttl time.Duration) (string, error) {
+func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID tenant.ID, authTime int64, acr string, ttl time.Duration, amr ...string) (string, error) {
 	if !tenantID.Valid() || !homeTenantID.Valid() {
 		return "", ErrTenantRequired
 	}
@@ -502,20 +535,20 @@ func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID te
 	if ttl <= 0 || ttl > j.ttl {
 		ttl = j.ttl
 	}
-	return j.issueAccess(userID, tenantID.String(), homeTenantID.String(), authTime, acr, ttl)
+	return j.issueAccess(userID, tenantID.String(), homeTenantID.String(), authTime, acr, ttl, amr...)
 }
 
 // issueAccess is the one mint behind IssueAccess and IssueAccessEntered,
 // so the two cannot drift apart in anything but the claims they differ
 // on by design.
-func (j *JWTService) issueAccess(userID, tid, htid string, authTime int64, acr string, ttl time.Duration) (string, error) {
-	return j.issueAccessWithActor(userID, "", tid, htid, authTime, acr, ttl)
+func (j *JWTService) issueAccess(userID, tid, htid string, authTime int64, acr string, ttl time.Duration, amr ...string) (string, error) {
+	return j.issueAccessWithActor(userID, "", tid, htid, authTime, acr, ttl, amr...)
 }
 
 // issueAccessWithActor is the one mint body: act is empty for every token shape
 // but an impersonated one, so the attribution claim cannot be set by accident
 // and the shapes cannot drift.
-func (j *JWTService) issueAccessWithActor(userID, act, tid, htid string, authTime int64, acr string, ttl time.Duration) (string, error) {
+func (j *JWTService) issueAccessWithActor(userID, act, tid, htid string, authTime int64, acr string, ttl time.Duration, amr ...string) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
 	}
@@ -526,9 +559,20 @@ func (j *JWTService) issueAccessWithActor(userID, act, tid, htid string, authTim
 		return "", fmt.Errorf("%w: acr must be non-empty", ErrInvalidToken)
 	}
 	now := j.now()
+	// An empty method string is refused rather than dropped: a caller that passed ""
+	// meant to pass something, and a silently-shortened list would make HasMethod
+	// answer a question nobody asked.
+	methods := make([]string, 0, len(amr))
+	for _, m := range amr {
+		if m == "" {
+			return "", fmt.Errorf("%w: amr contains an empty method", ErrInvalidToken)
+		}
+		methods = append(methods, m)
+	}
 	claims := AccessClaims{
 		AuthTime:     authTime,
 		ACR:          acr,
+		AMR:          methods,
 		Purpose:      purposeAccess,
 		TenantID:     tid,
 		HomeTenantID: htid,

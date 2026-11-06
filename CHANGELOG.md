@@ -20,6 +20,12 @@ All notable changes to tamper are recorded here. Versions follow
   unreachable here (`ExpectedIDPEntityID` is never set) and caught by the existing recover
   barrier. No fixed upstream release exists yet; the CI allowance for this one ID is
   documented in `.github/workflows/ci.yml` and should be dropped when one does.
+- **SAML responses are bounded at 1 MiB** (`saml.DefaultMaxSAMLResponseBytes`, override with
+  `saml.WithMaxResponseBytes`). The ACS path is unauthenticated and the body is parsed twice
+  before any signature is verified, so an unbounded response was a cheap way to burn CPU:
+  measured 24 ms per MB, 433 ms for 20 MB. A real assertion with a certificate chain is
+  10–40 KiB. Over the bound the answer is `ErrAssertionInvalid` — the same generic error as
+  any other parse failure, so it cannot become an oracle.
 
 Nothing yet. What is left in `tech-debt.md` is **TD-12** (a service account has one tenant)
 and **TD-13** (2FA policy per role) — both need a product decision — plus TD-27, which is

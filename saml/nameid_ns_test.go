@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	crewjamsaml "github.com/crewjam/saml"
@@ -129,4 +130,28 @@ func TestRejectForeignNameID_RefusesForeignNameIDOutsideSubject(t *testing.T) {
 
 func encodeAssertion(xmlDoc string) string {
 	return base64.StdEncoding.EncodeToString([]byte(xmlDoc))
+}
+
+// The bound exists because the ACS path is unauthenticated and the body is parsed twice
+// before any signature is verified. Measured: 24ms per MB of base64, 433ms per 20MB.
+func TestParseAssertion_RefusesAnOversizedResponse(t *testing.T) {
+	p := &Provider{Config: ProviderConfig{ID: "test"}, SP: &crewjamsaml.ServiceProvider{}, maxResponseBytes: 64}
+	body := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("<x/>", 40)))
+
+	_, err := p.ParseAssertion(context.Background(), body, "", "")
+	if !errors.Is(err, ErrAssertionInvalid) || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v, want the size refusal (ErrAssertionInvalid, mentioning the bound)", err)
+	}
+}
+
+// And the bound is not a hair trigger: a body at the documented default passes the size
+// check and fails later, for parse reasons, not for size.
+func TestParseAssertion_DefaultBoundAllowsRealisticResponses(t *testing.T) {
+	p := &Provider{Config: ProviderConfig{ID: "test"}, SP: &crewjamsaml.ServiceProvider{}, maxResponseBytes: DefaultMaxSAMLResponseBytes}
+	body := base64.StdEncoding.EncodeToString([]byte(`<Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion"/>`))
+
+	_, err := p.ParseAssertion(context.Background(), body, "", "")
+	if err != nil && strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v — a 60-byte assertion must not hit the size bound", err)
+	}
 }

@@ -89,6 +89,10 @@ type Provider struct {
 	// in for ParseResponse.
 	SP *crewjamsaml.ServiceProvider
 
+	// maxResponseBytes bounds the SAML response ParseAssertion will look at. Zero means
+	// unbounded (Provider literals in tests); BuildProvider sets the documented default.
+	maxResponseBytes int
+
 	// replay is the single-use ledger ParseAssertion consumes each
 	// assertion against (Layer 2). Unexported so a Provider literal built
 	// outside this package cannot silently omit it; BuildProvider refuses
@@ -124,10 +128,14 @@ type ProviderRegistry struct {
 // fails construction here rather than a silent no-op at request time. Pass
 // NewMemAssertionReplayStore() for a single process, a shared store for
 // multiple replicas, or NoReplayDefence{} to opt out explicitly.
-func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor, replay AssertionReplayStore) (*Provider, error) {
+func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor, replay AssertionReplayStore,
+	opts ...ProviderOption,
+) (*Provider, error) {
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("saml: provider id is required")
 	}
+	// The documented bound; a caller can raise or disable it with WithMaxResponseBytes.
+	maxResponseBytes := DefaultMaxSAMLResponseBytes
 	if replay == nil {
 		return nil, fmt.Errorf("saml: provider %q: an AssertionReplayStore is required; "+
 			"pass saml.NewMemAssertionReplayStore() for one process, a shared store for "+
@@ -265,7 +273,13 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 	// cfg.SkewTolerance rides along as a forensic record (rebuilds may
 	// inspect it) but is not threaded onto the SP struct.
 	_ = cfg.SkewTolerance
-	return &Provider{Config: cfg, SP: sp, replay: replay}, nil
+	p := &Provider{Config: cfg, SP: sp, replay: replay, maxResponseBytes: maxResponseBytes}
+	for _, o := range opts {
+		if o != nil {
+			o(p)
+		}
+	}
+	return p, nil
 }
 
 // validProviderID accepts ASCII letters / digits / hyphen /

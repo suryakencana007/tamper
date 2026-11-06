@@ -91,6 +91,22 @@ undecodable-input case.
 | ignore the namespace entirely | **red** |
 | treat an empty namespace as legitimate | green — **unobservable**: `encoding/xml` resolves a declared prefix or default to a URI, so `Space` is never empty for a conforming document. Kept as defence in depth and annotated rather than claimed as a proof. |
 
+## 6a. The size bound (review finding F-B)
+
+The ACS path is unauthenticated, and this package parses the response **twice** before any
+signature is verified: once for the namespace guard, once inside the library. Unbounded, that
+is a cheap way to burn CPU. Measured on one core with the guard alone: **24 ms** for 1 MB of
+base64, **117 ms** for 5 MB, **433 ms** for 20 MB — and the library then repeats the work.
+
+So `ParseAssertion` refuses a response larger than `DefaultMaxSAMLResponseBytes` (**1 MiB**,
+≈750 KiB of XML) before decoding anything, with `ErrAssertionInvalid` — the same generic
+error as every other parse failure, so the bound reads as a refusal and not as a new oracle.
+
+One mebibyte is ~25× the largest realistic assertion (10–40 KiB with a certificate chain) and
+bounds the pre-signature work at tens of milliseconds. `WithMaxResponseBytes` raises or
+disables it for a deployment that genuinely needs more; **zero disables it**, which restores
+the unbounded behaviour deliberately rather than by accident.
+
 ## 7. What this does not do
 
 - It does not patch `crewjam/saml`; the real fix belongs upstream (a nil check plus

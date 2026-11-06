@@ -90,3 +90,43 @@ func TestParseAssertion_RefusesForeignNameIDBeforeVerification(t *testing.T) {
 		t.Fatalf("err = %v, want ErrAssertionInvalid — ParseAssertion must call the guard", err)
 	}
 }
+
+// The dangerous shape, and the one the guard exists for: BOTH NameIDs inside Subject,
+// the legitimate one first and a foreign-namespace one second. encoding/xml keeps the
+// LAST element for the field, so crewjam's Subject.NameID reads the foreign value
+// (verified with a probe: it yielded "alice" for the saml-then-evil fixture). Before the
+// guard, that signature was valid and the identity was the attacker's.
+func TestRejectForeignNameID_LegitimateThenForeignInsideSubject(t *testing.T) {
+	xmlDoc := `<Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:evil="urn:attacker">` +
+		`<Subject><NameID>bob</NameID><evil:NameID>alice</evil:NameID></Subject></Assertion>`
+	if err := rejectForeignNameID(encodeAssertion(xmlDoc)); !errors.Is(err, ErrAssertionInvalid) {
+		t.Fatalf("err = %v, want ErrAssertionInvalid — the foreign NameID would win in crewjam", err)
+	}
+}
+
+// An encrypted subject is legitimate and carries no readable NameID; refusing it would
+// break IdPs that encrypt the subject.
+func TestRejectForeignNameID_AllowsEncryptedSubject(t *testing.T) {
+	xmlDoc := `<Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion">` +
+		`<Subject><EncryptedID><x/></EncryptedID></Subject></Assertion>`
+	if err := rejectForeignNameID(encodeAssertion(xmlDoc)); err != nil {
+		t.Fatalf("err = %v, want nil for an encrypted subject", err)
+	}
+}
+
+// Pinned on purpose: the guard refuses a foreign-local-name NameID ANYWHERE, including
+// places crewjam never reads as the subject (SubjectConfirmation here). That is stricter
+// than necessary and it is the chosen trade: a rejection an IdP can see, rather than a
+// silent dependence on which element the library would have picked.
+func TestRejectForeignNameID_RefusesForeignNameIDOutsideSubject(t *testing.T) {
+	xmlDoc := `<Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:evil="urn:attacker">` +
+		`<Subject><NameID>bob</NameID><SubjectConfirmation><evil:NameID>alice</evil:NameID>` +
+		`</SubjectConfirmation></Subject></Assertion>`
+	if err := rejectForeignNameID(encodeAssertion(xmlDoc)); !errors.Is(err, ErrAssertionInvalid) {
+		t.Fatalf("err = %v, want ErrAssertionInvalid (documented over-rejection)", err)
+	}
+}
+
+func encodeAssertion(xmlDoc string) string {
+	return base64.StdEncoding.EncodeToString([]byte(xmlDoc))
+}

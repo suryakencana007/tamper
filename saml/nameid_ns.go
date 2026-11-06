@@ -22,9 +22,15 @@ const assertionNS = "urn:oasis:names:tc:SAML:2.0:assertion"
 // SubjectNameID and they key their user_identities row on it, so the consequence is an
 // identity that is legitimately signed but says something the IdP never meant.
 //
-// The panic half of the same advisory (nil <Issuer> dereference in validateAssertion,
-// only when ExpectedIDPEntityID is set) is covered elsewhere: parse.go wraps
-// ParseResponse in a recover barrier, and tamper never sets ExpectedIDPEntityID.
+// The panic half of the same advisory — a nil <Issuer> dereference — is covered
+// elsewhere, and the reason matters because the advisory's wording does not match the
+// code we ship. It says the dereference needs ExpectedIDPEntityID to be set; that field
+// does not exist in crewjam/saml v0.5.1 at all (grep: zero occurrences). What
+// validateAssertion actually does is `assertion.Issuer.Value != sp.IDPMetadata.EntityID`
+// with no nil guard (service_provider.go:1185), so ANY signed assertion that omits
+// <Issuer> panics — the precondition is not narrow, it is absent. Our protection is
+// therefore the recover barrier in parse.go (withParseRecover) around ParseResponse, and
+// nothing else; it turns the panic into ErrAssertionInvalid, fail closed.
 //
 // Fail closed: any foreign-namespace NameID rejects the whole assertion. Assertions
 // with no NameID, or with one in the assertion namespace — prefixed `saml:` or via a

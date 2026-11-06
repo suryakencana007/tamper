@@ -25,10 +25,15 @@ Two distinct defects in one ID:
 
 ## 2. Exposure in this repo
 
-**Defect 1 is doubly mitigated.** `tamper` never sets `ExpectedIDPEntityID` (no assignment
-anywhere in the tree), so the branch cannot be taken; and `saml/parse.go` already wraps
-`ParseResponse` in a recover barrier that turns any panic into `ErrAssertionInvalid` —
-written for exactly this dereference, with tests.
+**Defect 1 is mitigated by the recover barrier, and only by it.** This section first said
+it was "doubly mitigated" because tamper never sets `ExpectedIDPEntityID`. Reading the
+dependency rather than the advisory showed that reasoning is void: **`ExpectedIDPEntityID`
+does not exist in `crewjam/saml` v0.5.1** (zero occurrences in the module), and
+`validateAssertion` dereferences `assertion.Issuer.Value` with no nil guard
+(`service_provider.go:1185`). The precondition is not narrow — it is absent, so any
+**signed** assertion omitting `<Issuer>` panics. What protects us is
+`saml/parse.go`'s `withParseRecover` around `ParseResponse`, which normalises the panic
+into `ErrAssertionInvalid`.
 
 **Defect 2 was not mitigated, and it is the one that matters here**: `SubjectNameID`
 (`saml/assertion.go:107`) is a public surface, and applications key their `user_identities`

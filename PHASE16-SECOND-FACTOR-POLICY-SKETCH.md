@@ -85,7 +85,7 @@ Each model is a place to enforce, and they compose:
 | Model | Enforced at | A user who has not enrolled… |
 |---|---|---|
 | **A. At login** | `Login` → `ErrTOTPRequired` + pending token | is blocked from everything except enrolment (existing behaviour, made conditional) |
-| **B. At the action** | `RequireFreshAuth(acrValues: […], StepUpRequireMethods("otp"))` on privileged routes | keeps using the app, and is refused at the action that needs a second factor |
+| **B. At the action** | `RequireFreshAuth(acrValues: […], StepUpRequireMethods("otp"))` on privileged routes *(the option is new in 16c; nothing in the tree has it yet)* | keeps using the app, and is refused at the action that needs a second factor |
 | **C. Grace** | A deadline in the policy | keeps everything until the deadline, then falls into A |
 
 **Decision: A for privileged roles, B for the rest, with C as the rollout knob.** That
@@ -191,8 +191,10 @@ Two rules in the port's doc, both of which are the whole point:
 3. **16c — `espresso`**: `StepUpRequireMethods`, the port doc gains "which `amr` values the
    adapter must set on each leg", and the auth routes surface the enrolment path for a
    policy-blocked user.
-4. **16d — docs and release**: TD-13 closed, `MIGRATION-v0.12.md` (D3 is a behaviour change),
-   `flow.md`, `CHANGELOG`, the version cut.
+4. **16d — docs and release**: TD-13 closed, `flow.md`, `CHANGELOG`, the version cut. **No
+   `MIGRATION` guide**: D3′ is additive — no `acr` value changes and no matcher changes
+   meaning. (The withdrawn D3 would have required one; that line outlived the decision and is
+   corrected here.)
 
 `16b` before `16c` because the ACR has to exist before a route can require it.
 

@@ -139,10 +139,17 @@ jobs:
                       obj = json.loads(line)
                   except json.JSONDecodeError:
                       continue
+                  # govulncheck's -json stream mixes message kinds, and a line that
+                  # decodes may be a string rather than an object; only a finding object
+                  # with an osv id is interesting here.
+                  if not isinstance(obj, dict):
+                      continue
                   finding = obj.get("finding")
-                  if not finding:
+                  if not isinstance(finding, dict):
                       continue
                   osv = finding.get("osv", "")
+                  if not isinstance(osv, str):
+                      continue
                   (allowed if osv in allow else found).append(osv)
           if found:
               print("vulnerabilities:", ", ".join(sorted(set(found))))

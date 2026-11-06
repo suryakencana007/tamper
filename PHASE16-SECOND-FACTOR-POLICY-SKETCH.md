@@ -85,7 +85,7 @@ Each model is a place to enforce, and they compose:
 | Model | Enforced at | A user who has not enrolled… |
 |---|---|---|
 | **A. At login** | `Login` → `ErrTOTPRequired` + pending token | is blocked from everything except enrolment (existing behaviour, made conditional) |
-| **B. At the action** | `RequireFreshAuth(acrValues: [ACRLocalTOTP, …])` on privileged routes | keeps using the app, and is refused at the action that needs a second factor |
+| **B. At the action** | `RequireFreshAuth(acrValues: […], StepUpRequireMethods("otp"))` on privileged routes | keeps using the app, and is refused at the action that needs a second factor |
 | **C. Grace** | A deadline in the policy | keeps everything until the deadline, then falls into A |
 
 **Decision: A for privileged roles, B for the rest, with C as the rollout knob.** That
@@ -187,7 +187,7 @@ Two rules in the port's doc, both of which are the whole point:
 
 1. **16a — this sketch**, accepted, with D1–D5.
 2. **16b — `identity`**: `SecondFactorPolicy`, `WithSecondFactorPolicy`, the login gate asks
-   it; `ACRLocalTOTP` + stamping (D3).
+   it; `amr` in `AccessClaims` + filling it on every minting path (D3′).
 3. **16c — `espresso`**: `StepUpRequireMethods`, the port doc gains "which `amr` values the
    adapter must set on each leg", and the auth routes surface the enrolment path for a
    policy-blocked user.

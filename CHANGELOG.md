@@ -8,6 +8,19 @@ All notable changes to tamper are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Security
+
+- **SAML: a `<NameID>` outside the assertion namespace now invalidates the assertion**
+  (GO-2026-6909). `crewjam/saml` through v0.5.1 declares `Subject` as `xml:"NameID"`, a
+  local-name match, so a signed assertion could carry `<NameID>` in a foreign namespace and
+  populate the subject identity an application keys its `user_identities` row on. The guard
+  is namespace-based (`encoding/xml` resolves `saml:NameID` and a default `xmlns` alike),
+  runs before the library reads the assertion, and changes nothing for legitimate
+  assertions. The advisory's other half — a nil `<Issuer>` panic — was already
+  unreachable here (`ExpectedIDPEntityID` is never set) and caught by the existing recover
+  barrier. No fixed upstream release exists yet; the CI allowance for this one ID is
+  documented in `.github/workflows/ci.yml` and should be dropped when one does.
+
 Nothing yet. What is left in `tech-debt.md` is **TD-12** (a service account has one tenant)
 and **TD-13** (2FA policy per role) — both need a product decision — plus TD-27, which is
 Barista's migration.

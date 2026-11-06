@@ -109,7 +109,47 @@ jobs:
       # where a mismatched toolchain either misreports the stdlib or fails
       # outright with "package requires newer Go version".
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+        # GO-2026-6909 (crewjam/saml through v0.5.1, "Fixed in: N/A") is allow-listed
+        # NARROWLY, and only because both halves are handled on our side:
+        #
+        #   1. nil <Issuer> panic in validateAssertion — reachable only when
+        #      ExpectedIDPEntityID is set (tamper never sets it), and caught by the
+        #      recover barrier in saml/parse.go regardless.
+        #   2. namespace-blind Subject.NameID — CLOSED by saml/nameid_ns.go, which
+        #      rejects any NameID outside the assertion namespace before the library
+        #      reads it (tests in saml/nameid_ns_test.go).
+        #
+        # Anything else still fails the build. Drop this allowance when a fixed
+        # crewjam/saml release exists.
+        run: |
+          set -uo pipefail
+          ALLOW="GO-2026-6909"
+          out="$(mktemp)"
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > "$out" 2>/dev/null || true
+          python3 - "$out" "$ALLOW" <<'PY'
+          import json, sys
+          path, allow = sys.argv[1], {a for a in sys.argv[2].split(",") if a}
+          found, allowed = [], []
+          with open(path) as fh:
+              for line in fh:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  try:
+                      obj = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  finding = obj.get("finding")
+                  if not finding:
+                      continue
+                  osv = finding.get("osv", "")
+                  (allowed if osv in allow else found).append(osv)
+          if found:
+              print("vulnerabilities:", ", ".join(sorted(set(found))))
+              sys.exit(1)
+          if allowed:
+              print("allow-listed (see the comment in ci.yml):", ", ".join(sorted(set(allowed))))
+          PY
 
       # Drift guard: the checked-in sqlc output (audit/sqlitestore) must be
       # byte-reproducible from sqlc.yaml with the pinned generator. Single

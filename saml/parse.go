@@ -58,6 +58,12 @@ func (p *Provider) ParseAssertion(ctx context.Context, samlResponse, relayState,
 	if p == nil || p.SP == nil {
 		return nil, fmt.Errorf("%w: provider service provider is nil", ErrAssertionInvalid)
 	}
+	// Refuse a NameID that is not the SAML assertion's own before the library reads
+	// it: crewjam matches the local name and ignores the namespace (GO-2026-6909), so
+	// without this a signed assertion could steer the identity an application keys on.
+	if err := rejectForeignNameID(samlResponse); err != nil {
+		return nil, err
+	}
 	if p.replay == nil {
 		// A Provider built through BuildProvider cannot reach here with a
 		// nil ledger (BuildProvider refuses it). This guards a

@@ -1,6 +1,10 @@
 # Phase 16 — Second-factor policy, per role (TD-13)
 
-Status: **draft, for review. Not decided, no code.**
+Status: **reviewed 2026-11-06, D3 replaced by D3′ (§1.1), no code yet.**
+
+This document reached `main` without a PR review of its own — it was swept into a security PR
+by a branch-base mistake (see the closing comment on #116). It has now been read as a review,
+and §1.1's decision was changed as a result.
 
 TD-13 is the last P2 that is tamper's own work. It is a **policy** gap, not a mechanism gap:
 both enforcement points already exist, and the product question — *block at login, or block
@@ -38,19 +42,39 @@ who typed a password and a TOTP code is indistinguishable, by ACR, from one who 
 password. That is why TD-13's workaround says "sign in through an IdP with MFA": the only
 ACR that satisfied step-up was somebody else's.
 
-So **model B cannot be expressed today**, and adding it is a prerequisite, not a nicety:
+So **model B cannot be expressed today**, and something has to make "a second factor was
+proved" askable.
 
-```go
-// crypto
-ACRLocalTOTP = "urn:tamper:auth:local-totp"   // password + a verified second factor
-```
+**The first draft of this section answered with `ACRLocalTOTP`, stamped over
+`ACRLocalPassword`. That is withdrawn.** It was the wrong category, and the cost proves it:
+every existing `acrValues` matcher that lists `ACRLocalPassword` would silently stop matching
+TOTP sessions, which is a breaking change for a question that has a standard shape.
 
-stamped wherever a session is minted **after** `VerifyTOTP`/`VerifyRecoveryCode` succeeded —
-`CompleteTOTPEnrollment` and the login second leg — instead of the caller's default ACR.
+`acr` and `amr` are different claims in OIDC/SAML, and this repository only has the first
+(`crypto/jwt.go:306-307`; there is no `amr` anywhere in the tree):
 
-This changes what a session's `acr` says, so it is a **behaviour change** for anyone matching
-`acrValues` against `ACRLocalPassword` on a TOTP-completed session: today those sessions
-match it, and after this they would not. §5 records the decision needed.
+| Claim | Answers | Example |
+|---|---|---|
+| `acr` | which **policy class** was satisfied | `urn:mace:incommon:iap:silver` |
+| `amr` | which **methods** were actually proved | `["pwd","otp"]` |
+
+Folding "methods" into `acr` would make one claim carry two meanings — the same shape of
+mistake as a bare `string` standing in for `tenant.ID`, which this repo already paid for. So:
+
+**D3′ — add `amr []string` to `AccessClaims`; leave `acr` exactly as it is.**
+
+- filled at the minting site, never by a client: it is inside the signed token, like `acr`;
+- `["pwd"]` for a password-only session, `["pwd","otp"]` after `VerifyTOTP` or
+  `VerifyRecoveryCode`, `["sso"]` for a federated login, and `"hwk"`/`"swk"` become available
+  the day a second factor other than TOTP exists;
+- `RequireFreshAuth` gains an **additive** option (`StepUpRequireMethods("otp")`), so a gate
+  can ask for the method instead of borrowing another IdP's `acr`;
+- **nothing breaks**: no `acr` value changes, no `acrValues` matcher changes meaning, and no
+  migration guide is needed. 0.12.0 is additive.
+
+What that does *not* do, stated plainly: a local TOTP session still does not satisfy a gate
+that demands `ACRIncommonSilver`, because it is not in that policy class — the fix is a gate
+that asks about methods, not a stamp that lies about the class.
 
 ---
 
@@ -135,7 +159,7 @@ Two rules in the port's doc, both of which are the whole point:
 |---|---|---|
 | **D1** | Three models, applied per role | **A for privileged, B for the rest, C as the rollout knob** (§2) |
 | **D2** | Where the role mapping lives | **A port the application implements** (§3) — tamper must not learn roles |
-| **D3** | `ACRLocalTOTP`, and stamping it on second-factor sessions | **Yes**, but it is a **behaviour change**: a TOTP session stops matching `ACRLocalPassword` in `acrValues`. Anything matching it today must add the new value. Needs `MIGRATION-v0.12.md` |
+| **D3′** | How "a second factor was proved" becomes askable | **Add `amr []string`; leave `acr` alone** (§1.1). Additive, no `MIGRATION` guide, and it survives the arrival of WebAuthn as a new `amr` value rather than a new `acr`. The withdrawn D3 stamped `ACRLocalTOTP` over `ACRLocalPassword` — correct question, wrong claim |
 | **D4** | Is `WithTOTPRequired` kept beside the policy? | **Kept**, as "everyone" — deleting it would break single-policy deployments for no gain. When both are set the stricter answer wins |
 | **D5** | Escape hatch for a lost device | **The application's**, behind an audit row: `identity` exposes no bypass, and a requirement with no reset path is a lockout the product must own |
 
@@ -150,7 +174,9 @@ Two rules in the port's doc, both of which are the whole point:
 | a blocked user can still reach enrolment with the pending token | drop the pending token from the error path |
 | policy error → `ErrTOTPRequired` (deny), not a session | read an error as "not required" |
 | `Grace` in the future → session issued; after it lapses → `ErrTOTPRequired` | treat any non-zero grace as unlimited |
-| a TOTP-completed session carries `ACRLocalTOTP` and satisfies `RequireFreshAuth([ACRLocalTOTP])` | stamp the default ACR (today's behaviour) |
+| a session that passed TOTP carries `amr` containing `otp`, and satisfies `StepUpRequireMethods("otp")` | stamp today's ACR and no `amr` |
+| a password-only session does NOT satisfy that gate | accept any `amr` |
+| `acr` is unchanged for a TOTP session (`ACRLocalPassword`, as today) | change the `acr` value too |
 | a password-only session does NOT satisfy that gate | accept any ACR |
 | `RequiredFor` cannot satisfy a `RequireDecision` | wire the requirement as a permission |
 | a requirement never applies to a user of another tenant | key the policy on the user id only |
@@ -162,8 +188,9 @@ Two rules in the port's doc, both of which are the whole point:
 1. **16a — this sketch**, accepted, with D1–D5.
 2. **16b — `identity`**: `SecondFactorPolicy`, `WithSecondFactorPolicy`, the login gate asks
    it; `ACRLocalTOTP` + stamping (D3).
-3. **16c — `espresso`**: the port doc gains "which ACR means a second factor", and the auth
-   routes surface the enrolment path for a policy-blocked user.
+3. **16c — `espresso`**: `StepUpRequireMethods`, the port doc gains "which `amr` values the
+   adapter must set on each leg", and the auth routes surface the enrolment path for a
+   policy-blocked user.
 4. **16d — docs and release**: TD-13 closed, `MIGRATION-v0.12.md` (D3 is a behaviour change),
    `flow.md`, `CHANGELOG`, the version cut.
 

@@ -6,6 +6,7 @@ All notable changes to tamper are recorded here. Versions follow
 
 ---
 
+
 ## [Unreleased]
 
 ### Added
@@ -74,6 +75,19 @@ and **TD-13** (2FA policy per role) — both need a product decision — plus TD
 Barista's migration.
 
 ---
+
+### Fixed
+
+- **`saml`: the 1 MiB response bound is now impossible to lose.** It was provable but not
+  proven: both of its tests built a `Provider` literal with the limit set by hand, so deleting
+  the default from `BuildProvider` — leaving the field at zero, which meant **unbounded** — kept
+  the whole repository's suite green. A post-merge review ran exactly that mutant. The bound is
+  now resolved in `ParseAssertion` (`responseLimit`), the one path every provider takes, so the
+  field's **zero value is the safe one** and a hand-written literal gets the same bound as one
+  built by the constructor. `WithMaxResponseBytes(0)` no longer disables the bound (it means the
+  default); removing it is a separate, named act, `WithMaxResponseBytesUnbounded()`. Tests added
+  for the literal, the constructor, the option, both sides of the boundary, and each of those
+  four mutants — all four now bite.
 
 ## [0.11.0] — 2026-11-05
 

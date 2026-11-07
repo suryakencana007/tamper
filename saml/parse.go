@@ -62,8 +62,8 @@ func (p *Provider) ParseAssertion(ctx context.Context, samlResponse, relayState,
 	// the body is parsed TWICE (this package's namespace scan, then the library's own), so
 	// an uncapped input is a cheap way to burn a core before any signature is checked.
 	// Measured on one core: 24ms for 1MB of base64, 433ms for 20MB.
-	if max := p.maxResponseBytes; max > 0 && len(samlResponse) > max {
-		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrAssertionInvalid, max)
+	if limit := p.responseLimit(); limit > 0 && len(samlResponse) > limit {
+		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrAssertionInvalid, limit)
 	}
 
 	// Refuse a NameID that is not the SAML assertion's own before the library reads

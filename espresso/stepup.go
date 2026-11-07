@@ -57,6 +57,10 @@ const (
 	// acrValues set (local-password trying to satisfy a silver gate
 	// is the canonical case).
 	StepUpDenyWeakACR StepUpDenialReason = "weak_acr"
+	// StepUpDenyMissingMethod — the token's acr satisfied the gate but its `amr` did not
+	// name a required method. This is the axis that makes "a second factor was proved"
+	// askable without inventing an ACR value (Phase 16, D3´).
+	StepUpDenyMissingMethod StepUpDenialReason = "missing_amr_method"
 	// StepUpDenyMissingClaims — programmer-error path: RequireFreshAuth
 	// ran without RequireAuth upstream.
 	StepUpDenyMissingClaims StepUpDenialReason = "missing_claims"
@@ -89,12 +93,15 @@ const (
 func RequireFreshAuth(maxAge time.Duration, acrValues []string, opts ...StepUpOption) func(http.Handler) http.Handler {
 	frozenACR, acrSet := prepareStepUpConfig(maxAge, acrValues)
 	clock := stepUpClock(opts)
+	// The method requirement comes off the same option set as the clock, resolved once at
+	// construction so a request cannot change it.
+	methods := stepUpMethods(opts)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			now := clock().Unix()
 			claims, _ := AccessClaimsFromContext(r.Context())
-			if _, _, authTime, ok := evaluateStepUpGate(claims, maxAge, acrSet, now); !ok {
+			if _, _, authTime, ok := evaluateStepUpGate(claims, maxAge, acrSet, now, methods); !ok {
 				writeStepUpError(w, maxAge, frozenACR, authTime, now)
 				return
 			}
@@ -132,12 +139,13 @@ func RequireFreshAuth(maxAge time.Duration, acrValues []string, opts ...StepUpOp
 func RequireFreshAuthWithAudit(maxAge time.Duration, acrValues []string, auditLog audit.Logger, deniedAction audit.Action, endpoint string, opts ...StepUpOption) func(http.Handler) http.Handler {
 	frozenACR, acrSet := prepareStepUpConfig(maxAge, acrValues)
 	clock := stepUpClock(opts)
+	methods := stepUpMethods(opts)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			now := clock().Unix()
 			claims, _ := AccessClaimsFromContext(r.Context())
-			_, reason, authTime, ok := evaluateStepUpGate(claims, maxAge, acrSet, now)
+			_, reason, authTime, ok := evaluateStepUpGate(claims, maxAge, acrSet, now, methods)
 			if !ok {
 				emitStepUpDenied(r.Context(), auditLog, claims, r, deniedAction, endpoint, reason, maxAge, frozenACR, authTime, now)
 				writeStepUpError(w, maxAge, frozenACR, authTime, now)
@@ -182,7 +190,7 @@ func prepareStepUpConfig(maxAge time.Duration, acrValues []string) ([]string, ma
 // caller threads it through to the response envelope + the audit row
 // so the SPA can render "your session is N seconds old" UX + operators
 // can audit-grep on it.
-func evaluateStepUpGate(claims *crypto.AccessClaims, maxAge time.Duration, acrSet map[string]struct{}, now int64) (currentACR string, reason StepUpDenialReason, authTime int64, ok bool) {
+func evaluateStepUpGate(claims *crypto.AccessClaims, maxAge time.Duration, acrSet map[string]struct{}, now int64, requireMethods []string) (currentACR string, reason StepUpDenialReason, authTime int64, ok bool) {
 	if claims == nil {
 		// Programmer error: RequireFreshAuth without RequireAuth upstream.
 		return "", StepUpDenyMissingClaims, 0, false
@@ -196,6 +204,21 @@ func evaluateStepUpGate(claims *crypto.AccessClaims, maxAge time.Duration, acrSe
 	}
 	if _, hit := acrSet[claims.ACR]; !hit {
 		return claims.ACR, StepUpDenyWeakACR, authTime, false
+	}
+	// The method requirement is separate from the class requirement: a session can be in
+	// an accepted class and still not have proved the method this route needs, and vice
+	// versa. Any one of the listed methods satisfies it.
+	if len(requireMethods) > 0 {
+		satisfied := false
+		for _, m := range requireMethods {
+			if claims.HasMethod(m) {
+				satisfied = true
+				break
+			}
+		}
+		if !satisfied {
+			return claims.ACR, StepUpDenyMissingMethod, authTime, false
+		}
 	}
 	return claims.ACR, "", authTime, true
 }
@@ -294,9 +317,24 @@ type stepUpDeniedAfter struct {
 }
 
 // StepUpOption configures a fresh-auth gate at construction.
+// StepUpRequireMethods demands that the token's `amr` name at least one of these methods.
+//
+// It exists because `acr` answers "which policy class" and `amr` answers "which methods were
+// proved": a locally-enrolled TOTP session carries ACRLocalPassword and the method "otp", so a
+// gate that wants a second factor must ask about the method, not borrow another IdP's ACR.
+//
+// Empty list = no method requirement (today's behaviour). Every method is checked against
+// crypto.AccessClaims.HasMethod, so a token minted before the claim existed simply has none.
+func StepUpRequireMethods(methods ...string) StepUpOption {
+	return func(c *stepUpConfig) { c.requireMethods = append([]string{}, methods...) }
+}
+
 type StepUpOption func(*stepUpConfig)
 
-type stepUpConfig struct{ now func() time.Time }
+type stepUpConfig struct {
+	now            func() time.Time
+	requireMethods []string
+}
 
 // WithStepUpClock injects the gate's clock — per-INSTANCE, replacing
 // the pre-4b package-global seam (one of the two sanctioned lift-time
@@ -399,4 +437,16 @@ func StepUpSatisfied(requestedMaxAge int64, requestedACRValues []string, deliver
 		}
 	}
 	return true
+}
+
+// stepUpMethods resolves the method requirement from the option set, the same way
+// stepUpClock resolves the clock: once per gate instance.
+func stepUpMethods(opts []StepUpOption) []string {
+	cfg := stepUpConfig{now: time.Now}
+	for _, o := range opts {
+		if o != nil {
+			o(&cfg)
+		}
+	}
+	return cfg.requireMethods
 }

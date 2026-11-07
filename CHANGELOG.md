@@ -10,6 +10,16 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Added
 
+- **`espresso.StepUpRequireMethods`** (Phase 16 slice 16c, TD-13). `RequireFreshAuth` can now
+  require an authentication **method** from the token's `amr`, not only a policy class from
+  `acr`: a locally-enrolled TOTP session carries `ACRLocalPassword` **and** `otp`, so it can
+  finally satisfy a step-up gate — previously the only ACR that did was another IdP's. The two
+  axes stay independent (a method does not lift a class requirement, and a class does not
+  supply a method), a token minted before `amr` existed is refused by a method gate, and with
+  no option set the gate behaves exactly as before. The `IdentityService` port doc now says
+  which `amr` values each leg must set. New denial reason: `StepUpDenyMissingMethod`.
+
+
 - **Per-user second-factor policy** (Phase 16 slice 16b, TD-13). `identity.SecondFactorPolicy`
   is a port the application implements — the same shape as `ImpersonationPolicy`, because
   "platform admins must use 2FA, customers need not" is a role mapping, and `identity` must

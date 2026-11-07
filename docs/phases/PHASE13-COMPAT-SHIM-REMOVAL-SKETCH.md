@@ -4,7 +4,7 @@ Status: **accepted 2026-11-03; D1–D5 decided as recommended.** Slice 13b
 (`identity`) lands with this line; 13c (`espresso`) and 13d (docs, release) follow.
 
 TD-28 is the last P1 in the platform-admin line, and it is the only item in
-`tech-debt.md` that is not a gap in a feature but a **rule** that was applied
+`../tasks/tech-debt.md` that is not a gap in a feature but a **rule** that was applied
 incompletely. This sketch re-inventories it, because the item's own evidence table
 says "the list comes from a read of the code and each line must be checked again
 when its change is made" — and the re-read found the list is **eight methods short**
@@ -22,7 +22,7 @@ On 2026-10-05 that rule was replaced: **no compatibility code** (`CLAUDE.md`
 standing rule 1). Single-tenant stays supported, but the application says
 `tenant.Single` out loud.
 
-`tech-debt.md` states the cost in one sentence, and it is worth keeping in view for
+`../tasks/tech-debt.md` states the cost in one sentence, and it is worth keeping in view for
 the whole phase:
 
 > Each shim is a second way to do something, and the second way is the one without a
@@ -192,7 +192,7 @@ All five are **decided** (2026-11-03), as recommended:
 
 | # | Decision | Consequence |
 |---|---|---|
-| **D1** | Add `tenant.ID` to the bare-key `Core` methods — all of §2.2, not the six TD-28 named | **Breaking**, and per rule 1 there is no shim: the next release is `0.9.0` with a `MIGRATION-v0.9.md`. The parameter goes **immediately after `ctx`**, which is where `Store` and `espresso.IdentityService` already put it, so an adapter's call is a straight pass-through |
+| **D1** | Add `tenant.ID` to the bare-key `Core` methods — all of §2.2, not the six TD-28 named | **Breaking**, and per rule 1 there is no shim: the next release is `0.9.0` with a `../migrations/MIGRATION-v0.9.md`. The parameter goes **immediately after `ctx`**, which is where `Store` and `espresso.IdentityService` already put it, so an adapter's call is a straight pass-through |
 | **D2** | **Delete** `ContextWithUserID`; the tenant-aware path is `RequireAuth` / `RequireAuthWS` → `decorateAuthed` | Breaking for an integration that verifies tokens OUTSIDE espresso, and the decision carries that condition: if such a caller turns out to exist, the answer is a tenant-aware replacement, not a tenant-less helper. `espresso`'s own tests move to the token path |
 | **D3** | `SetUserID` / `WithUserIDCapture` **carry the tenant**, so a public-route row can name `actor.TenantID` instead of leaving it empty | The shape is `SetAuditActor(ctx, audit.Actor)`, which is additive; pairs with TD-08 (closed) |
 | **D4** | **`ClearTOTP` and `EnrollTOTP` are deleted**; `RevokeAllSessions` takes a tenant like the rest | One way per operation. The `Store` port keeps `EnableTOTP` and `ClearTOTP` — the staged flow and `DisableTOTP` still use them |
@@ -267,12 +267,12 @@ phase must not lose).
    eight-method list and the five decisions.
 2. **13b — `identity`.** `tenant.ID` on the bare-key methods; the comparison moved
    out of the adapters into `Core`; the twins in §4 deleted. Breaking, so it carries
-   the `MIGRATION-v0.9.md` entry.
+   the `../migrations/MIGRATION-v0.9.md` entry.
 3. **13c — `espresso`.** D2 and D3: the helpers either carry a tenant or are gone,
    and the audit-actor path is the tenant-aware one.
-4. **13d — docs and the release.** `tech-debt.md` TD-28 closed, with the eight
+4. **13d — docs and the release.** `../tasks/tech-debt.md` TD-28 closed, with the eight
    methods it missed recorded so the next reader knows the list was wrong; the
-   `[Unreleased]` entry; `MIGRATION-v0.9.md`; the version cut.
+   `[Unreleased]` entry; `../migrations/MIGRATION-v0.9.md`; the version cut.
 
 `13b` before `13c` because the espresso helpers are meaningless until the library
 can say what a tenant-less call means, and because rule 7 asks for one package per

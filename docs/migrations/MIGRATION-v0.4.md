@@ -174,7 +174,7 @@ domain rather than in tamper's.
 own staff acting inside customers' tenants — there is now a second shape that
 keeps one row. Store the person in one tenant of yours and give them
 memberships: `identity.MembershipStore` and `Core.EnterTenant`
-(`PHASE8-PLATFORM-ADMIN-SKETCH.md`). It does not fit the consultant, who needs
+(`../phases/PHASE8-PLATFORM-ADMIN-SKETCH.md`). It does not fit the consultant, who needs
 a full account, with a refresh session, in each customer.
 
 If that is your shape, do not upgrade until you have modelled it. A

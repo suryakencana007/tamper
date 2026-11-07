@@ -1,8 +1,8 @@
 # Phase 8b — the tenant contract for `authz`
 
 Status: **design, decided 2026-10-05**. This sketch covers TD-03 from
-`tech-debt.md`. It is the document to amend before changing the code it
-describes. It follows `PHASE8-PLATFORM-ADMIN-SKETCH.md`.
+`../tasks/tech-debt.md`. It is the document to amend before changing the code it
+describes. It follows `./PHASE8-PLATFORM-ADMIN-SKETCH.md`.
 
 ## 1. The problem
 

@@ -31,7 +31,7 @@ import (
 // migration 005 was designed never to do.
 //
 // `COALESCE(?, x'')` in the query is not a fix either; sqlc degrades those
-// parameters to `interface{}` (recorded in PHASE7-HANDOFF.md §5).
+// parameters to `interface{}` (recorded in ../../../../docs/phases/PHASE7-HANDOFF.md §5).
 type Blob []byte
 
 // Value implements driver.Valuer. A nil Blob becomes an empty byte string,

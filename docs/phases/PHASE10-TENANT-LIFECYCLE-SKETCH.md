@@ -5,10 +5,10 @@ Status: **accepted 2026-11-01; implemented in #85** (`tenant/admin.go`,
 four open questions in §8 were answered as they were proposed; they are recorded
 there.
 
-This sketch covers TD-05 from `tech-debt.md`, the second half of the pair Phase 9
+This sketch covers TD-05 from `../tasks/tech-debt.md`, the second half of the pair Phase 9
 (`TD-06`) opened.
 
-It follows `PHASE9-TENANT-STATUS-SKETCH.md`, which added the enforcement half:
+It follows `./PHASE9-TENANT-STATUS-SKETCH.md`, which added the enforcement half:
 `RequireActiveTenant` refuses a tenant that is not `StatusActive`. This sketch
 adds the half that was still missing — a supported way to *set* that status, and
 one operation that pairs a suspension with the session revocation it needs.

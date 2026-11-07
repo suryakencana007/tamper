@@ -6,7 +6,7 @@
 // SQL-backed RBAC and later swap in Cedar/Casbin (ABAC) or OpenFGA/SpiceDB
 // (ReBAC) without touching a single call site.
 //
-// Phase 1 of the extraction roadmap in ../TAMPER-DESIGN.md. The shapes are
+// Phase 1 of the extraction roadmap in ../docs/design/TAMPER-DESIGN.md. The shapes are
 // generalized from Barista's production authz surface (fixed-enum roles at
 // four scopes, group→role grants, per-cluster ACLs).
 package authz

@@ -5,11 +5,11 @@ Status: **accepted 2026-11-01; implemented in #88** (`crypto/jwt.go`,
 proofs, all red before being reverted). The four questions in §8 were answered as
 they were proposed; they are recorded there.
 
-This sketch covers TD-07 from `tech-debt.md`, the last P1 in the platform-admin
+This sketch covers TD-07 from `../tasks/tech-debt.md`, the last P1 in the platform-admin
 line.
 
-It follows `PHASE8-PLATFORM-ADMIN-SKETCH.md` (entering a tenant) and
-`PHASE8B-AUTHZ-TENANT-SKETCH.md` (the tenant in every port). Phase 8 named this
+It follows `./PHASE8-PLATFORM-ADMIN-SKETCH.md` (entering a tenant) and
+`./PHASE8B-AUTHZ-TENANT-SKETCH.md` (the tenant in every port). Phase 8 named this
 gap and deliberately left it alone: *"Impersonation (TD-07). An entered admin
 acts as themself. Acting as another user is a separate design."* This is that
 design.

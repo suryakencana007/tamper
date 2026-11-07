@@ -7,7 +7,7 @@
 > **Not the end of the road.** v0.8.0 was additive, but **v0.9.0 is breaking again**:
 > the tenant moved into every signature that names a user or a session, and the
 > compatibility shims were deleted (TD-28). Finish this guide, then follow
-> [`MIGRATION-v0.9.md`](./MIGRATION-v0.9.md).
+> [`./MIGRATION-v0.9.md`](./MIGRATION-v0.9.md).
 
 This release finishes the pooled-tenancy **upgrade** — the breaking changes that tenancy needed, and the phases that carried them. Three things break code:
 
@@ -362,8 +362,8 @@ forms for everyone.
   rather than a migration guide, because nothing breaks.
 - **No tenant hierarchy MODEL in the library.** A three-level model
   (platform → tenant-group → organization) is shown in
-  [`examples/tenanthierarchy`](./examples/tenanthierarchy), decided in
-  [`ADR-0001`](./ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md). It is
+  [`examples/tenanthierarchy`](../../examples/tenanthierarchy), decided in
+  [`ADR-0001`](../adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md). It is
   application code: zero tamper-core change. If you want it, vendor the
   pattern; there is no API to import — and the inheritance above is three
   independent axes, not that model.

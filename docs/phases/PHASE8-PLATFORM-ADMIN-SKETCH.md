@@ -1,7 +1,7 @@
 # Phase 8 — platform admin: entering a tenant
 
 Status: **design, decided 2026-10-05**. This sketch covers TD-01 and TD-02
-from `tech-debt.md`. It is the document to amend before changing the code it
+from `../tasks/tech-debt.md`. It is the document to amend before changing the code it
 describes.
 
 ## 1. The problem
@@ -34,7 +34,7 @@ The rest follows from decisions already recorded:
    token has the target tenant in `tid`.
 4. **A user still has one home tenant.** The user row is not duplicated. A
    platform admin is a user stored in a tenant of the operator's choosing (for
-   example `platform`). "One row, one tenant" (`MIGRATION-v0.4.md`) stays
+   example `platform`). "One row, one tenant" (`../migrations/MIGRATION-v0.4.md`) stays
    true; membership is additive.
 5. **`IssueTokensForUserInTenant` stays strict.** It mints only for the
    user's home tenant. Entering is a different method with a different check.
@@ -236,7 +236,7 @@ application, and the route shape is the application's.
 - **Entering is not throttled** and a refused entry is not recorded by
   tamper. The hook runs on success only.
 - **Authorization for guests** was the application's problem when this phase
-  merged. Phase 8b (`PHASE8B-AUTHZ-TENANT-SKETCH.md`) closes it: the subject
+  merged. Phase 8b (`./PHASE8B-AUTHZ-TENANT-SKETCH.md`) closes it: the subject
   carries its home tenant, and a guest needs a binding in the tenant entered.
 - **A removed membership keeps working until the token expires.** There is no
   revocation list. Keep `WithEnterTenantTTL` short.

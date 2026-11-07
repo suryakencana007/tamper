@@ -21,7 +21,7 @@ import (
 // This file ships the UserStore + GroupStore ports and their adapters
 // (Barista: internal/scimstore). The SavePatch method (the RFC 7644
 // §3.5.2 PATCH persist) and the handler rewire onto these ports follow in
-// subsequent 4e slices — see PHASE4E-SCIM-SKETCH.md.
+// subsequent 4e slices — see ../docs/phases/PHASE4E-SCIM-SKETCH.md.
 
 // Store-port sentinels. The transport maps these onto the RFC 7644 §3.12
 // error envelope: ErrNotFound → 404, ErrConflict → 409 (scimType

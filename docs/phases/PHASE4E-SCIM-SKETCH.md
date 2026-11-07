@@ -1,11 +1,11 @@
 # Phase 4e — SCIM transport lift: design sketch
 
 > Status: **DESIGN — pre-implementation.** This is the port-design gate the
-> transport lift waits on (PHASE4-TRANSPORT-PLAN.md §4e, lines 274-282).
+> transport lift waits on (./PHASE4-TRANSPORT-PLAN.md §4e, lines 274-282).
 > Nothing here is code yet. It resolves the open questions the 4e scoping
 > pass surfaced, drafts the `scim.UserStore` / `scim.GroupStore` port
 > shapes, and fixes the sub-PR arc. Reuses the 4d amendments
-> (PHASE4D-BOUNDARY-DECISION.md): **A2** (app projects), **A10** (app
+> (./PHASE4D-BOUNDARY-DECISION.md): **A2** (app projects), **A10** (app
 > registers, no Mount), **A11** (a lift moves its tests). A9
 > (resolve-before-burn) has **no** SCIM analogue — do not cargo-cult it.
 

@@ -18,12 +18,12 @@ makes tamper adoptable by a *new* project:
    `tamper.New()` / `Routes()` — the root package is `doc.go`-only.
 2. **Stale root docs.** `doc.go` lists only `crypto` + `audit` as shipped and
    calls `authz` a "Phase 1 — next up" skeleton; it omits `identity`, `oidc`,
-   `saml`, `scim`, `espresso` entirely. The `TAMPER-DESIGN.md:263–270`
+   `saml`, `scim`, `espresso` entirely. The `../design/TAMPER-DESIGN.md:263–270`
    end-state snippet uses `router.Mount(...)`, which **does not compile**
    (Espresso has no `Mount`).
 3. **No README / runnable example.** Nothing shows the real integration path.
 4. **A sqlc gap.** `audit/sqlitestore` ships generated code but has no
-   `sqlc.yaml` / regen target (flagged at `TAMPER-DESIGN.md:275–280` and in
+   `sqlc.yaml` / regen target (flagged at `../design/TAMPER-DESIGN.md:275–280` and in
    Barista's `sqlc.yaml`), and `audit/sqlitestore/schema.sql:6` advertises a
    `TestSchemaMigrationParity` guard that **does not exist**.
 5. **No version tag.** Zero `packages/tamper/*` tags — external consumers have
@@ -249,13 +249,13 @@ expresses public/authed/gated blocks (Fork f).
 
 ## Doc corrections this milestone lands
 
-- **`TAMPER-DESIGN.md:263–270`** — the `router.Mount("/api/auth",
+- **`../design/TAMPER-DESIGN.md:263–270`** — the `router.Mount("/api/auth",
   tamperespresso.Routes(tp))` snippet is replaced with the **surfaces-return**
   shape (`Routes` returns `*Surfaces`; the app registers them explicitly).
   `Mount` does not exist in Espresso.
 - **`doc.go`** — rewritten to cover Phases 1–4: `authz`, `identity`, `oidc`,
   `saml`, `scim`, `espresso` are all **shipped**, not "skeleton / next up."
-- **`TAMPER-DESIGN.md:275–280` Open items** — sqlc marked DONE, facade marked
+- **`../design/TAMPER-DESIGN.md:275–280` Open items** — sqlc marked DONE, facade marked
   SHIPPED, and the split-gate evidence pinned to the concrete `vX.Y.0` in which
   Phase 2 landed.
 
@@ -291,7 +291,7 @@ expresses public/authed/gated blocks (Fork f).
   README derives from.
 - **Slice 5 — README + version tag + doc reconcile.** Derive `README.md` from
   the Slice-4 example (getting-started + the corrected surfaces-return snippet).
-  Update `TAMPER-DESIGN.md` Open items + pin the split-gate evidence. Cut
+  Update `../design/TAMPER-DESIGN.md` Open items + pin the split-gate evidence. Cut
   `packages/tamper/v0.1.0` (in-place subdir tag; Barista's `replace`
   unchanged). Ship = installable `v0.1.0` + adoptable docs.
 - **(DEFERRED — own milestone)** Physical repo-split / module-path rename to

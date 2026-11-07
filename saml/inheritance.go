@@ -14,7 +14,7 @@ import (
 // Manager has a second per-tenant seam, the SP metadata URL, which must be
 // compiled for the CHILD exactly as the OIDC redirect URL is.
 //
-// See PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2 and §4.2.1.
+// See ../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2 and §4.2.1.
 
 // inheritConfig is the wired form of the feature: the parentage graph and the
 // per-group switch, both required for it to do anything.

@@ -16,16 +16,16 @@ table, owns a cookie brand, or freezes your audit vocabulary.
 > literals must become keyed ones.
 >
 > Coming from 0.8.0? **v0.9.0 was breaking** — the tenant is in every signature that names
-> a user or a session: follow [`MIGRATION-v0.9.md`](./MIGRATION-v0.9.md).
+> a user or a session: follow [`./docs/migrations/MIGRATION-v0.9.md`](./docs/migrations/MIGRATION-v0.9.md).
 >
 > v0.8.0 (additive) finished **TD-04**: a tenant's plan, its IdPs and its claimable
 > domains can be inherited from its ancestors, while authorization still comes from
 > ADR-0001's materialized bindings and never from the hierarchy.
 >
 > Upgrading from v0.6.0 or earlier? Take **v0.7.0's breaking changes** first
-> ([`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md)), then v0.9.0's. Coming from v0.2.x,
+> ([`./docs/migrations/MIGRATION-v0.7.md`](./docs/migrations/MIGRATION-v0.7.md)), then v0.9.0's. Coming from v0.2.x,
 > step through **v0.3.0** (drop-in) and
-> [`MIGRATION-v0.4.md`](./MIGRATION-v0.4.md) first; v0.5.0 changed one thing worth
+> [`./docs/migrations/MIGRATION-v0.4.md`](./docs/migrations/MIGRATION-v0.4.md) first; v0.5.0 changed one thing worth
 > reading (`VerifyAccess` now denies an unset tenant id) and v0.6.0 is drop-in.
 
 ## Install
@@ -48,7 +48,7 @@ go get github.com/suryakencana007/tamper@v0.11.0
 | `espresso` | the first-class transport adapter: mountable auth / OIDC / SAML / SCIM route surfaces + `RequireAuth` / `RequireAuthWS` / `RequireServiceAccount` / `RequireDecision` / `RequireFreshAuth` / `RequireFreshAuthWithAudit` / `PinTenant` / `RequireTenant` middleware, the plan gate (`RequireEntitlement`), the lifecycle gate (`RequireActiveTenant`), and the tenant gates' opt-in forms (`RequireTenantAllowEntered`, `RequireTenantAllowImpersonated`, `RequireTenantAllowEnteredOrImpersonated`) |
 
 The framework roadmap, extraction playbook, and design rationale live in
-[`TAMPER-DESIGN.md`](./TAMPER-DESIGN.md).
+[`./docs/design/TAMPER-DESIGN.md`](./docs/design/TAMPER-DESIGN.md).
 
 ## Getting started
 
@@ -99,7 +99,7 @@ defer provider.Close() // releases the audit DB handle
 auto-wiring the OIDC/SAML registry hooks and binding `RequireAuth` to the JWT
 service. It returns the surfaces for **you** to register — there is no `Mount`,
 because each surface spans both public and authenticated route blocks and your
-app owns its paths (see `PHASE4D-BOUNDARY-DECISION.md` §A10).
+app owns its paths (see `./docs/phases/PHASE4D-BOUNDARY-DECISION.md` §A10).
 
 ```go
 surfaces, err := tamperespresso.Routes(provider, tamperespresso.RouteConfig{
@@ -274,9 +274,9 @@ explicitly (Phase 12) — and derives no authorization scope from it; the RBAC
 engine's per-scope bindings are untouched.
 
 The mechanism, decided in
-[`ADR-0001`](./ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md) and
+[`ADR-0001`](./docs/adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md) and
 planned slice by slice in
-[`TENANT-HIERARCHY-MANIFEST.md`](./TENANT-HIERARCHY-MANIFEST.md):
+[`./docs/phases/TENANT-HIERARCHY-MANIFEST.md`](./docs/phases/TENANT-HIERARCHY-MANIFEST.md):
 
 - a tenant-group admin is a **guest** of each child organization: a real
   binding in that org's scope, with the tenant-group as the subject's home

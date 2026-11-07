@@ -69,7 +69,7 @@ All notable changes to tamper are recorded here. Versions follow
   10–40 KiB. Over the bound the answer is `ErrAssertionInvalid` — the same generic error as
   any other parse failure, so it cannot become an oracle.
 
-Nothing yet. What is left in `tech-debt.md` is **TD-12** (a service account has one tenant)
+Nothing yet. What is left in `./docs/tasks/tech-debt.md` is **TD-12** (a service account has one tenant)
 and **TD-13** (2FA policy per role) — both need a product decision — plus TD-27, which is
 Barista's migration.
 
@@ -144,7 +144,7 @@ whole fix.
   `audit.Filter{t0, t1, "", …}` with the old arity no longer compiles. None exist in this
   repository; a caller outside it must switch to keyed fields.
 
-Nothing yet. What is left in `tech-debt.md` is the three P2 items (TD-11 to TD-13), and
+Nothing yet. What is left in `./docs/tasks/tech-debt.md` is the three P2 items (TD-11 to TD-13), and
 TD-27, which is Barista's own migration.
 
 ---
@@ -178,7 +178,7 @@ and its test logs in to two tenants in the same browser and keeps both sessions 
   placeholder, spelled the way this repo already reads path parameters (`r.PathValue`).
   Static prefixes are unchanged, byte for byte.
 
-Nothing yet. What is left in `tech-debt.md` is the three P2 items (TD-11 to TD-13), and
+Nothing yet. What is left in `./docs/tasks/tech-debt.md` is the three P2 items (TD-11 to TD-13), and
 TD-27, which is Barista's own migration. **Every P1 that was tamper's own work is
 closed.** The next release number is not decided.
 
@@ -191,7 +191,7 @@ finishes **TD-28**. The rule it applies is the one from 2026-10-05: no compatibi
 code — so nothing is deprecated, the weaker way is **deleted**, and the compiler is the
 migration guide.
 
-`MIGRATION-v0.9.md` puts it in upgrade order, including what to DELETE rather than
+`./docs/migrations/MIGRATION-v0.9.md` puts it in upgrade order, including what to DELETE rather than
 rewrite (the guards the library now does) and the two things that stay the adapter's.
 
 The shape of the whole release in one sentence: **if a method takes a user id or a
@@ -275,13 +275,13 @@ parentage walk (`tenant.Ancestors`) and three opt-in consumers; no new port.
 ### Fixed
 
 - **Two 0.7.0 documents said the opposite of what 0.7.0 shipped.** Its
-  `MIGRATION-v0.7.md` §7 and its `CHANGELOG` entry for `tenant.Ancestors` both said
+  `./docs/migrations/MIGRATION-v0.7.md` §7 and its `CHANGELOG` entry for `tenant.Ancestors` both said
   the walk had **no consumers** and listed entitlement inheritance as still open —
   written before plan inheritance landed in the same release. A reader of 0.7.0
   was told not to expect something it had. Both are corrected in the living copies,
-  and `MIGRATION-v0.7.md` now points here for the two axes it deferred;
-  `tech-debt.md` records **TD-04 closed** with the sketch accepted
-  (`PHASE12-TENANT-INHERITANCE-SKETCH.md`). The `v0.7.0` tag keeps the old text —
+  and `./docs/migrations/MIGRATION-v0.7.md` now points here for the two axes it deferred;
+  `./docs/tasks/tech-debt.md` records **TD-04 closed** with the sketch accepted
+  (`./docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md`). The `v0.7.0` tag keeps the old text —
   a tag is a snapshot, so read this release's files rather than that tag's.
 
 ---
@@ -309,10 +309,10 @@ plan inheritance (Phase 12). The last is **partial in this release**:
 `tenant.Ancestors` and `tenant.InheritingEntitlements` ship here, and the IdP and
 domain axes land in 0.8.0.
 
-Everything else below closes a sharp edge in a pooled deployment; `tech-debt.md`
+Everything else below closes a sharp edge in a pooled deployment; `./docs/tasks/tech-debt.md`
 has the analysis for each.
 
-**Upgrading?** [`MIGRATION-v0.7.md`](./MIGRATION-v0.7.md) collects every breaking
+**Upgrading?** [`./docs/migrations/MIGRATION-v0.7.md`](./docs/migrations/MIGRATION-v0.7.md) collects every breaking
 change below into one ordered checklist, and names the work each one needs.
 
 ### ⚠️ Breaking — the audit log is `canonical_version=4` only (#46)
@@ -478,7 +478,7 @@ bytes as before: the single tenant is still spelled as no `tid` claim.
 
 ### ⚠️ Breaking — the `authz` ports take a tenant (#56, TD-03)
 
-`authz` now has a tenant contract. Design: `PHASE8B-AUTHZ-TENANT-SKETCH.md`.
+`authz` now has a tenant contract. Design: `./docs/phases/PHASE8B-AUTHZ-TENANT-SKETCH.md`.
 
 - **Every method of `authz.Authorizer`, `authz.BindingStore` and
   `authz.PermissionStore` takes a `tenant.ID` after `ctx`.** It is the scope
@@ -646,7 +646,7 @@ no home tenant. Backfill that column before the upgrade.
 
 - **Platform admin: entering a tenant** (#55, TD-01, TD-02). Opt-in; a
   deployment that does not use it is unchanged. Design:
-  `PHASE8-PLATFORM-ADMIN-SKETCH.md`.
+  `./docs/phases/PHASE8-PLATFORM-ADMIN-SKETCH.md`.
   - `identity.MembershipStore` (`IsMember`, `MembershipsFor`), enabled with
     `identity.WithMemberships`. A user keeps one home tenant; a membership is
     a right to act inside another.
@@ -673,7 +673,7 @@ no home tenant. Backfill that column before the upgrade.
 
 - **Impersonation: a human acting as another user** (#88, TD-07). Opt-in; a
   deployment that never configures a policy cannot impersonate at all. Design:
-  `PHASE11-IMPERSONATION-SKETCH.md`.
+  `./docs/phases/PHASE11-IMPERSONATION-SKETCH.md`.
   - A token minted by `identity.Core.Impersonate` carries **two identities**:
     `sub` is the user being impersonated — so handlers and `GetUserID` act as
     that user — and a new `act` claim names the human behind it.
@@ -696,7 +696,7 @@ no home tenant. Backfill that column before the upgrade.
 
 - **Tenant lifecycle: a write port and one `Suspend`** (#85, TD-05). Opt-in; a
   deployment that does not implement the port is unchanged. Design:
-  `PHASE10-TENANT-LIFECYCLE-SKETCH.md`.
+  `./docs/phases/PHASE10-TENANT-LIFECYCLE-SKETCH.md`.
   - `tenant.AdminStore` (`List`, `Create`, `SetStatus`) is the console's half of
     tenancy. `tenant.Store` stays read-only, so a routing surface can hold a
     tenant port without holding permission to change one. `tenant.MemStore`
@@ -721,9 +721,9 @@ no home tenant. Backfill that column before the upgrade.
   carry per-origin provenance, and a reconciliation guard reports drift in
   both directions without repairing itself. Ships an in-memory store and a
   SQLite adapter behind the same ports. Design:
-  [`ADR-0001-…`](./ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md)
+  [`ADR-0001-…`](./docs/adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md)
   (Accepted); per-slice plan:
-  [`TENANT-HIERARCHY-MANIFEST.md`](./TENANT-HIERARCHY-MANIFEST.md).
+  [`./docs/phases/TENANT-HIERARCHY-MANIFEST.md`](./docs/phases/TENANT-HIERARCHY-MANIFEST.md).
 
 - **A TOTP-pending token carries a `tid` claim** (#40, TD-10). Verification
   pins it the same way `VerifyAccess` pins an access token, so a pending
@@ -909,7 +909,7 @@ rather than discovered: v0.3.x shipped every tenant capability additively,
 behind an empty tenant that meant "today's behavior", so consumers could adopt
 the features one at a time and flip once. This is the flip.
 
-Upgrading: **[MIGRATION-v0.4.md](MIGRATION-v0.4.md)**. If you are
+Upgrading: **[./docs/migrations/MIGRATION-v0.4.md](./docs/migrations/MIGRATION-v0.4.md)**. If you are
 single-tenant, §2 is the short answer — your data is already correct and only
 your Go call sites change.
 
@@ -1095,7 +1095,7 @@ more than one tenant — a consultant with two customers, a support engineer
 present in every tenant — cannot be expressed as a single `users` row, and the
 v0.4.0 backfill has no correct answer for one. The shape that works is one
 user row per (person, tenant) with your application owning the membership
-table. See MIGRATION-v0.4.md §3.
+table. See ./docs/migrations/MIGRATION-v0.4.md §3.
 
 ---
 

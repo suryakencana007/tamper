@@ -7,7 +7,7 @@ This document lists what is missing in Tamper for two needs:
 - an **organization hierarchy** (parent and child tenants).
 
 It was written from the code at `v0.6.0` (commit `c1af24e`). The flows that
-exist today are described in [`flow.md`](flow.md).
+exist today are described in [`../design/flow.md`](../design/flow.md).
 
 ## Summary
 
@@ -61,7 +61,7 @@ Every fix had a code review, and the reviews changed the fixes:
 
 All six sharp edges, and the refresh-session problem in TD-02, were
 **reproduced with tests on 2026-10-02**. The test sources and their output are
-in [`tech-debt-proofs.md`](tech-debt-proofs.md). The tests are not in the Go
+in [`./tech-debt-proofs.md`](./tech-debt-proofs.md). The tests are not in the Go
 packages, because they fail until the problems are fixed. The other items are
 gaps: something does not exist, so there is nothing to reproduce.
 
@@ -104,7 +104,7 @@ work around it, but mistakes are easy. P2 = convenience and completeness.
 ### TD-01 — A user can belong to only one tenant *(fixed by #55)*
 
 **Evidence.** `identity.User.TenantID` is a single string
-(`identity/identity.go:40`). `MIGRATION-v0.4.md:156` says it directly: a user
+(`identity/identity.go:40`). `../migrations/MIGRATION-v0.4.md:156` says it directly: a user
 who really belongs to more than one tenant ("a support engineer who is a real
 user in every tenant") cannot be expressed. The suggested shape is one user row
 per (person, tenant), with a membership table owned by the application.
@@ -123,7 +123,7 @@ rights in your own table.
 `InvitationStore`. Standing rule 6 applies: ship a boot guard and a test that
 proves the guard fires.
 
-**Fix: #55.** Designed in `PHASE8-PLATFORM-ADMIN-SKETCH.md`, together with
+**Fix: #55.** Designed in `../phases/PHASE8-PLATFORM-ADMIN-SKETCH.md`, together with
 TD-02. `identity.MembershipStore` is the port, enabled with
 `WithMemberships`. A user still has one home tenant and one row; a membership
 is a right to act inside another tenant. "One row, one tenant" is kept, not
@@ -258,7 +258,7 @@ on the application's discipline.
 
 **Fix: #56.** Option 1 was chosen by the repo owner, with one more decision:
 a guest needs a binding in the tenant they entered. Design:
-`PHASE8B-AUTHZ-TENANT-SKETCH.md`.
+`../phases/PHASE8B-AUTHZ-TENANT-SKETCH.md`.
 
 - Every `Authorizer`, `BindingStore` and `PermissionStore` method takes a
   `tenant.ID` after `ctx`: the **scope**, the tenant whose resources are
@@ -297,7 +297,7 @@ resolves it, inherits through it, or branches on it" (`tenant/tenant.go:19-25`) 
 until slice 12a (#91) added `tenant.Ancestors`, which now walks it. That amends the
 invariant (sketch §3.1) without closing this item: nothing *inherits* yet, and the
 walk builds no authorization scope.
-`PHASE7-MULTITENANCY-SKETCH.md:510` (§8 item 3) defers it on purpose.
+`../phases/PHASE7-MULTITENANCY-SKETCH.md:510` (§8 item 3) defers it on purpose.
 `tenant.Store` has only `ByID` and `BySlug` (`tenant/store.go:51`). The RBAC
 engine has no containment graph (`authz/policy.go:38`), and it cannot express
 AND-gates (`authz/policy.go:49`).
@@ -324,9 +324,9 @@ the application must **materialize** the inherited grant as real per-child
 bindings at provisioning time (eager provisioning): a tenant-group admin holds
 a binding in each child org scope, with the tenant-group as its home tenant.
 This is decided in
-[`ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md`](ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md)
+[`../adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md`](../adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md)
 (Accepted) and implemented in
-[`examples/tenanthierarchy/`](examples/tenanthierarchy/): `Store` +
+[`examples/tenanthierarchy/`](../../examples/tenanthierarchy): `Store` +
 `Provisioner` materialize the grant,
 `Guard`/`SyncGroup` catch and repair drift, and `Membership` derives
 `EnterTenant` rights from the intent rows. The **roles** axis is closed by that;
@@ -341,7 +341,7 @@ by that rule, so they can still be wrapped by an adapter that walks up to the
 parent — for entitlements, tamper now ships that wrapper. Decide inheritance for
 each axis separately. Do not assume the answer is the same for all of them.
 
-**Partly closed (Phase 12, `PHASE12-TENANT-INHERITANCE-SKETCH.md`).** The product
+**Partly closed (Phase 12, `../phases/PHASE12-TENANT-INHERITANCE-SKETCH.md`).** The product
 question was answered per axis on 2026-11-01: plan inheritance is the maximum of
 the chain and needs no switch (D2, shipped in 12b as
 `tenant.InheritingEntitlements` + `Entitlements.Union`); IdP inheritance is
@@ -352,7 +352,7 @@ over `Descriptor.ParentID`, amending the Phase 7 invariant that said nothing
 resolves it. `Children(id)` was **not** added: none of the three axes needs it.
 
 **Fix (2026-11-02, #91, #92, #94, #96).** Designed in
-[`PHASE12-TENANT-INHERITANCE-SKETCH.md`](PHASE12-TENANT-INHERITANCE-SKETCH.md)
+[`../phases/PHASE12-TENANT-INHERITANCE-SKETCH.md`](../phases/PHASE12-TENANT-INHERITANCE-SKETCH.md)
 (accepted), and decided per axis on 2026-11-01. All four axes are closed, and the
 mechanism is deliberately small: one walk, three opt-in consumers (plans, IdP,
 domains), no new port.
@@ -411,7 +411,7 @@ pieces already exist: `Core.RevokeAllSessionsForTenant`
 status and revokes the sessions together.
 
 **Fix (2026-11-01, #85).** Designed in
-[`PHASE10-TENANT-LIFECYCLE-SKETCH.md`](PHASE10-TENANT-LIFECYCLE-SKETCH.md).
+[`../phases/PHASE10-TENANT-LIFECYCLE-SKETCH.md`](../phases/PHASE10-TENANT-LIFECYCLE-SKETCH.md).
 
 - **`tenant.AdminStore`** (`List`, `Create`, `SetStatus`) is opt-in, and
   `tenant.Store` stays read-only: a routing surface can hold a tenant port
@@ -448,7 +448,7 @@ after `RequireTenant` / `PinTenant`. On unauthenticated routes its response
 must look the same as for an unknown tenant (standing rule 3).
 
 **Fix (2026-11-01, #82).** `espresso.RequireActiveTenant(ActiveTenantGate)`,
-designed in [`PHASE9-TENANT-STATUS-SKETCH.md`](PHASE9-TENANT-STATUS-SKETCH.md).
+designed in [`../phases/PHASE9-TENANT-STATUS-SKETCH.md`](../phases/PHASE9-TENANT-STATUS-SKETCH.md).
 
 - **Opt-in and read-only.** The gate resolves a `Descriptor` and decides; it
   never writes one. Setting a status is the write port's job (TD-05, now
@@ -485,7 +485,7 @@ ends. `Actor` is part of the canonical payload, so this change touches
 `canonical_version` and needs a sketch amendment.
 
 **Fix (2026-11-01, #88).** Designed in
-[`PHASE11-IMPERSONATION-SKETCH.md`](PHASE11-IMPERSONATION-SKETCH.md). The
+[`../phases/PHASE11-IMPERSONATION-SKETCH.md`](../phases/PHASE11-IMPERSONATION-SKETCH.md). The
 proposal's second half was **not** taken, and the reason is the first half of
 this item's own evidence: `Actor` is part of the canonical payload, so
 `Actor.ImpersonatorID` is a new `canonical_version`, and v4 is the only version
@@ -707,7 +707,7 @@ type `tenant.ID`, so that an unset value means "no filter" only when the caller
 says so explicitly.
 
 **Fix (2026-11-05, #112, #114).** Designed in
-[`PHASE15-AUDIT-TENANT-QUERY-SKETCH.md`](PHASE15-AUDIT-TENANT-QUERY-SKETCH.md). Both
+[`../phases/PHASE15-AUDIT-TENANT-QUERY-SKETCH.md`](../phases/PHASE15-AUDIT-TENANT-QUERY-SKETCH.md). Both
 fields are `tenant.ID`, and the proposal's last clause was **rejected**: the type already
 makes "explicit" structural — nothing written means no filter, `tenant.Single` means the
 rows whose scope is `""` — so a second opt-in flag would have given one fact two
@@ -779,7 +779,7 @@ by the platform console gets no routes until the process restarts.
 check the user's stored tenant on the TOTP path (see TD-10).
 
 **Fix (2026-11-03, #107, #108).** Designed in
-[`PHASE14-DYNAMIC-SURFACE-SKETCH.md`](PHASE14-DYNAMIC-SURFACE-SKETCH.md), whose §3
+[`../phases/PHASE14-DYNAMIC-SURFACE-SKETCH.md`](../phases/PHASE14-DYNAMIC-SURFACE-SKETCH.md), whose §3
 records three rejected candidates — including one whose guard turned out to be
 **unwritable in Go** (§3.1). The item needed a product decision before code (cookie
 separation by **path**, not by name), and the re-verification found two of its three
@@ -1098,7 +1098,7 @@ the one without a tenant. #56 showed the cost: a gate that had to serve both
 ways guessed a tenant, and three reviews could not make the guess safe.
 
 **Fix (2026-11-03, #100, #101).** Phase 13, designed in
-[`PHASE13-COMPAT-SHIM-REMOVAL-SKETCH.md`](PHASE13-COMPAT-SHIM-REMOVAL-SKETCH.md)
+[`../phases/PHASE13-COMPAT-SHIM-REMOVAL-SKETCH.md`](../phases/PHASE13-COMPAT-SHIM-REMOVAL-SKETCH.md)
 (accepted). The re-inventory the table above demands turned out to matter: **the list
 was eight methods short**, and the shortfall was there when the list was written, not
 created later — those methods landed 2026-07-09/10, the item was written 2026-10-05.
@@ -1118,7 +1118,7 @@ created later — those methods landed 2026-07-09/10, the item was written 2026-
   public-route row names its tenant; `AuthRoutesConfig.OnAuthenticated` receives that
   actor; the type in the slot is forced to user.
 - **The rule held.** No shim, no deprecation: the weaker way was deleted, and
-  `MIGRATION-v0.9.md` says what to call instead.
+  `../migrations/MIGRATION-v0.9.md` says what to call instead.
 
 What this does **not** change: the `Store` port (it never carried the fix — the fix
 is that the library now DOES the comparison the port's doc asked callers to do), and
@@ -1158,11 +1158,11 @@ These are not debt, but they matter when you design the workarounds:
 Since #55 an application can build a console on Tamper's own API: a special
 `platform` tenant for the admins, a membership table behind
 `identity.MembershipStore`, and `Core.EnterTenant` for the token. See
-`PHASE8-PLATFORM-ADMIN-SKETCH.md` and `examples/multitenant`.
+`../phases/PHASE8-PLATFORM-ADMIN-SKETCH.md` and `examples/multitenant`.
 
 What the admin may do inside the tenant is decided by `authz` since #56: the
 admin needs a binding in that tenant, granted to the subject
-`{home tenant, type, id}`. See `PHASE8B-AUTHZ-TENANT-SKETCH.md`.
+`{home tenant, type, id}`. See `../phases/PHASE8B-AUTHZ-TENANT-SKETCH.md`.
 
 Suggested slice order if this work moves into Tamper:
 
@@ -1194,19 +1194,19 @@ Suggested slice order if this work moves into Tamper:
 
 ## Process limits
 
-`CLAUDE.md` says Phase 7 is complete, and `PHASE7-MULTITENANCY-SKETCH.md` is a
+`CLAUDE.md` says Phase 7 is complete, and `../phases/PHASE7-MULTITENANCY-SKETCH.md` is a
 design freeze. Any item that touches `identity`, `crypto/jwt.go`, `oidc`,
 `saml`, `scim`, `espresso`, or `audit` needs a sketch amendment (or a new
 phase sketch) before any code. Two earlier decisions are affected. They must be
 reopened explicitly, not bypassed:
 
-- "one row, one tenant" (`MIGRATION-v0.4.md`), by TD-01. Phase 8 (#55) did
+- "one row, one tenant" (`../migrations/MIGRATION-v0.4.md`), by TD-01. Phase 8 (#55) did
   not reopen it: the row stays in one tenant and a membership is added beside
   it;
 - "nested tenants are deferred" (sketch §8 item 3), **superseded by TD-04
   (#91, #92, #94, #96)**: nested tenants are now read for inheritance — plans, IdPs and
   domains — while authorization still comes from ADR-0001's materialized bindings.
-  `MIGRATION-v0.4.md` §7's "no tenant hierarchy is inherited" is true of 0.4.0 and
+  `../migrations/MIGRATION-v0.4.md` §7's "no tenant hierarchy is inherited" is true of 0.4.0 and
   superseded by 0.8.0.
 
 Standing rule 7 still applies: each item is a separate change.

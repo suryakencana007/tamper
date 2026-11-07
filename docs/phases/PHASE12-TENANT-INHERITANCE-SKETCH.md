@@ -7,7 +7,7 @@ questions §8 left open were answered while implementing, and each answer sits
 beneath its question.
 
 TD-04 closed one of its four axes (roles, via ADR-0001) and left three open,
-deliberately: `PHASE7-MULTITENANCY-SKETCH.md` §8 item 3 deferred them as a
+deliberately: `./PHASE7-MULTITENANCY-SKETCH.md` §8 item 3 deferred them as a
 product question. The product question has now been answered, per axis, and
 this sketch turns the answers into a design.
 
@@ -78,7 +78,7 @@ document that describes code it then changes.
 | SAML is the same shape, separately | `saml/manager.go:385-400`, `465-` |
 | Home-realm discovery is exact and believes only verified claims | `tenant/domain.go:130-152` |
 | No boot guard asserts a tenant-scoped provider store, and one comment says otherwise | `oidc/store.go:71-73` vs `oidc/manager.go:359-361` |
-| ADR-0001 already rejected resolving `ParentID` in core, and named its precondition | `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md:262-265` — "Butuh amend sketch Phase 7 dulu". §3.1 is that amendment |
+| ADR-0001 already rejected resolving `ParentID` in core, and named its precondition | `../adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md:262-265` — "Butuh amend sketch Phase 7 dulu". §3.1 is that amendment |
 
 Two consequences worth naming up front:
 
@@ -204,12 +204,12 @@ the present tense, and `tenant.Ancestors` makes all three false:
 | `tenant/admin.go:56-58` | "tamper does not resolve it, inherit through it, or branch on it" | reworded |
 | `tenant/memstore_test.go:165-167` | "ParentID is reserved." | reworded; the test stays |
 | `examples/tenanthierarchy/hierarchy.go:8-11` | the same quote, as the reason the app's port exists | reworded |
-| `flow.md:56` | "`ParentID` is RESERVED; nothing reads it yet." | reworded |
+| `../design/flow.md:56` | "`ParentID` is RESERVED; nothing reads it yet." | reworded |
 | `README.md:258-260` | "`tenant.Descriptor.ParentID` stays RESERVED, read only by the app's own port." | reworded |
-| `tech-debt.md:290-291` | TD-04's evidence quotes the sentence | past tense, with a pointer forward |
-| `MIGRATION-v0.7.md:327-328` | listed under "what this release does not change" | reworded |
+| `../tasks/tech-debt.md:290-291` | TD-04's evidence quotes the sentence | past tense, with a pointer forward |
+| `../migrations/MIGRATION-v0.7.md:327-328` | listed under "what this release does not change" | reworded |
 | `ADR-0001:42-43` | "tetap **RESERVED** di tamper — tidak diresolve" | in-place `AMENDED` note, house style |
-| `TENANT-HIERARCHY-MANIFEST.md:265-266` | "(ParentID is reserved there)" | in-place `AMENDED` note |
+| `./TENANT-HIERARCHY-MANIFEST.md:265-266` | "(ParentID is reserved there)" | in-place `AMENDED` note |
 
 The first three were the ones found while writing this sketch. The rest were found
 by grepping the tree for the invariant's own words before shipping 12a — seven more
@@ -217,7 +217,7 @@ documents, two of them user-facing. A sketch that lists three and a tree that ho
 nine is how the tenth gets missed; the grep is the check, and it is in 12a's
 definition of done.
 
-And `ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md` §5.A **rejected**
+And `../adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md` §5.A **rejected**
 resolving `ParentID` in tamper core, for two stated reasons: it violates the
 Phase 7 invariant, and it "butuh amend sketch Phase 7 dulu" — needs a Phase 7
 sketch amendment first. That precondition is what this section satisfies, and the
@@ -767,7 +767,7 @@ metadata URL is the second per-tenant seam, so the child's-name proof is
 1. **Does the group's switch apply per child too?** No, as shipped: D3 is the
    group's decision, and a child opts out by configuring its own providers — which
    is "own items win entirely". A per-child consent flow is a bigger product change
-   and remains undesigned; `tech-debt.md` TD-04 lists it as still open.
+   and remains undesigned; `../tasks/tech-debt.md` TD-04 lists it as still open.
 2. **When is the audit row `domain.inherit` emitted — at approval, or at first
    use?** Approval. First use would need a row per login, and the chain is
    append-only for a reason.
@@ -800,8 +800,8 @@ metadata URL is the second per-tenant seam, so the child's-name proof is
   phase. Review found the two `recordsFor` byte-identical, so the policy rules moved
   to `tenant.Inherited` (§3).
 - **12d — domains** — ✅ #94. `IsProperSubdomain` + `InheritedDomainAuthority`.
-- **12e — docs** — ✅ this change. TD-04 closed in `tech-debt.md`; the ADR-0001
-  §5.A and §8 notes; the `MIGRATION-v0.7.md` §7 and 0.7.0 `CHANGELOG` entries
+- **12e — docs** — ✅ this change. TD-04 closed in `../tasks/tech-debt.md`; the ADR-0001
+  §5.A and §8 notes; the `../migrations/MIGRATION-v0.7.md` §7 and 0.7.0 `CHANGELOG` entries
   corrected where later slices in the SAME release had made them false; and this
   sketch to `accepted`.
 

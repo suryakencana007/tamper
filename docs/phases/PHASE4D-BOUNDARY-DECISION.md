@@ -6,7 +6,7 @@ I have enough verified evidence. Key cross-checks against the actual code confir
 - The three response types are de-facto already shared: `SAMLLogin` returns an `oidcRedirect`, not `samlPostInitiated` (`saml.go:221`).
 - The SAML cookie Path trap is confirmed: comment says `/api/auth/saml/` (`saml.go:326-328`) but code sets `Path:"/"` (`saml.go:334`).
 - CanonicalVersion3 quirk confirmed: set on step-up (`oidc.go:890,938`), absent on `auth.oidc.login` (`oidc.go:1014-1022`).
-- The ratified plan §2 4d (`PHASE4-TRANSPORT-PLAN.md:266-272`) already commits to a FederationRoutes mount with `SanitizeRedirect` + group-reconcile + audit-sink hooks, and NON-goals #9/#10 (`:327-328`) forbid freezing `auth.*` taxonomy pre-second-consumer.
+- The ratified plan §2 4d (`./PHASE4-TRANSPORT-PLAN.md:266-272`) already commits to a FederationRoutes mount with `SanitizeRedirect` + group-reconcile + audit-sink hooks, and NON-goals #9/#10 (`:327-328`) forbid freezing `auth.*` taxonomy pre-second-consumer.
 
 ---
 
@@ -31,7 +31,7 @@ Full-route's only real edge is maximal code deletion, and its own author dilutes
 
 **The decisive architectural move:** expose the verify helpers *separately* from `Mount`, and hand the entire post-verify tail (upsert → reconcile → mint → audit → project → redirect) to a **single** `OnFederated*` hook. This keeps Barista's least-reusable, most-quirk-laden logic (created-detection, CanonicalVersion3, effective-role projection, email-conflict veto, group-reconcile ordering) **out of tamper's contract surface entirely**, while still deleting the RFC/browser-shaped mechanics. This is the exact opposite failure mode from full-route, which would thread that residue through 6 framework port methods.
 
-**One sanctioned divergence from the ratified plan §1:** the federation upsert/link/mint calls do **not** become `IdentityService` port methods (`PHASE4-TRANSPORT-PLAN.md:98-103`). They stay as ordinary `AuthService` calls *inside the single hook*. Rationale: once the post-verify tail is conceded as app orchestration, promoting those to framework port methods only enlarges tamper's contract for zero framework use. The 4d deps tamper actually needs are just the two registry sources + state secret + cookie config + hooks.
+**One sanctioned divergence from the ratified plan §1:** the federation upsert/link/mint calls do **not** become `IdentityService` port methods (`./PHASE4-TRANSPORT-PLAN.md:98-103`). They stay as ordinary `AuthService` calls *inside the single hook*. Rationale: once the post-verify tail is conceded as app orchestration, promoting those to framework port methods only enlarges tamper's contract for zero framework use. The 4d deps tamper actually needs are just the two registry sources + state secret + cookie config + hooks.
 
 ---
 
@@ -209,7 +209,7 @@ OIDC's golden pinned a JSON wire envelope; SAML's answer is a 302, whose
 bytes the E2E already asserts.
 
 ### 4d-5 — Route-registration collapse + residue confirmation — **collapse PREMISE VOID (A10); the residue confirmation found live decay — see A11**
-- ~~`FederationRoutes.Mount` collapses the `server.go` registration blocks.~~ **Void.** A10: there is no Mount — `AuthRoutes` spans the same public/authed split and solved it by leaving registration to the app, and Espresso has no sub-router while `Use` is positional. The registration blocks are CORRECT as they are; post-lift they simply delegate one level deeper. What survives of 4d-5 is the residue confirmation below — and `server_saml_wiring_test.go` now pins the registration directly, which is the coverage this bullet was reaching for. **Explicitly leave app-side, co-mounted:** `ListOIDCProviders` union+sort (`oidc.go:94-149`), `lookupOIDCRegistry` (`oidc.go:160-172`), `UnlinkIdentity`/`ListIdentities` CRUD (`oidc.go:411-483`) — these carry cross-protocol merge policy and `IdentityRes` presentation, not federation spine. **This is the correction to the plan's overstated "~all of oidc.go + saml.go delete" (`PHASE4-TRANSPORT-PLAN.md:270`)** — expect a materially thinner but non-empty residue.
+- ~~`FederationRoutes.Mount` collapses the `server.go` registration blocks.~~ **Void.** A10: there is no Mount — `AuthRoutes` spans the same public/authed split and solved it by leaving registration to the app, and Espresso has no sub-router while `Use` is positional. The registration blocks are CORRECT as they are; post-lift they simply delegate one level deeper. What survives of 4d-5 is the residue confirmation below — and `server_saml_wiring_test.go` now pins the registration directly, which is the coverage this bullet was reaching for. **Explicitly leave app-side, co-mounted:** `ListOIDCProviders` union+sort (`oidc.go:94-149`), `lookupOIDCRegistry` (`oidc.go:160-172`), `UnlinkIdentity`/`ListIdentities` CRUD (`oidc.go:411-483`) — these carry cross-protocol merge policy and `IdentityRes` presentation, not federation spine. **This is the correction to the plan's overstated "~all of oidc.go + saml.go delete" (`./PHASE4-TRANSPORT-PLAN.md:270`)** — expect a materially thinner but non-empty residue.
 - **Parity:** full route-matrix parity test + container-mode DoD walk boots.
 
 ---
@@ -638,7 +638,7 @@ tamper derives the prefix. The tests moved to the module that owns the
 mechanic (`packages/tamper/espresso/samlroutes_state_test.go`), and both
 mutations above now go red.
 
-**The rule, promoted into the playbook** (TAMPER-DESIGN.md step 5): after
+**The rule, promoted into the playbook** (../design/TAMPER-DESIGN.md step 5): after
 a lift, grep each vacated helper for **non-test** callers — zero
 production callers + live tests means a corpse the tests are propping up.
 Tests live with the mechanic. Prove with a mutation that *compiles*; a

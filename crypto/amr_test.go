@@ -1,6 +1,8 @@
 package crypto
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -59,9 +61,11 @@ func TestIssueAccess_WithoutAMRStaysAsItWas(t *testing.T) {
 	if claims.HasMethod(AMRPassword) {
 		t.Fatal("HasMethod reported a method the token never named")
 	}
-	// The wire has no amr key at all, so an old verifier sees the same payload.
-	if strings.Contains(tok, "amr") {
-		t.Fatal("a token with no amr must not carry the claim on the wire")
+	// The wire must have no amr key at all, so an old verifier sees the same payload.
+	// Asking the TOKEN string would prove nothing: its payload is base64url, so the
+	// literal "amr" cannot appear there whether the claim exists or not. Decode it.
+	if _, ok := amrPayload(t)["amr"]; ok {
+		t.Fatal("a token with no methods must not carry the amr key in its payload")
 	}
 }
 
@@ -114,4 +118,29 @@ func TestAMR_CarriedByEnteredAndImpersonatedMints(t *testing.T) {
 	if !c2.HasMethod(AMRPassword) || c2.HasMethod(AMROTP) {
 		t.Fatalf("impersonated amr = %v, want [pwd]", c2.AMR)
 	}
+}
+
+// amrPayload decodes a signed token's payload into its raw claim map. Needed because any
+// assertion about which KEYS a token carries has to look at the decoded claims — the
+// serialised token is base64url, where claim names do not appear as text.
+func amrPayload(t *testing.T) map[string]any {
+	t.Helper()
+	j := amrJWT(t)
+	tok, err := j.IssueAccess("u-1", tenant.New("acme"), 1_700_000_000, ACRLocalPassword)
+	if err != nil {
+		t.Fatalf("IssueAccess: %v", err)
+	}
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token has %d segments, want 3", len(parts))
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	return claims
 }

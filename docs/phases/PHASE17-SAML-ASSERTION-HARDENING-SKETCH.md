@@ -115,3 +115,39 @@ the unbounded behaviour deliberately rather than by accident.
 - It does not address other libraries' namespace-blind tags; the audit is this one path.
 - It does not remove the allowance automatically when a fix lands — that is a human step,
   named in the CI comment.
+
+---
+
+## Third review — the ACS URL path, one line from the guard
+
+The namespace half of this sketch hardened `ParseAssertion`. A later review of the same
+function found an unrelated defect sitting a few lines away from the code the guard calls.
+
+`BuildProvider` validated `ACSURL` with `url.Parse` alone, and `url.Parse` accepts `"not a url"`
+and `"/relative/acs"`. Those reached `buildPostFormRequest`, which built its request with
+`httptest.NewRequest` — a **test** helper that panics on a target it cannot parse. Probed, not
+reasoned: `BuildProvider` returned a nil error for `"not a url"`, and `ParseAssertion` then
+panicked with `invalid NewRequest arguments`. A misconfigured provider took down its own login
+path, per request, on the unauthenticated ACS route — and `net/http/httptest` was linked into
+the shipped binary through the same call.
+
+Fixed in three places, because any one alone leaves a hole:
+
+1. `BuildProvider` refuses an ACS URL that is not absolute with a host. The configuration error
+   now fails at `New`, which is the rule this package already follows for every other field.
+2. `buildPostFormRequest` states the invariant itself (`!IsAbs() || Host == ""`) and returns an
+   error. This is necessary rather than belt-and-braces: probed, `http.NewRequest` refuses
+   **nothing** — it accepts `""`, `"acs"` and `"/relative/acs"` without complaint — so replacing
+   the test helper removes the panic but not the bad input. Same defence-in-depth shape as the
+   nil-replay check, for the same reason: a hand-built provider bypasses the constructor.
+3. `net/http/httptest` is gone from `saml/`; the request is built with
+   `http.NewRequestWithContext`. (`examples/*` still use it to stand up fake IdPs and fake
+   servers, which is what it is for.)
+
+Mutants, all red: the validation loosened; the invariant dropped; `httptest.NewRequest`
+restored — that last one panics exactly as it did before the fix, which is how we know the
+no-panic test has teeth.
+
+**Left alone deliberately, and worth its own item:** `MetadataURL` is validated the same weak
+way (parse only). Nothing dereferences it during request construction, so nothing panics, but a
+relative metadata URL is equally a configuration error this gate lets through.

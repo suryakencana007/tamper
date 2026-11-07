@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"time"
@@ -86,7 +85,10 @@ func (p *Provider) ParseAssertion(ctx context.Context, samlResponse, relayState,
 	if expectedRequestID != "" {
 		possible = []string{expectedRequestID}
 	}
-	req := buildPostFormRequest(p.SP.AcsURL.String(), samlResponse, relayState)
+	req, err := buildPostFormRequest(ctx, p.SP.AcsURL.String(), samlResponse, relayState)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrAssertionInvalid, err)
+	}
 	assertion, err := p.safeParseResponse(req, possible)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrAssertionInvalid, describeParseError(err))
@@ -181,19 +183,35 @@ func describeParseError(err error) error {
 // URL — the library's parse path expects req.PostForm + req.URL to be
 // populated, and typed form extractors have already consumed the
 // original request body by the time the handler runs.
-func buildPostFormRequest(acsURL, samlResponse, relayState string) *http.Request {
+//
+// It returns an error rather than panicking, and it uses http.NewRequest, not
+// httptest.NewRequest. That test helper PANICS on a target it cannot parse — correct in a
+// test, wrong on an unauthenticated request path, and it was the reason net/http/httptest,
+// a test package, was linked into the shipped binary. An ACS URL that parses but is not
+// absolute (BuildProvider refuses those now) lands here as ErrAssertionInvalid instead.
+func buildPostFormRequest(ctx context.Context, acsURL, samlResponse, relayState string) (*http.Request, error) {
 	body := url.Values{}
 	body.Set("SAMLResponse", samlResponse)
 	if relayState != "" {
 		body.Set("RelayState", relayState)
 	}
-	r := httptest.NewRequest(http.MethodPost, acsURL, io.NopCloser(strings.NewReader(body.Encode())))
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, acsURL, io.NopCloser(strings.NewReader(body.Encode())))
+	if err != nil {
+		return nil, err
+	}
+	// http.NewRequest accepts a relative target without complaint (probed: "not a url",
+	// "/relative/acs" and "" all return nil). It refuses nothing, so the invariant is stated
+	// here instead: BuildProvider rejects these at New, and this refuses a provider that
+	// bypassed the constructor, where the old code panicked one call later.
+	if !r.URL.IsAbs() || r.URL.Host == "" {
+		return nil, fmt.Errorf("acs url %q is not absolute", acsURL)
+	}
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// ParseResponse calls r.ParseForm() internally; pre-populating
 	// PostForm is also accepted.
 	r.PostForm = body
 	r.Form = body
-	return r
+	return r, nil
 }
 
 // Attribute returns the first value of the named SAML attribute

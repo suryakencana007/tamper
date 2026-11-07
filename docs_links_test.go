@@ -108,3 +108,34 @@ func resolveDocLink(page, target string) string {
 	}
 	return filepath.Join(base, target)
 }
+
+// The version the site advertises and the version the docs tell people to install are the same
+// number, and they are the newest RELEASED one in CHANGELOG.md.
+//
+// This exists because the site's version is generated while the two pins below are written by
+// hand, and the release procedure is exactly when a hand-written pin goes stale: cutting
+// 0.13.0 adds a heading, and without this test the install line keeps recommending 0.12.0 to
+// everyone who reads it. It fails on the release PR, which is the moment to fix it.
+func TestDocsVersionPinsMatchTheChangelog(t *testing.T) {
+	changelog, err := os.ReadFile("CHANGELOG.md")
+	if err != nil {
+		t.Fatalf("read CHANGELOG.md: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^## \[(\d+\.\d+\.\d+)\]`).FindSubmatch(changelog)
+	if m == nil {
+		t.Fatal("CHANGELOG.md has no released version heading (## [x.y.z])")
+	}
+	version := string(m[1])
+
+	for _, page := range []string{"README.md", "docs/guide/installation.md"} {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatalf("read %s: %v", page, err)
+		}
+		want := "tamper@v" + version
+		if !strings.Contains(string(body), want) {
+			t.Errorf("%s does not pin %s — the newest released version in CHANGELOG.md is v%s, "+
+				"and a stale pin recommends a version that is not the latest", page, want, version)
+		}
+	}
+}

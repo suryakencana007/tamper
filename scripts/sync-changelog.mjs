@@ -13,6 +13,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 
 const REPO = "https://github.com/suryakencana007/tamper/blob/main";
+const VERSION_FILE = "docs/.vitepress/version.json";
 const source = "CHANGELOG.md";
 const target = "docs/changelog.md";
 
@@ -36,7 +37,42 @@ const page =
   body.replace(/^# Changelog\n+/, "");
 
 writeFileSync(target, page);
+
+// The version the site shows comes from the SAME file, for the same reason the changelog page
+// does: a hand-kept version string is a second truth. Newest RELEASED heading — `[Unreleased]`
+// is not a version, and a site that advertised it would tell visitors to install something
+// that does not exist.
+const version = body.match(/^## \[(\d+\.\d+\.\d+)\]/m);
+if (!version) {
+  console.error("no released version heading (## [x.y.z]) found in CHANGELOG.md");
+  process.exit(1);
+}
+
+// A regex that finds "a version" is not the same as one that finds "the version". Measured, not
+// assumed: renaming the newest heading from `## [0.12.0]` to `## 0.12.0` left the match above
+// perfectly happy — it fell through to 0.11.0 and published a site that advertised a version
+// nobody had released, with exit code 0. So the number is cross-checked against the one other
+// place a version is written, the README's `go get` pin, and a disagreement is fatal.
+//
+// The rule this enforces: the site advertises the newest released version, and the README tells
+// people to install it. If those two ever differ, one of them is wrong and neither is safe to
+// publish — which is the whole point of generating the first from the changelog.
+const pin = readFileSync("README.md", "utf8").match(/tamper@v(\d+\.\d+\.\d+)/);
+if (!pin) {
+  console.error("README.md has no `tamper@vX.Y.Z` pin to check the site version against");
+  process.exit(1);
+}
+if (pin[1] !== version[1]) {
+  console.error(
+    `version disagreement: CHANGELOG.md's newest release is v${version[1]} but README.md pins ` +
+      `v${pin[1]}. One of them is wrong — refusing to publish either.`,
+  );
+  process.exit(1);
+}
+writeFileSync(VERSION_FILE, JSON.stringify({ version: version[1] }, null, 2) + "\n");
+
 console.log(
   `CHANGELOG.md -> ${target} (${body.split("\n").length} lines; ` +
-    `${published} published and ${unpublished} provenance links rewritten)`,
+    `${published} published and ${unpublished} provenance links rewritten; ` +
+    `site version v${version[1]})`,
 );

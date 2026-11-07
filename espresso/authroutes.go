@@ -52,6 +52,12 @@ type IdentityService interface {
 	// token) — the same answer a thing that does not exist gets. An adapter that
 	// simply forwards the tenant is correct, and the examples are that shape.
 	//
+	// `amr`, when the deployment uses a second-factor policy: the adapter must set the
+	// methods each leg actually proved, or the gate cannot ask. On the password leg
+	// `["pwd"]`; on the second leg `["pwd","otp"]` — the leg that verified a code must say
+	// so, because identity cannot tell from the call alone which leg it is serving.
+	// IssueTokensForUser takes them variadically for exactly this.
+	//
 	// TWO THINGS ARE STILL THE ADAPTER'S, and the compiler cannot enforce either:
 	//
 	//   - Me has no Core equivalent that takes a user id and a tenant in one call,

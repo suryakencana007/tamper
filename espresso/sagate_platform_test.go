@@ -64,8 +64,18 @@ func TestPlatformGate_AcceptsAPlatformCredential(t *testing.T) {
 	}
 	// The actor is a service account with NO home tenant. tenant.Single would be a claim about
 	// the deployment, which a platform credential is not entitled to make.
-	if want := audit.ActorService("sa-platform", "provisioner", tenant.ID{}); res.actor != want {
-		t.Errorf("actor = %+v, want %+v — a platform credential has no home tenant", res.actor, want)
+	//
+	// Asserted field by field rather than against audit.ActorService(...): comparing to the
+	// same constructor is circular — a change inside it would satisfy both sides of the
+	// comparison and the test would agree while the stored payload moved.
+	if res.actor.Type != audit.ActorTypeServiceAccount {
+		t.Errorf("actor.Type = %q, want %q", res.actor.Type, audit.ActorTypeServiceAccount)
+	}
+	if res.actor.UserID != "sa-platform" || res.actor.Name != "provisioner" {
+		t.Errorf("actor identity = %q/%q, want sa-platform/provisioner", res.actor.UserID, res.actor.Name)
+	}
+	if res.actor.TenantID != "" {
+		t.Errorf("actor.TenantID = %q, want empty — a platform credential has no home tenant", res.actor.TenantID)
 	}
 	// And it can never be handed to a store as a routed tenant.
 	if res.hasTenant {
@@ -129,6 +139,103 @@ func TestGates_AreMutuallyExclusive(t *testing.T) {
 				platformWithTenant.status, platformWithTenant.body, bad.status, bad.body)
 		}
 	})
+}
+
+// A validator that vouches for nobody is not a credential. Refused by BOTH gates, because the
+// refusal lives in the authentication half they share — and refused BEFORE the handler, so no
+// mutation is attributed to an anonymous service account.
+func TestGates_RefuseACredentialWithNoIdentity(t *testing.T) {
+	// The boundary is deliberately EXACTLY the empty string, and this comment is here so the next
+	// reader does not "fix" it into a trim. A Principal.ID is opaque and app-defined — tamper does
+	// not parse identifiers anywhere else and should not start here — so an ID of "   " is a value
+	// the app's validator vouched for, however unhelpful the log line looks. What is refused is
+	// the ZERO value: the id a validator produces when it forgot to set one, which is the shape
+	// that leaves GetPrincipal reporting false and the audit row nameless.
+	cases := map[string]Principal{
+		"empty":            {},
+		"scope but no id":  {Scope: PrincipalScopePlatform},
+		"tenant but no id": {TenantID: "acme"},
+	}
+	for name, cred := range cases {
+		t.Run(name, func(t *testing.T) {
+			for gateName, mw := range map[string]func(http.Handler) http.Handler{
+				"tenant gate":   RequireServiceAccount(staticValidator(cred)),
+				"platform gate": RequirePlatformServiceAccount(staticValidator(cred)),
+			} {
+				res := runGate(t, mw)
+				if res.status != http.StatusUnauthorized {
+					t.Errorf("%s accepted %+v (status %d) — a credential that identifies nobody "+
+						"must not reach a handler", gateName, cred, res.status)
+				}
+				if res.hasP {
+					t.Errorf("%s stashed an identity-less principal on %s", gateName, name)
+				}
+			}
+		})
+	}
+}
+
+// The footgun, pinned deliberately: the tenant scope's VALUE is the empty string, so an app that
+// spells it out gets a 401 it cannot distinguish from a bad token. Pinned so that nobody later
+// turns "tenant" into an accepted alias — a second spelling is how deny-by-default grows a hole.
+func TestTenantGate_RefusesTheExplicitTenantSpelling(t *testing.T) {
+	res := runGate(t, RequireServiceAccount(staticValidator(
+		Principal{ID: "sa", TenantID: "acme", Scope: PrincipalScope("tenant")})))
+
+	if res.status != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 — leave Scope unset for a tenant credential", res.status)
+	}
+}
+
+// SCIM mounted under the platform gate: a platform credential has no tenant, so there is no
+// tenant to hand a store. Before the platform gate existed this was unreachable — tenantOfPrincipal
+// resolved through FromStored, which always answers a VALID id. The fix is that the misconfiguration
+// says so instead of quietly passing an unset tenant down to fourteen store call sites.
+func TestScimTenant_DeniesUnderThePlatformGate(t *testing.T) {
+	var (
+		reached   bool
+		recovered any
+		got       tenant.ID
+	)
+	h := RequirePlatformServiceAccount(staticValidator(
+		Principal{ID: "sa-platform", Scope: PrincipalScopePlatform}))(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() { recovered = recover() }()
+			got = scimTenant(r.Context())
+			reached = true
+			w.WriteHeader(http.StatusOK)
+		}))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/scim/v2/Users", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	h.ServeHTTP(rec, req)
+
+	if recovered == nil {
+		t.Fatalf("scimTenant returned %q (Valid=%v) and the handler continued (status %d, reached=%v); "+
+			"an unset tenant must not be handed to a store", got, got.Valid(), rec.Code, reached)
+	}
+}
+
+// The other side: SCIM under its OWN gate, single-tenant included, still resolves.
+func TestScimTenant_ResolvesUnderTheTenantGate(t *testing.T) {
+	for name, cred := range map[string]Principal{
+		"multi-tenant":  {ID: "sa", TenantID: "acme"},
+		"single-tenant": {ID: "sa"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got tenant.ID
+			h := RequireServiceAccount(staticValidator(cred))(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = scimTenant(r.Context()) }))
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/scim/v2/Users", nil)
+			req.Header.Set("Authorization", "Bearer tok")
+			h.ServeHTTP(rec, req)
+
+			if !got.Valid() {
+				t.Errorf("scimTenant = %q (Valid=false) for a tenant credential", got)
+			}
+		})
+	}
 }
 
 // A platform credential that also names a tenant is ambiguous, and ambiguity on a credential is

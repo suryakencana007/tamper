@@ -25,6 +25,11 @@ const (
 	// PrincipalScopeTenant is the ZERO VALUE, so every credential that predates this field —
 	// and every app that never sets it — keeps exactly its old authority: it acts inside
 	// Principal.TenantID, and nowhere else.
+	//
+	// Its value is the empty string, which makes an explicit `Scope: "tenant"` an UNKNOWN scope
+	// and a 401 indistinguishable from a bad token. That is the intended reading (leave it
+	// unset), not an oversight, and the test suite pins it so nobody "fixes" it into an alias:
+	// a second accepted spelling is how a deny-by-default check grows a hole.
 	PrincipalScopeTenant PrincipalScope = ""
 
 	// PrincipalScopePlatform is a credential valid ONLY on platform routes. It must carry no
@@ -128,6 +133,20 @@ func validateServiceAccount(w http.ResponseWriter, r *http.Request, v ServiceAcc
 			return Principal{}, false
 		}
 		WriteSCIMError(w, http.StatusInternalServerError, "service-account validation failed")
+		return Principal{}, false
+	}
+	// A credential with no identity is not a credential. Refusing it here, in the one place both
+	// gates authenticate, is what keeps the invariant the gates advertise: a request that
+	// reaches a handler HAS a principal. Without it a validator returning (Principal{}, nil)
+	// passes the gate, leaves GetPrincipal reporting false, and attributes the mutation to a
+	// service account with no UserID and no Name — an authenticated request that is anonymous
+	// everywhere downstream, and unattributable in the audit log.
+	//
+	// Programmer error on the validator's side, and a 401 (not a 500) because the caller's
+	// credential is the thing that did not identify anybody; it is also the same envelope as a
+	// bad token, so nothing new is learnable from it.
+	if principal.ID == "" {
+		WriteSCIMError(w, http.StatusUnauthorized, "invalid bearer token")
 		return Principal{}, false
 	}
 	return principal, true

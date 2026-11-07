@@ -21,7 +21,14 @@ All notable changes to tamper are recorded here. Versions follow
   cannot tell "wrong scope" from "wrong secret". Scope is **deny-by-default**: an unknown scope
   satisfies neither gate. A platform credential must carry **no home tenant** (an ambiguous
   credential is refused), and `tenantOfPrincipal` never answers a tenant for one, so it can
-  never reach a store. Its audit actor is a service account with an empty home tenant — not
+  never reach a store. Two holes a review of that work found and closed: a credential whose
+  validator returns an **empty ID** is refused by both gates in the shared authentication half
+  (it used to pass the gate, leave `GetPrincipal` reporting false, and attribute the mutation to
+  a nameless service account), and **SCIM mounted under the platform gate now says so instead of
+  handing a store an unset tenant** — a path the platform gate itself introduced, since
+  `tenantOfPrincipal` previously always answered a valid id. "Identity-less" is refused; an
+  app-defined ID that merely looks empty to a human is not, because tamper does not parse
+  identifiers. Its audit actor is a service account with an empty home tenant — not
   `tenant.Single`, which would be a claim about the deployment; the stored payload is unchanged
   either way, because making the scope a distinct hashed field would change the canonical
   payload and that is its own decision. **Additive**: `Scope`'s zero value is today's tenant

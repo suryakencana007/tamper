@@ -33,6 +33,14 @@ table, owns a cookie brand, or freezes your audit vocabulary.
 > [`./docs/migrations/MIGRATION-v0.4.md`](./docs/migrations/MIGRATION-v0.4.md) first; v0.5.0 changed one thing worth
 > reading (`VerifyAccess` now denies an unset tenant id) and v0.6.0 is drop-in.
 
+## Docs
+
+The guide, the examples, the architecture and the changelog are published at
+**https://suryakencana007.github.io/tamper/** — built from this repository's
+`docs/` by VitePress, with the changelog generated from `CHANGELOG.md` so the two cannot
+disagree. The design record (ADRs, migrations, design, request flows) is part of the same
+site; the working record (phase sketches, tech-debt) deliberately is not.
+
 ## Install
 
 ```sh

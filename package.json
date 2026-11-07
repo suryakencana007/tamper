@@ -1,0 +1,19 @@
+{
+  "name": "tamper-docs",
+  "version": "0.13.0",
+  "description": "tamper documentation site",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "docs:dev": "bun run docs:sync && vitepress dev docs",
+    "docs:build": "bun run docs:sync && vitepress build docs",
+    "docs:preview": "vitepress preview docs",
+    "docs:sync": "node scripts/sync-changelog.mjs"
+  },
+  "dependencies": {
+    "vitepress": "^1.5.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

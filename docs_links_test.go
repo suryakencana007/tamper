@@ -12,11 +12,22 @@ import (
 // migrations,phases,tasks} once, and a move plus a hand-rewrite is exactly the operation that
 // leaves a link pointing at a file nobody moved. This test is the guard against the next
 // reorganisation, and against a link added to a document that already sat in a subfolder.
+//
+// It also runs over the published site in docs/, where links follow VitePress's rules: a route
+// may be absolute ("/guide/tenancy"), and a relative link may omit the extension ("./tenancy").
+// Those are resolved the way VitePress resolves them — which means the guard is STRONGER than
+// it was, not weaker: previously every site link would have failed as a missing file.
 func TestDocsLinksResolve(t *testing.T) {
 	// Known dangling before the reorganisation: a JSON artifact the Phase 7 sketch mentions
 	// and that has never existed in the tree. Listed rather than silently skipped so that a
 	// NEW dangling link cannot hide behind the same allowance.
 	allowed := map[string]bool{"phase7-issues.json": true}
+
+	// Build-generated pages: they exist in the deployed site but not in the tree, because the
+	// site's changelog is GENERATED from CHANGELOG.md by scripts/sync-changelog.mjs rather than
+	// copied — two copies is two things to forget. Named individually so a typo in a link to
+	// any of them still fails: the guard knows this one page, not a category of pages.
+	generated := map[string]bool{"changelog.md": true}
 
 	link := regexp.MustCompile(`\]\(([^)#\s]+)(#[^)]*)?\)`)
 	checked := 0
@@ -26,7 +37,7 @@ func TestDocsLinksResolve(t *testing.T) {
 			return err
 		}
 		if info.IsDir() {
-			if info.Name() == ".git" || info.Name() == "node_modules" {
+			if info.Name() == ".git" || info.Name() == "node_modules" || info.Name() == ".vitepress" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -45,10 +56,10 @@ func TestDocsLinksResolve(t *testing.T) {
 				continue
 			}
 			checked++
-			if allowed[target] {
+			if allowed[target] || generated[filepath.Base(target)+".md"] {
 				continue
 			}
-			resolved := filepath.Join(filepath.Dir(path), target)
+			resolved := resolveDocLink(path, target)
 			if _, statErr := os.Stat(resolved); statErr != nil {
 				t.Errorf("%s: link %q does not resolve (looked for %s)", path, target, resolved)
 			}
@@ -68,4 +79,32 @@ func TestDocsLinksResolve(t *testing.T) {
 	if checked < 30 {
 		t.Fatalf("checked only %d links — the walk is not seeing the documents", checked)
 	}
+}
+
+// resolveDocLink turns a link in `page` into the file it must exist as.
+//
+// Two link shapes, and the site's config is the reason both are here:
+//   - an absolute route ("/guide/tenancy"), which VitePress resolves inside `docs/` after
+//     stripping the configured base;
+//   - a relative path that may omit the extension ("./tenancy"), which VitePress resolves to
+//     `tenancy.md` or `tenancy/index.md`.
+//
+// A caller that gets a non-existent path back reports it, so the failure message names the
+// file that was looked for rather than the raw link.
+func resolveDocLink(page, target string) string {
+	base := filepath.Dir(page)
+	if strings.HasPrefix(target, "/") {
+		base = "docs"
+		target = strings.TrimPrefix(strings.TrimPrefix(target, "/tamper/"), "/")
+	}
+	for _, candidate := range []string{target, target + ".md", filepath.Join(target, "index.md")} {
+		if candidate == "" {
+			continue
+		}
+		resolved := filepath.Join(base, candidate)
+		if _, err := os.Stat(resolved); err == nil {
+			return resolved
+		}
+	}
+	return filepath.Join(base, target)
 }

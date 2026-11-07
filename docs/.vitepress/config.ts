@@ -1,0 +1,122 @@
+import { defineConfig } from "vitepress";
+
+// The site lives beside the repository's design record rather than in a directory of its own.
+// Everything under `docs/` that is user-facing becomes a page; the working record (phase
+// sketches, tech-debt, review notes) is excluded, because it is written for the people doing
+// the work, not for someone reading the docs.
+export default defineConfig({
+  title: "tamper",
+  description:
+    "Multi-tenant auth for Go: tenancy, RBAC, sessions, OIDC/SAML, SCIM and a tamper-evident audit log, behind ports your app implements.",
+  base: "/tamper/",
+  cleanUrls: true,
+  lastUpdated: true,
+
+  head: [
+    ["meta", { name: "theme-color", content: "#0f766e" }],
+    ["meta", { property: "og:type", content: "website" }],
+    ["meta", { property: "og:title", content: "tamper | multi-tenant auth for Go" }],
+    [
+      "meta",
+      {
+        property: "og:url",
+        content: "https://suryakencana007.github.io/tamper/",
+      },
+    ],
+  ],
+
+  markdown: {
+    lineNumbers: true,
+  },
+
+  // Deliberately NOT `ignoreDeadLinks: true`. A broken link is a real defect in a docs site,
+  // and the repository already learned this lesson on the code side: a guard that cannot fail
+  // is worse than no guard — the build found fourteen real ones the first time it ran.
+  //
+  // What is exempt is a NAMED list of link shapes, all of them provenance rather than
+  // navigation: the design record cites the working record (phase sketches, tech-debt) and
+  // files outside the site (the examples, the README) because that is where the reasoning
+  // lives. Those links are still checked — the repository's own TestDocsLinksResolve walks
+  // them against the tree, where they do resolve — so they cannot rot; they simply cannot be
+  // pages here. A pattern is listed by shape and prefix, never as "ignore unknown failures".
+  ignoreDeadLinks: [
+    /^\.\/\.\.\/(phases|tasks)\//, // the working record, linked for provenance
+    /^\.\/\.\.\/\.\.\/(examples|README)/, // outside docs/ by design
+    /^changelog\.md$/, // generated page's own back-links, rewritten by the generator
+  ],
+
+  // Working record, not documentation: excluded from the build entirely. The split sketch is
+  // excluded for the same reason as the phases — it is a proposal, not a page a reader needs.
+  srcExclude: ["phases/**", "tasks/**", "README.md", "design/REPO-SPLIT-SKETCH.md"],
+
+  themeConfig: {
+    siteTitle: "tamper",
+
+    nav: [
+      { text: "Guide", link: "/guide/", activeMatch: "/guide/" },
+      { text: "Examples", link: "/examples/", activeMatch: "/examples/" },
+      { text: "Architecture", link: "/design/TAMPER-DESIGN", activeMatch: "/design/" },
+      { text: "Decisions", link: "/adrs/", activeMatch: "/adrs/" },
+      { text: "Changelog", link: "/changelog", activeMatch: "/changelog" },
+    ],
+
+    sidebar: [
+      {
+        text: "Guide",
+        items: [
+          { text: "What tamper is", link: "/guide/" },
+          { text: "Install and run", link: "/guide/installation" },
+          { text: "Tenancy", link: "/guide/tenancy" },
+          { text: "Authorization", link: "/guide/authorization" },
+          { text: "Identity and factors", link: "/guide/identity" },
+          { text: "Federation: OIDC and SAML", link: "/guide/federation" },
+          { text: "Provisioning: SCIM", link: "/guide/scim" },
+          { text: "Audit", link: "/guide/audit" },
+        ],
+      },
+      {
+        text: "Examples",
+        items: [{ text: "The examples, and what each proves", link: "/examples/" }],
+      },
+      {
+        text: "Architecture",
+        items: [
+          { text: "Design", link: "/design/TAMPER-DESIGN" },
+          { text: "Request flows", link: "/design/flow" },
+        ],
+      },
+      {
+        text: "Decisions",
+        items: [{ text: "ADRs", link: "/adrs/" }],
+      },
+      {
+        text: "Upgrading",
+        items: [
+          { text: "0.9.0 (breaking: the tenant is in every signature)", link: "/migrations/MIGRATION-v0.9" },
+          { text: "0.7.0 (breaking)", link: "/migrations/MIGRATION-v0.7" },
+          { text: "0.4.0 (breaking: multi-tenancy)", link: "/migrations/MIGRATION-v0.4" },
+        ],
+      },
+      {
+        text: "Release",
+        items: [{ text: "Changelog", link: "/changelog" }],
+      },
+    ],
+
+    socialLinks: [
+      { icon: "github", link: "https://github.com/suryakencana007/tamper" },
+    ],
+
+    editLink: {
+      pattern: "https://github.com/suryakencana007/tamper/edit/main/docs/:path",
+      text: "Edit this page on GitHub",
+    },
+
+    search: { provider: "local" },
+
+    footer: {
+      message: "Every engine sits behind a port your application implements.",
+      copyright: "MIT licensed",
+    },
+  },
+});

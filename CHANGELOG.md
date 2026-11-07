@@ -7,6 +7,33 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
+## [Unreleased]
+
+### Added
+
+- **A platform service account — TD-12.** A machine credential had exactly one tenant, so
+  platform-level automation (provisioning a tenant, syncing across tenants) had no principal it
+  could use: the options were one credential per tenant, a human admin session, or bypassing the
+  gate and losing the audit attribution. `espresso.RequirePlatformServiceAccount` is a second
+  gate, and `Principal.Scope` says what a credential is valid for. The two gates are **mutually
+  exclusive** — a platform credential is refused by `RequireServiceAccount` and a tenant
+  credential by the platform gate, both with the same 401 and body as a bad token, so a probe
+  cannot tell "wrong scope" from "wrong secret". Scope is **deny-by-default**: an unknown scope
+  satisfies neither gate. A platform credential must carry **no home tenant** (an ambiguous
+  credential is refused), and `tenantOfPrincipal` never answers a tenant for one, so it can
+  never reach a store. Two holes a review of that work found and closed: a credential whose
+  validator returns an **empty ID** is refused by both gates in the shared authentication half
+  (it used to pass the gate, leave `GetPrincipal` reporting false, and attribute the mutation to
+  a nameless service account), and **SCIM mounted under the platform gate now says so instead of
+  handing a store an unset tenant** — a path the platform gate itself introduced, since
+  `tenantOfPrincipal` previously always answered a valid id. "Identity-less" is refused; an
+  app-defined ID that merely looks empty to a human is not, because tamper does not parse
+  identifiers. Its audit actor is a service account with an empty home tenant — not
+  `tenant.Single`, which would be a claim about the deployment; the stored payload is unchanged
+  either way, because making the scope a distinct hashed field would change the canonical
+  payload and that is its own decision. **Additive**: `Scope`'s zero value is today's tenant
+  credential, and an unscoped credential behaves exactly as before.
+
 ## [0.12.0] — 2026-11-07
 
 **A second factor you can actually demand per role — and two SAML fixes that a review found
@@ -106,9 +133,9 @@ satisfies an interface declared with the old signature.
   for the literal, the constructor, the option, both sides of the boundary, and each of those
   four mutants — all four now bite.
 
-**What is left.** TD-13 is closed here — see [`./docs/tasks/tech-debt.md`](./docs/tasks/tech-debt.md).
-What remains is **TD-12** (a service account has one tenant), which needs a product decision,
-and TD-27, which is Barista's migration.
+**What is left.** TD-13 closed in 0.12.0 and **TD-12** closes in the next release — both in
+[`./docs/tasks/tech-debt.md`](./docs/tasks/tech-debt.md). What remains after that is TD-27,
+which is Barista's migration.
 
 ## [0.11.0] — 2026-11-05
 

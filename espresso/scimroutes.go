@@ -125,7 +125,28 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 // is the single tenant.
 func scimTenant(ctx context.Context) tenant.ID {
 	MustGetPrincipal(ctx) // the panic, with its message, for a route mounted outside the gate
-	id, _ := tenantOfPrincipal(ctx)
+	id, ok := tenantOfPrincipal(ctx)
+	if !ok || !id.Valid() {
+		// Reachable by mounting this surface under RequirePlatformServiceAccount, where the
+		// credential has no home tenant by design and tenantOfPrincipal answers none.
+		//
+		// Before the platform gate existed this could not happen: tenantOfPrincipal resolves
+		// through FromStored, which answers Single for "" and New(v) otherwise, so the value
+		// was always a VALID ID. The platform gate introduced the only way to reach an unset
+		// one, and an unset tenant is not something to hand a store and hope — the app's store
+		// may treat it as "no filter". Panicking keeps the invariant this function already
+		// relied on: every store call below gets a resolved tenant, or the route was
+		// misconfigured and says so.
+		//
+		// WHICH HALF OF THIS CONDITION IS ACTUALLY LOAD-BEARING, measured rather than assumed:
+		// `!ok` is — it is what fires when the platform credential reaches here, and dropping it
+		// goes red. `!id.Valid()` is NOT reachable today, because tenantOfPrincipal always
+		// answers a valid id when it answers one at all, and a mutant that removes just that
+		// conjunct SURVIVES. It is kept as the guard for the day a resolver returns (zero, true),
+		// and it is documented as unproven rather than counted as a proof.
+		panic("tamper/espresso: SCIM route mounted under the platform gate — " +
+			"a platform credential has no tenant to scope a store call with")
+	}
 	return id
 }
 

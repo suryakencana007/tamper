@@ -78,6 +78,17 @@ Barista's migration.
 
 ### Fixed
 
+- **`saml`: a malformed `acs_url` is refused at construction instead of panicking per
+  request.** `url.Parse` accepts `"not a url"` and `"/relative/acs"`, and those reached
+  `buildPostFormRequest`, which built its request with `httptest.NewRequest` — a **test** helper
+  that panics on a target it cannot parse. Probed, not reasoned: `BuildProvider` returned a nil
+  error and `ParseAssertion` then panicked. A misconfigured provider took down its own login path
+  on the unauthenticated ACS route, and `net/http/httptest` was linked into the shipped binary
+  through the same call. Now: the constructor requires an absolute ACS URL with a host (the
+  config error fails at `New`), `buildPostFormRequest` states the invariant itself and returns an
+  error — because `http.NewRequest` refuses nothing, so removing the test helper removes the
+  panic but not the bad input — and the request is built with `http.NewRequestWithContext`.
+  Three mutants, all red, including restoring the test helper (it panics exactly as before).
 - **`saml`: the 1 MiB response bound is now impossible to lose.** It was provable but not
   proven: both of its tests built a `Provider` literal with the limit set by hand, so deleting
   the default from `BuildProvider` — leaving the field at zero, which meant **unbounded** — kept

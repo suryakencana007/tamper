@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -78,7 +79,10 @@ func TestParsedAssertion_AuthnTimeAndACR(t *testing.T) {
 }
 
 func TestBuildPostFormRequest(t *testing.T) {
-	r := buildPostFormRequest("https://sp.example.test/api/auth/saml/acs/abc", "AAAA", "/projects")
+	r, err := buildPostFormRequest(context.Background(), "https://sp.example.test/api/auth/saml/acs/abc", "AAAA", "/projects")
+	if err != nil {
+		t.Fatalf("buildPostFormRequest: %v", err)
+	}
 	if got := r.PostForm.Get("SAMLResponse"); got != "AAAA" {
 		t.Errorf("PostForm[SAMLResponse] = %q, want AAAA", got)
 	}
@@ -89,7 +93,10 @@ func TestBuildPostFormRequest(t *testing.T) {
 		t.Errorf("URL.Path = %q", r.URL.Path)
 	}
 	// Empty relay state omits the key entirely.
-	r = buildPostFormRequest("https://sp.example.test/acs", "BBBB", "")
+	r, err = buildPostFormRequest(context.Background(), "https://sp.example.test/acs", "BBBB", "")
+	if err != nil {
+		t.Fatalf("buildPostFormRequest: %v", err)
+	}
 	if _, ok := r.PostForm["RelayState"]; ok {
 		t.Error("empty RelayState must not be set")
 	}

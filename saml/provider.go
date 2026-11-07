@@ -157,6 +157,14 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 	if err != nil {
 		return nil, fmt.Errorf("saml: provider %q: parse acs_url: %w", cfg.ID, err)
 	}
+	// Parsing is not enough: url.Parse accepts "not a url" and "/acs", neither of which is an
+	// ACS. They used to reach the request path and panic in httptest.NewRequest — a
+	// misconfiguration failing per request instead of at New, which is the rule this package
+	// already follows for every other field it validates.
+	if !acs.IsAbs() || acs.Host == "" {
+		return nil, fmt.Errorf("saml: provider %q: acs_url must be an absolute URL with a host, got %q",
+			cfg.ID, cfg.ACSURL)
+	}
 	if cfg.MetadataURL == "" {
 		return nil, fmt.Errorf("saml: provider %q: metadata_url is required", cfg.ID)
 	}

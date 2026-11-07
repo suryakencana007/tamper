@@ -68,6 +68,13 @@ func (c *Core) secondFactorRequiredAtLogin(ctx context.Context, tenantID tenant.
 	if c.secondFactor == nil {
 		return c.totpRequired
 	}
+	// The process-wide switch is a FLOOR, not an alternative: with a policy wired it must
+	// still be asked, or a deployment that turned 2FA on for everyone would have it
+	// silently switched off for every user the policy happens to exempt. Found by a probe
+	// of exactly that combination.
+	if c.totpRequired {
+		return true
+	}
 	req, err := c.secondFactor.RequiredFor(ctx, tenantID, userID)
 	if err != nil {
 		// Deny, and say so in the error chain rather than silently: this is the one

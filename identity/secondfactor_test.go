@@ -140,3 +140,33 @@ func TestSecondFactor_PanicsOnNilPolicy(t *testing.T) {
 	}()
 	_, _ = sfCore(t, WithSecondFactorPolicy(nil))
 }
+
+// The process-wide switch is a FLOOR. A policy may exempt users from a requirement IT
+// imposes; it may not switch off one the deployment already made for everyone.
+func TestSecondFactor_ProcessWideSwitchIsAFloor(t *testing.T) {
+	ctx := context.Background()
+	c, _ := sfCore(t,
+		WithTOTPRequired(true),
+		WithSecondFactorPolicy(sfPolicy(func(context.Context, tenant.ID, string) (SecondFactorRequirement, error) {
+			return SecondFactorRequirement{AtLogin: false}, nil
+		})))
+	register(t, c, "a@acme.com")
+
+	if _, _, err := c.Login(ctx, tenant.New("acme"), "a@acme.com", "correct-horse-battery"); !errors.Is(err, ErrTOTPRequired) {
+		t.Fatalf("err = %v, want ErrTOTPRequired — WithTOTPRequired(true) must not be "+
+			"overridden by a policy that exempts the user", err)
+	}
+}
+
+// And the other direction: the policy adds a requirement the switch never made.
+func TestSecondFactor_PolicyAddsAboveTheFloor(t *testing.T) {
+	ctx := context.Background()
+	c, _ := sfCore(t, WithSecondFactorPolicy(sfPolicy(func(context.Context, tenant.ID, string) (SecondFactorRequirement, error) {
+		return SecondFactorRequirement{AtLogin: true}, nil
+	})))
+	register(t, c, "a@acme.com")
+
+	if _, _, err := c.Login(ctx, tenant.New("acme"), "a@acme.com", "correct-horse-battery"); !errors.Is(err, ErrTOTPRequired) {
+		t.Fatalf("err = %v, want ErrTOTPRequired from the policy alone", err)
+	}
+}

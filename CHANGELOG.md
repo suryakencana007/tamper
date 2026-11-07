@@ -16,9 +16,10 @@ All notable changes to tamper are recorded here. Versions follow
   not learn what a role is. `SecondFactorRequirement{AtLogin, ForActions, GraceUntil}` answers
   three questions: block the password login until enrolment (model A), let the routes demand
   a step-up (model B), and postpone the block until a deadline (model C). Wired with
-  `WithSecondFactorPolicy`; a `Core` without one behaves exactly as before, `WithTOTPRequired`
-  keeps its meaning, and **a policy that errors denies** — an unreadable policy must never open
-  a login. Sessions now name their methods: `["pwd"]` from a password login, `["pwd","otp"]`
+  `WithSecondFactorPolicy`; a `Core` without one behaves exactly as before, and **a policy that
+  errors denies** — an unreadable policy must never open a login.
+  `WithTOTPRequired` is a **floor**: a policy may add requirements but cannot exempt a user
+  from one the deployment already made for everyone (verified by a test in both directions). Sessions now name their methods: `["pwd"]` from a password login, `["pwd","otp"]`
   from the enrolment ceremony (see `amr` above).
 
 

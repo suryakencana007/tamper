@@ -126,9 +126,9 @@ satisfies an interface declared with the old signature.
   for the literal, the constructor, the option, both sides of the boundary, and each of those
   four mutants — all four now bite.
 
-**What is left.** TD-13 is closed here — see [`./docs/tasks/tech-debt.md`](./docs/tasks/tech-debt.md).
-What remains is **TD-12** (a service account has one tenant), which needs a product decision,
-and TD-27, which is Barista's migration.
+**What is left.** TD-13 closed in 0.12.0 and **TD-12** closes in the next release — both in
+[`./docs/tasks/tech-debt.md`](./docs/tasks/tech-debt.md). What remains after that is TD-27,
+which is Barista's migration.
 
 ## [0.11.0] — 2026-11-05
 

@@ -9,16 +9,23 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.12.0 — a second factor you can demand per role.** `identity.SecondFactorPolicy`
-> is a port your app implements, so "platform admins must use 2FA, customers need not" is a
-> mapping you own rather than a process-wide switch. Sessions now say what they proved: `amr`
-> names the **methods** (`pwd`, `otp`, `saml`) while `acr` keeps meaning the **policy class**,
-> and `espresso.StepUpRequireMethods` lets `RequireFreshAuth` require one — a locally-enrolled
-> TOTP session can finally satisfy step-up. **v0.12.0 is additive** for every call, with one
-> source-level break: a variadic mint no longer satisfies an interface declared with the old
-> signature (see the changelog). It also carries two SAML fixes — a `<NameID>` outside the
-> assertion namespace now invalidates the assertion (GO-2026-6909), and the response is bounded
-> at 1 MiB — plus the docs moved into [`./docs`](./docs).
+> **Status: v0.13.0 — automation that acts across tenants, with a credential that cannot read
+> them at random.** `espresso.RequirePlatformServiceAccount` accepts a machine credential whose
+> `Scope` is `platform`: valid only on platform routes, carrying no home tenant, and **mutually
+> exclusive** with the tenant gate — a tenant credential is refused there and a platform
+> credential here, both with the same 401 as a bad token, so a probe cannot tell which check it
+> failed. Unknown scopes satisfy neither gate. **v0.13.0 is additive**: `Scope`'s zero value is
+> today's tenant credential.
+>
+> v0.12.0 gave you a second factor you can demand **per role** (`identity.SecondFactorPolicy`),
+> sessions that say what they proved (`amr` beside `acr`), and `espresso.StepUpRequireMethods` so
+> a TOTP session can satisfy step-up. v0.12.0 is additive for every call, with one source-level
+> break: a variadic mint no longer satisfies an interface declared with the old signature.
+>
+> The 0.12.0 line also carries the SAML hardening: a `<NameID>` outside the assertion namespace
+> invalidates the assertion (GO-2026-6909), responses are bounded at 1 MiB, and a malformed
+> `acs_url` is refused at construction instead of panicking per request. The docs now live at
+> **https://suryakencana007.github.io/tamper/**, generated from this repository's `docs/`.
 >
 > Coming from 0.8.0? **v0.9.0 was breaking** — the tenant is in every signature that names
 > a user or a session: follow [`./docs/migrations/MIGRATION-v0.9.md`](./docs/migrations/MIGRATION-v0.9.md).
@@ -44,7 +51,7 @@ site; the working record (phase sketches, tech-debt) deliberately is not.
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.12.0
+go get github.com/suryakencana007/tamper@v0.13.0
 ```
 
 ## What's shipped

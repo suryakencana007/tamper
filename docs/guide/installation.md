@@ -9,7 +9,7 @@
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.12.0
+go get github.com/suryakencana007/tamper@v0.13.0
 ```
 
 The latest version is always named at the top of the [changelog](../changelog). Pin it:

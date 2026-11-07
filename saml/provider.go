@@ -90,7 +90,9 @@ type Provider struct {
 	SP *crewjamsaml.ServiceProvider
 
 	// maxResponseBytes bounds the SAML response ParseAssertion will look at. Zero means
-	// unbounded (Provider literals in tests); BuildProvider sets the documented default.
+	// DefaultMaxSAMLResponseBytes — the zero value is the SAFE one, so a Provider literal
+	// cannot silently restore the unbounded parse. Negative means unbounded, and only
+	// WithMaxResponseBytesUnbounded produces it.
 	maxResponseBytes int
 
 	// replay is the single-use ledger ParseAssertion consumes each
@@ -134,8 +136,6 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("saml: provider id is required")
 	}
-	// The documented bound; a caller can raise or disable it with WithMaxResponseBytes.
-	maxResponseBytes := DefaultMaxSAMLResponseBytes
 	if replay == nil {
 		return nil, fmt.Errorf("saml: provider %q: an AssertionReplayStore is required; "+
 			"pass saml.NewMemAssertionReplayStore() for one process, a shared store for "+
@@ -273,7 +273,9 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 	// cfg.SkewTolerance rides along as a forensic record (rebuilds may
 	// inspect it) but is not threaded onto the SP struct.
 	_ = cfg.SkewTolerance
-	p := &Provider{Config: cfg, SP: sp, replay: replay, maxResponseBytes: maxResponseBytes}
+	// The bound is resolved in ParseAssertion (responseLimit), not here: applying it in this
+	// constructor only was the defect — a Provider literal got unbounded parsing instead.
+	p := &Provider{Config: cfg, SP: sp, replay: replay}
 	for _, o := range opts {
 		if o != nil {
 			o(p)

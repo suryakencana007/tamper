@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/suryakencana007/tamper/tenant"
@@ -90,9 +89,3 @@ func (c *Core) secondFactorRequiredAtLogin(ctx context.Context, tenantID tenant.
 func amrForLogin() []string { return []string{"pwd"} }
 
 func amrForSecondFactor() []string { return []string{"pwd", "otp"} }
-
-// secondFactorPolicySet reports whether a policy is wired, for the boot-time check that a
-// deployment asking for one actually got it.
-func (c *Core) secondFactorPolicySet() bool { return c.secondFactor != nil }
-
-var errSecondFactorPolicyUnset = fmt.Errorf("identity: no SecondFactorPolicy configured")

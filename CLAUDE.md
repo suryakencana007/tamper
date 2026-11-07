@@ -9,26 +9,26 @@ type (`tenant.ID`, zero value invalid; sketch §8 item 7), the *InTenant
 surface is folded into the base ports, and Barista is migrated with CI green.
 
 The three deferred verifications were all closed on a machine with Barista
-and Docker (`PHASE7-HANDOFF.md` §0): boot-verify on the real audit DB, the
+and Docker (`./docs/phases/PHASE7-HANDOFF.md` §0): boot-verify on the real audit DB, the
 Docker deploy-artifact walk, and Barista CI — which was RED on first contact
 and caught a real invariant-1 regression (#20, fixed at the shared boundary
 with `sqltypes.Blob`, then made structurally impossible by moving the
 generated layer under `audit/internal/`).
 
-Releases: `MIGRATION-v0.4.md` + `CHANGELOG.md` govern the upgrade. v0.3.0
+Releases: `./docs/migrations/MIGRATION-v0.4.md` + `CHANGELOG.md` govern the upgrade. v0.3.0
 tags the last additive commit; v0.4.0 is the flip.
 
 Three documents govern the phase. Read them before touching `identity`,
 `crypto/jwt.go`, `oidc`, `saml`, `scim`, `espresso` or `audit`:
 
-- **`PHASE7-MULTITENANCY-SKETCH.md`** — the design freeze. Why the tenant axis
+- **`./docs/phases/PHASE7-MULTITENANCY-SKETCH.md`** — the design freeze. Why the tenant axis
   is absent, the five library-owned blockers, the three forks as decided, and
   the seven invariants. Status is DESIGN FREEZE: no code lands that contradicts
   it without amending it first.
-- **`PHASE7-AGENT-MANIFEST.md`** — the executable spec, one block per slice:
+- **`./docs/phases/PHASE7-AGENT-MANIFEST.md`** — the executable spec, one block per slice:
   `reads` / `writes` / signatures / invariants / tests / mutation proof / DoD.
 
-- **`PHASE7-HANDOFF.md`** — what could not be verified here, what stood in for
+- **`./docs/phases/PHASE7-HANDOFF.md`** — what could not be verified here, what stood in for
   it, and the exact commands to close it on a machine with Barista + Docker.
   Also the sharp edges the phase hit (sqlc truncating SQL around non-ASCII;
   `DEFAULT` not applying when sqlc names every column; `-run` quoting through
@@ -71,7 +71,7 @@ stop before writing code.
    (TD-27).
 
    Shims that still exist from before this rule are listed in TD-28 of
-   `tech-debt.md`. Remove them one package per change (rule 7).
+   `./docs/tasks/tech-debt.md`. Remove them one package per change (rule 7).
 2. Deny-by-default extends to tenancy. Absent, empty or mismatched tenant
    resolves to deny; no error return may be read as allow.
 3. Cross-tenant misses are **404, never 403** — a deny and a miss must be
@@ -95,14 +95,14 @@ mutation proofs because of it. Do not weaken them.
 
 ### Phase 8 — platform admin (started 2026-10-05)
 
-`PHASE8-PLATFORM-ADMIN-SKETCH.md` governs "a user of one tenant acts inside
+`./docs/phases/PHASE8-PLATFORM-ADMIN-SKETCH.md` governs "a user of one tenant acts inside
 another": `identity.MembershipStore`, `Core.EnterTenant`, the `htid` claim.
 Read it before touching them. Two things are decided and not to be loosened in
 passing: entering gives an access token only (no refresh session), and no
 token is ever valid for more than one tenant. `RequireTenant` refuses an
 entered token; a route takes guests only through `RequireTenantAllowEntered`.
 
-`PHASE8B-AUTHZ-TENANT-SKETCH.md` governs tenants in `authz`: every port takes
+`./docs/phases/PHASE8B-AUTHZ-TENANT-SKETCH.md` governs tenants in `authz`: every port takes
 a `tenant.ID` (the scope), and `Subject` carries its home tenant. Decided and
 not to be loosened: no binding spans tenants, so a guest needs a binding in
 the tenant entered. Every `BindingStore` and `PermissionStore` must pass
@@ -120,7 +120,7 @@ Since 2026-10-04 v4 is the **only** version. The v1–v3 encoders, the
 chain-restart anchors, `VerifyLegacy`, the in-place migration helpers and the
 `Tenancy` logger option are gone: every row is v4, for every deployment. Do not
 bring a second version or an anchor back to solve a problem; a chain that could
-hold two versions was the cause of TD-16, TD-24 and TD-25 in `tech-debt.md`.
+hold two versions was the cause of TD-16, TD-24 and TD-25 in `./docs/tasks/tech-debt.md`.
 
 Its revisit condition — a DPA demanding physical per-tenant removal on a
 divergent cadence, with counsel refusing redaction as discharge — was answered

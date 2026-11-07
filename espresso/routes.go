@@ -77,7 +77,7 @@ type SCIMBundle struct {
 // Surfaces bundles what Routes hands back for the app to register. Each route
 // surface is a value struct the app mounts on its own Espresso router (there
 // is deliberately no Mount — the surfaces span both public and authed blocks
-// and Espresso's Use is positional; see PHASE4D-BOUNDARY-DECISION.md §A10).
+// and Espresso's Use is positional; see ../docs/phases/PHASE4D-BOUNDARY-DECISION.md §A10).
 // The middleware closures are pre-bound to the Provider's engines.
 type Surfaces struct {
 	Auth       *AuthRoutes       // always

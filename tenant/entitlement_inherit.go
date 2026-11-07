@@ -3,7 +3,7 @@ package tenant
 import "context"
 
 // Entitlement inheritance: a tenant's effective plan is its own, widened by what
-// its ancestors bought (PHASE12-TENANT-INHERITANCE-SKETCH.md §4.1, decision D2).
+// its ancestors bought (../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §4.1, decision D2).
 //
 // This is the first consumer of [Ancestors], and it is deliberately the smallest
 // one: no engine, no cache, no lock — a decorator over the port the gate already

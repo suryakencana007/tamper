@@ -1,7 +1,7 @@
 # Tech debt — reproduction tests
 
 This file holds the tests that prove the sharp edges in
-[`tech-debt.md`](tech-debt.md). They were run on 2026-10-02 against `main` at
+[`./tech-debt.md`](./tech-debt.md). They were run on 2026-10-02 against `main` at
 `c1a9729` (`v0.6.0` plus the two docs commits).
 
 Each test asserts the **wanted** behaviour. So a test **fails** while the
@@ -21,7 +21,7 @@ red. To run them again:
 3. Delete the three files when you are done.
 
 Check that the output has `=== RUN` lines. A `-run` pattern that matches
-nothing also exits with success (see `PHASE7-HANDOFF.md`).
+nothing also exits with success (see `../phases/PHASE7-HANDOFF.md`).
 
 ## Result
 
@@ -125,7 +125,7 @@ Put it in package `tamper_test` (repo root).
 ```go
 package tamper_test
 
-// TEMPORARY reproduction tests for tech-debt.md (TD-09).
+// TEMPORARY reproduction tests for ./tech-debt.md (TD-09).
 // Not meant to be committed as-is.
 
 import (
@@ -278,7 +278,7 @@ Put it in package `espresso` (it uses the fixtures in `espresso/scimtenant_test.
 ```go
 package espresso
 
-// TEMPORARY reproduction tests for tech-debt.md (TD-15, TD-08).
+// TEMPORARY reproduction tests for ./tech-debt.md (TD-15, TD-08).
 // Each test asserts the DESIRED behaviour, so it fails while the sharp
 // edge exists. Not meant to be committed as-is.
 
@@ -414,7 +414,7 @@ Put it in package `identity_test`.
 ```go
 package identity_test
 
-// TEMPORARY reproduction tests for tech-debt.md (TD-10, TD-02).
+// TEMPORARY reproduction tests for ./tech-debt.md (TD-10, TD-02).
 // Each test asserts the DESIRED behaviour, so it fails while the sharp
 // edge exists. Not meant to be committed as-is.
 

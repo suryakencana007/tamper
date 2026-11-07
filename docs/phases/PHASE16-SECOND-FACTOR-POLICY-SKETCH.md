@@ -195,7 +195,7 @@ Two rules in the port's doc, both of which are the whole point:
 3. **16c — `espresso`**: `StepUpRequireMethods`, the port doc gains "which `amr` values the
    adapter must set on each leg", and the auth routes surface the enrolment path for a
    policy-blocked user.
-4. **16d — docs and release**: TD-13 closed, `flow.md`, `CHANGELOG`, the version cut. **No
+4. **16d — docs and release**: TD-13 closed, `../design/flow.md`, `CHANGELOG`, the version cut. **No
    `MIGRATION` guide**: D3′ is additive — no `acr` value changes and no matcher changes
    meaning. (The withdrawn D3 would have required one; that line outlived the decision and is
    corrected here.)

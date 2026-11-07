@@ -6,7 +6,7 @@ updated in place twice since: for 0.7.0 (the parentage walk, plan inheritance, t
 `ParentID`/`Entitlements` rows) and for 0.8.0 (IdP inheritance on the manager row,
 inherited domain authority, and the `GetRegistry` note about the walk running before
 the registry lock). It describes what the code does today. It is not a plan. The gaps for a
-cross-tenant platform admin are in [`tech-debt.md`](tech-debt.md).
+cross-tenant platform admin are in [`../tasks/tech-debt.md`](../tasks/tech-debt.md).
 
 ## 1. What Tamper is
 

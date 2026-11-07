@@ -9,7 +9,7 @@
 // explicitly and per axis (a plan, a set of IdPs, a claimable domain). It is
 // never an authorization input: no scope is derived from it, and the RBAC
 // engine's per-scope bindings are untouched (ADR-0001 §5.A, narrowed by
-// PHASE12-TENANT-INHERITANCE-SKETCH.md §3.1).
+// ../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §3.1).
 //
 // A tenant id is an OPAQUE, app-defined string. tamper never validates,
 // parses, namespaces or canonicalizes one; it compares ids for equality
@@ -32,5 +32,5 @@
 //
 // Phase 7 slice 7a-1 ships this package with NO consumers — the
 // vocabulary lands whole, in one place, before anything routes on it.
-// See PHASE7-MULTITENANCY-SKETCH.md §4 and PHASE7-AGENT-MANIFEST.md.
+// See ../docs/phases/PHASE7-MULTITENANCY-SKETCH.md §4 and ../docs/phases/PHASE7-AGENT-MANIFEST.md.
 package tenant

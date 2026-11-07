@@ -3,7 +3,7 @@
 > Status: **DESIGN FREEZE (Slice 0)**. Decision provenance: the user chose this
 > milestone on 2026-07-19 after Phase 4 (transport) completed, and answered the
 > four load-bearing product forks (below). This doc gates the implementation the
-> way `PHASE4E-SCIM-SKETCH.md` / `PHASE4D-BOUNDARY-DECISION.md` gated theirs.
+> way `./PHASE4E-SCIM-SKETCH.md` / `./PHASE4D-BOUNDARY-DECISION.md` gated theirs.
 > No code lands until this is reviewed.
 
 ## 1. What this is
@@ -18,7 +18,7 @@ role-definition or permission table anywhere**.
 "Custom-role RBAC" = operator-defined roles as **named permission-sets**, stored
 as data, assignable per resource, evaluated behind the **unchanged** `Authorizer`
 interface. This is the "Option-4" that the Phase-1 authz design
-(`TAMPER-DESIGN.md`) built the pluggable-engine seam to anticipate — the call
+(`../design/TAMPER-DESIGN.md`) built the pluggable-engine seam to anticipate — the call
 sites depend on the interface, never a concrete engine, so the engine can be
 swapped with zero call-site churn.
 

@@ -5,12 +5,12 @@
 > enterprise multi-tenant reference model and found the tenant axis absent from
 > library-owned state. The three load-bearing forks were answered the same day
 > (§2). This doc gates the implementation the way
-> `PHASE4D-BOUNDARY-DECISION.md` / `PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md` gated
+> `./PHASE4D-BOUNDARY-DECISION.md` / `./PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md` gated
 > theirs. **No code lands until this is reviewed.**
 
 Companion documents:
 
-- [`PHASE7-AGENT-MANIFEST.md`](PHASE7-AGENT-MANIFEST.md) — the per-slice
+- [`./PHASE7-AGENT-MANIFEST.md`](./PHASE7-AGENT-MANIFEST.md) — the per-slice
   machine-actionable manifest (files, signatures, invariants, mutation proofs).
 - [`phase7-issues.json`](phase7-issues.json) + `create-phase7-issues.sh` — the
   GitHub milestone/issue projection of §5.
@@ -48,7 +48,7 @@ the rest of this document is about earning the same property elsewhere.
 **B2 is the one that deserves fear.** Every other blocker fails to compile the
 moment a consumer tries pooled tenancy. B2 compiles, passes, ships, and then
 looks like "the new customer's admin has no permissions" three months later.
-It is the archetype of the failure mode `TAMPER-DESIGN.md` §playbook-step-5
+It is the archetype of the failure mode `../design/TAMPER-DESIGN.md` §playbook-step-5
 already warns about: the guard exists, it is green, and it is pointed at the
 wrong thing.
 
@@ -74,7 +74,7 @@ Explicitly **out of scope** for Phase 7:
 
 ## 3. Why Barista cannot be the proving ground
 
-`TAMPER-DESIGN.md` states the phase rule plainly:
+`../design/TAMPER-DESIGN.md` states the phase rule plainly:
 
 > Phases land in order — each depends on the one before. **No phase begins
 > until the previous one has a Barista façade in production.**
@@ -569,7 +569,7 @@ Saying it costs nothing and closes a question every evaluator will ask.
      API is reachable by consumers nobody has enumerated. "Barista has no
      users" bounds the KNOWN consumers, not the module's reach. The decision
      stands anyway — one deliberate breaking release, announced in
-     `MIGRATION-v0.4.md` — but it is a breaking release, not a free one.
+     `../migrations/MIGRATION-v0.4.md` — but it is a breaking release, not a free one.
 
    **What it immediately unlocks.** `audit/sqlitestore` is a public package
    today, so tamper's SQLite schema is public API: Barista builds

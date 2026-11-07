@@ -1,12 +1,12 @@
 # Tenant hierarchy — Agent Implementation Manifest
 
 > **Status: DRAFT — for review. Not a committed phase. No implementation until
-> [`ADR-0001`](ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md) is Accepted.**
+> [`ADR-0001`](../adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md) is Accepted.**
 >
-> Companion to [`ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md`](ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md),
+> Companion to [`../adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md`](../adrs/ADR-0001-tenant-hierarchy-platform-tenantgroup-org.md),
 > which holds the *why* and the locked mechanism (eager per-tenant
 > provisioning). This file holds the *what*, in the fixed schema
-> [`PHASE7-AGENT-MANIFEST.md`](PHASE7-AGENT-MANIFEST.md) established, so one
+> [`./PHASE7-AGENT-MANIFEST.md`](./PHASE7-AGENT-MANIFEST.md) established, so one
 > slice can be executed at a time.
 >
 > Scope: the **application layer**. tamper core changes: **none**. The proving
@@ -17,9 +17,9 @@
 ## Baseline
 
 - Branch base: `origin/main` at `deb890e` (includes Phase 8 + Phase 8b).
-- Governing docs: `ADR-0001` (mechanism), `PHASE8B-AUTHZ-TENANT-SKETCH.md`
-  (tenant-scoped authz), `PHASE8-PLATFORM-ADMIN-SKETCH.md` (enter flow),
-  `tech-debt.md` TD-04, `CLAUDE.md` standing rules.
+- Governing docs: `ADR-0001` (mechanism), `./PHASE8B-AUTHZ-TENANT-SKETCH.md`
+  (tenant-scoped authz), `./PHASE8-PLATFORM-ADMIN-SKETCH.md` (enter flow),
+  `../tasks/tech-debt.md` TD-04, `CLAUDE.md` standing rules.
 
 ## Status
 
@@ -826,7 +826,7 @@ orgs' resources, not its own grant list. The operation runs on the group's route
 - [x] Every mutation proof recorded in its PR body with the failing test named
 - [x] `RunBindingStoreLeakSuite` green against `Store`
 - [x] Guard fires on both drift directions, and does not auto-repair
-- [x] No tamper core change; every PR touched only `examples/tenanthierarchy/` (plus `TENANT-HIERARCHY-MANIFEST.md` in the docs PRs)
+- [x] No tamper core change; every PR touched only `examples/tenanthierarchy/` (plus `./TENANT-HIERARCHY-MANIFEST.md` in the docs PRs)
 - [x] **ADR-0001 moved from `Proposed` to `Accepted`** — done in its own
   docs-only PR. Acceptance covers the **roles** axis only; the IdP, entitlement
   and domain axes were open per ADR §8 at the time, and were decided and shipped
@@ -834,13 +834,13 @@ orgs' resources, not its own grant list. The operation runs on the group's route
 
 ## Follow-ups (not part of this manifest)
 
-- `tech-debt.md` TD-04 should point its roles workaround at the code as it now
+- `../tasks/tech-debt.md` TD-04 should point its roles workaround at the code as it now
   stands (`Store` + `Provisioner` + `Guard`), and record that the **IdP,
   entitlement and domain axes are still open** — this manifest decided roles only.
 
   > **AMENDED 2026-11-02 (#91, #92, #94, #96).** Both halves are done. TD-04 now points at
   > this manifest's code and is **closed**: the three axes were answered per axis in
-  > `PHASE12-TENANT-INHERITANCE-SKETCH.md` (accepted) and shipped — plans in #92,
+  > `./PHASE12-TENANT-INHERITANCE-SKETCH.md` (accepted) and shipped — plans in #92,
   > IdP in #96, domains in #94 — with the walks in `tenant`, while THIS manifest's
   > decision (roles by eager per-tenant provisioning) is unchanged and still the
   > reason `authz` has no containment graph.

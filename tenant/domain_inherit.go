@@ -7,7 +7,7 @@ import (
 )
 
 // Inherited domain authority: may this tenant claim a name that sits under a
-// domain one of its ancestors PROVED? (PHASE12-TENANT-INHERITANCE-SKETCH.md §4.3,
+// domain one of its ancestors PROVED? (../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §4.3,
 // decision D4.)
 //
 // This is the second consumer of [Ancestors], and like the first it is a helper

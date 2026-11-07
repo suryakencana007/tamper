@@ -340,7 +340,7 @@ func TestConcurrentUse(t *testing.T) {
 }
 
 // Example-shaped smoke: the end-state integration sketch from
-// TAMPER-DESIGN.md compiles against the real API.
+// ../docs/design/TAMPER-DESIGN.md compiles against the real API.
 func ExampleRBAC() {
 	store := NewMemStore(
 		Binding{Tenant: tenant.Single, Subject: Subject{Tenant: tenant.Single, Type: "user", ID: "u1"}, Resource: Resource{Type: "doc", ID: "d1"}, Role: "editor"},

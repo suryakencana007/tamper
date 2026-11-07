@@ -1,6 +1,6 @@
 // Package identity is Tamper's identity core — users, credentials, and
 // refresh-session lifecycle (Phase 2a of the extraction roadmap in
-// ../TAMPER-DESIGN.md; TOTP enrollment and multi-IdP identity linking
+// ../docs/design/TAMPER-DESIGN.md; TOTP enrollment and multi-IdP identity linking
 // join in later sub-phases).
 //
 // The Core service owns the SEMANTICS — registration, password login

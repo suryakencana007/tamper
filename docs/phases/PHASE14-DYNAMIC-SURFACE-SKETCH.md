@@ -13,7 +13,7 @@ the item as written says the opposite.
 
 The item's own evidence is stale in two places and correct in one:
 
-| `tech-debt.md` claims | Verified against the code |
+| `../tasks/tech-debt.md` claims | Verified against the code |
 |---|---|
 | *"`IdentityService.Login(ctx, email, password)` takes no tenant (`authroutes.go:39-41`)"* | **False now.** #59 gave every port method the tenant: `Login(ctx, tenantID, email, password)` (`espresso/authroutes.go:67`). The cited lines had already moved. |
 | *"That adapter must still check the user's stored tenant on the TOTP path (see TD-10)"* | **False now.** TD-10 closed in #40, and since #100 (`identity`) the *library* performs the check. An adapter that re-checks is writing what it no longer owes. |
@@ -202,8 +202,8 @@ path. It is exported as `TenantPathSegment` so the collision is nameable, and
    the fail-closed answer, and the five tests above.
 3. **14c — `examples/multitenant`**: one dynamic surface, `PinTenant` +
    `TenantFromRoutedContext`, per-tenant names dropped in favour of the path.
-4. **14d — docs**: TD-14 closed in `tech-debt.md` **with its two stale claims corrected**
-   (a reader who trusted them would have written the adapter check twice), `flow.md`,
+4. **14d — docs**: TD-14 closed in `../tasks/tech-debt.md` **with its two stale claims corrected**
+   (a reader who trusted them would have written the adapter check twice), `../design/flow.md`,
    `CHANGELOG`. Breaking only if A3 turns out to need a config change for existing
    callers; as sketched it is additive.
 

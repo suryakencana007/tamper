@@ -24,7 +24,7 @@
 // tamper — tenant.Store deliberately never walks it (Phase 7 sketch §8 item
 // 3).
 //
-// Slices land one at a time (TENANT-HIERARCHY-MANIFEST.md); all seven are in.
+// Slices land one at a time (../../docs/phases/TENANT-HIERARCHY-MANIFEST.md); all seven are in.
 //
 // Two stores implement the same ports, so provisioning, reconciliation and
 // derived membership do not care which one an application uses:

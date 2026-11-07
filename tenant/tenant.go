@@ -24,7 +24,7 @@ type Descriptor struct {
 	// plan, a set of IdPs, a claimable domain) and builds no
 	// authorization scope from it. The RBAC engine's per-scope bindings
 	// are unaffected (ADR-0001 §5.A, narrowed by
-	// PHASE12-TENANT-INHERITANCE-SKETCH.md §3.1).
+	// ../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §3.1).
 	ParentID string
 
 	// Status is the tenant's lifecycle state. A Store returns the row

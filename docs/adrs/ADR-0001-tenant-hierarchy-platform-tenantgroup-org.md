@@ -2,13 +2,13 @@
 
 - **Status:** **Accepted** — mekanisme eager per-tenant provisioning (opsi b).
   Body pra-Phase-8b (re-stamp lintas scope) dihapus; lihat "Riwayat" di akhir.
-  Diimplementasikan dan terbukti di [`examples/tenanthierarchy/`](examples/tenanthierarchy/)
+  Diimplementasikan dan terbukti di [`examples/tenanthierarchy/`](../../examples/tenanthierarchy)
   (#65, #66, #69, #70, #71, #72, #73); rencana per slice ada di
-  [`TENANT-HIERARCHY-MANIFEST.md`](TENANT-HIERARCHY-MANIFEST.md).
+  [`../phases/TENANT-HIERARCHY-MANIFEST.md`](../phases/TENANT-HIERARCHY-MANIFEST.md).
 - **Tanggal:** 2026-10-30 (revisi mekanisme: 2026-10-30, setelah Phase 8b ditemukan saat rebase; diterima: 2026-11-01)
 - **Pengambil keputusan:** Nanang (product), didiskusikan bersama Claude
-- **Terkait:** `PHASE8-PLATFORM-ADMIN-SKETCH.md`, `PHASE8B-AUTHZ-TENANT-SKETCH.md` (TD-03),
-  `tech-debt.md` TD-04, `tenant.Descriptor.ParentID` (reserved, sketch Phase7 §8 item 3),
+- **Terkait:** `../phases/PHASE8-PLATFORM-ADMIN-SKETCH.md`, `../phases/PHASE8B-AUTHZ-TENANT-SKETCH.md` (TD-03),
+  `../tasks/tech-debt.md` TD-04, `tenant.Descriptor.ParentID` (reserved, sketch Phase7 §8 item 3),
   `espresso/tenantgate.go`, `espresso/decision.go`, `authz/store.go`, `authz/tenanttest`
 
 ## Ringkasan keputusan
@@ -47,7 +47,7 @@ miliknya sendiri.
 > **otorisasi** dan tetap utuh di sana. Untuk tiga sumbu lain — paket, IdP,
 > domain — tamper kini me-resolve `ParentID` lewat `tenant.Ancestors`, karena
 > §5.A sendiri menyebut prasyaratnya ("butuh amend sketch Phase 7 dulu") dan
-> prasyarat itu dipenuhi `PHASE12-TENANT-INHERITANCE-SKETCH.md` §3.1. Penolakan
+> prasyarat itu dipenuhi `../phases/PHASE12-TENANT-INHERITANCE-SKETCH.md` §3.1. Penolakan
 > di §5.A dipersempit, bukan dibatalkan: engine RBAC tetap tidak boleh
 > berjalan-menelusuri graph.
 
@@ -132,7 +132,7 @@ satu baris:
 
 - menulis satu `Binding` nyata per organisasi anak X; membership `EnterTenant`
   **tidak** dimaterialisasi — ia dibaca dari intent + parentage saat `IsMember`
-  dipanggil (lihat `TENANT-HIERARCHY-MANIFEST.md` 9b-1), sehingga tidak ada
+  dipanggil (lihat `../phases/TENANT-HIERARCHY-MANIFEST.md` 9b-1), sehingga tidak ada
   set turunan kedua yang bisa drift;
 - di dalam **satu transaksi** bersama baris niat grant-nya (intent row, scope =
   grup — lihat paragraf di bawah);
@@ -278,7 +278,7 @@ resolves it, inherits through it, or branches on it") dan
 > binding per-scope. Yang dipersempit hanya sumbu **warisan** — paket, IdP, domain —
 > lewat `tenant.Ancestors`, dan §8 di atas mencatat tiap jawabannya. Prasyarat yang
 > disebut penolakan ini sendiri ("butuh amend sketch Phase 7 dulu") dipenuhi
-> `PHASE12-TENANT-INHERITANCE-SKETCH.md` §3.1, yang sekaligus mengoreksi sembilan
+> `../phases/PHASE12-TENANT-INHERITANCE-SKETCH.md` §3.1, yang sekaligus mengoreksi sembilan
 > dokumen lain yang masih menyatakan invariant itu. `TestMemStore_...` tetap ada,
 > dan masih benar: STORE-nya tidak me-resolve apa pun; `Ancestors` yang melakukannya.
 
@@ -366,7 +366,7 @@ single-resource.
 
   > **DIPUTUSKAN 2026-11-01, dikirim di #91, #92 (paket), #94 (domain), #96 (IdP).**
   > Ketiga sumbu itu kini punya
-  > jawaban, dicatat di `PHASE12-TENANT-INHERITANCE-SKETCH.md` (accepted):
+  > jawaban, dicatat di `../phases/PHASE12-TENANT-INHERITANCE-SKETCH.md` (accepted):
   > paket = maksimum rantai tanpa switch (D2); IdP = per grup dan **default
   > mati** (D3); domain = subdomain sah dari klaim terverifikasi leluhur, dengan
   > persetujuan admin grup (D4). Ketiganya warisan **saat runtime** di `tenant` /
@@ -415,4 +415,4 @@ single-resource.
   manifest tercentang kecuali baris status ini. Yang tetap TERBUKA dan tidak
   diklaim oleh penerimaan ini: sumbu IdP/entitlement/domain (§8) serta
   TD-05/TD-06/TD-07. (Dari ketiganya, **TD-06** — penegakan suspensi — ditutup
-  kemudian pada hari yang sama: `PHASE9-TENANT-STATUS-SKETCH.md`, #82.)
+  kemudian pada hari yang sama: `../phases/PHASE9-TENANT-STATUS-SKETCH.md`, #82.)

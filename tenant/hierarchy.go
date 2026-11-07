@@ -12,7 +12,7 @@ import (
 // ("RESERVED. Nothing in tamper resolves it, inherits through it, or branches
 // on it"). ADR-0001 §5.A rejected resolving it in core and named its own
 // precondition — a Phase 7 sketch amendment — which
-// PHASE12-TENANT-INHERITANCE-SKETCH.md §3.1 is. The rejection is narrowed, not
+// ../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §3.1 is. The rejection is narrowed, not
 // overturned: §5.A still stands for AUTHORIZATION, where a runtime walk cannot
 // substitute for the per-scope bindings the RBAC engine requires. Nothing here
 // builds an authorization scope, and nothing here grants a permission.
@@ -33,7 +33,7 @@ var (
 	// parentage that someone must fix.
 	//
 	// A caller that inherits must translate the first and not the second
-	// (PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2): swallowing both would hide a
+	// (../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2): swallowing both would hide a
 	// data fault behind "nothing to inherit", which is the opposite of what
 	// these sentinels are for.
 	ErrHierarchyDangling = errors.New("tenant: hierarchy parent does not resolve")

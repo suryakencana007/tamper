@@ -1,6 +1,6 @@
 # Phase 7 — Agent Task Manifest
 
-> Machine-actionable companion to [`PHASE7-MULTITENANCY-SKETCH.md`](PHASE7-MULTITENANCY-SKETCH.md).
+> Machine-actionable companion to [`./PHASE7-MULTITENANCY-SKETCH.md`](./PHASE7-MULTITENANCY-SKETCH.md).
 > The sketch holds the *why*; this file holds the *what*, in a fixed schema an
 > agent can execute one slice at a time.
 >
@@ -23,7 +23,7 @@ order; `7l-1` shipped as the v0.4.0 flip with `tenant.ID` threading (sketch
 | M6 | 7l-1 | done (breaking; v0.4.0) |
 
 **Nothing outstanding.** The three deferred verifications were closed on a
-machine with Barista and Docker on 2026-08-09 (`PHASE7-HANDOFF.md` §0). The
+machine with Barista and Docker on 2026-08-09 (`./PHASE7-HANDOFF.md` §0). The
 Barista CI deferral ended the way deferrals should: the first real run was
 RED and found an invariant-1 regression the local proxy was structurally
 blind to (#20 — migration 005 vs external `sqlitestore` callers).
@@ -374,7 +374,7 @@ tenant when tenancy is on, and fails at boot when the store cannot.
 **reads**
 - `identity/store.go`, `identity/core.go`, `identity/linking.go`
 - `provider.go` — `Config`, `New`, existing boot validation style
-- `TAMPER-DESIGN.md` §playbook step 3 — the type-assertion failure mode
+- `../design/TAMPER-DESIGN.md` §playbook step 3 — the type-assertion failure mode
 
 **writes**
 - `identity/store.go` — **nothing.** `TenantScopedStore` is DECLARED in 7a-2
@@ -1059,7 +1059,7 @@ design_ref: "§5 M5, §8 open item 1"
 >
 > **AMENDED 2026-10-04.** This paragraph describes a design that was removed.
 > v4 is now the only canonical version: there is no anchor, no `Tenancy`
-> option, and no v3 row. See `PHASE7-MULTITENANCY-SKETCH.md` §8 item 1.
+> option, and no v3 row. See `./PHASE7-MULTITENANCY-SKETCH.md` §8 item 1.
 >
 > **A tenant-filtered export may claim** per-row authenticity and position —
 > each row ships its own prev_hash/hash, recomputable without access to anyone
@@ -1208,7 +1208,7 @@ design_ref: "§5 M6, §8 open item 2"
 **Goal.** Fold the tenant-aware interfaces into the base ports, delete the
 fallback, and collapse the `*InTenant` names.
 
-**writes** — every port file, `provider.go`, `CHANGELOG.md`, `MIGRATION-v0.4.md`
+**writes** — every port file, `provider.go`, `CHANGELOG.md`, `../migrations/MIGRATION-v0.4.md`
 
 **invariants**
 - Exactly one breaking release. No partial flips.
@@ -1219,7 +1219,7 @@ fallback, and collapse the `*InTenant` names.
   shape, that is an M1 finding surfaced late — record it, do not paper over it.
 
 **dod**
-- [ ] `MIGRATION-v0.4.md` with a worked backfill example
+- [ ] `../migrations/MIGRATION-v0.4.md` with a worked backfill example
 - [ ] `CHANGELOG.md` entry naming every changed signature
 - [ ] Barista migrated in the same release cycle
 - [ ] No `*InTenant` suffix remains in the public API

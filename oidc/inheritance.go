@@ -10,7 +10,7 @@ import (
 // IdP inheritance: a tenant with no enabled providers of its own can serve the
 // providers of its nearest ancestor that has some.
 //
-// See PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2 and §4.2.1. Off unless wired:
+// See ../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2 and §4.2.1. Off unless wired:
 // WithInheritance unset is today's behaviour, path for path.
 
 // inheritConfig is the wired form of the feature: the parentage graph and the

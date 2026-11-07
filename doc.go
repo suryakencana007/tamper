@@ -46,7 +46,7 @@
 //     Phase 4.
 //
 // The vision, niche, extraction playbook, and phase roadmap live in
-// TAMPER-DESIGN.md next to this file. A top-level composition facade
+// ./docs/design/TAMPER-DESIGN.md next to this file. A top-level composition facade
 // (tamper.New(Config) + tamper/espresso.Routes) and a runnable example are
-// the current milestone — see PHASE6-STANDALONE-PACKAGING-SKETCH.md.
+// the current milestone — see ./docs/phases/PHASE6-STANDALONE-PACKAGING-SKETCH.md.
 package tamper

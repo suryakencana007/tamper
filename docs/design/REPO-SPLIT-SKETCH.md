@@ -3,7 +3,7 @@
 > Status: **design sketch, NOT started.** This is the procedure + the decisions
 > to make *when* the split is executed. It is the deferred successor to the
 > Phase 6 standalone-packaging milestone (see
-> [`PHASE6-STANDALONE-PACKAGING-SKETCH.md`](./PHASE6-STANDALONE-PACKAGING-SKETCH.md)),
+> [`../phases/PHASE6-STANDALONE-PACKAGING-SKETCH.md`](../phases/PHASE6-STANDALONE-PACKAGING-SKETCH.md)),
 > named there as the one remaining forward milestone.
 >
 > Nothing here should be executed without a deliberate go-ahead — the split is
@@ -84,7 +84,7 @@ flip Barista over in a single PR.
    ```
    Catches the subpackage paths too (`…/packages/tamper/crypto` → `…/tamper/crypto`).
 
-3. **Give it its own scaffolding.** `README.md`, `TAMPER-DESIGN.md`, `sqlc.yaml`,
+3. **Give it its own scaffolding.** `README.md`, `./TAMPER-DESIGN.md`, `sqlc.yaml`,
    the `PHASE*` sketches, and `examples/` all move with it. Add a CI workflow
    (`go vet` / `go test -race` / `golangci-lint` + the sqlc regen check),
    copying over the `.golangci.yaml` rule set. Drop or slim the `moon.yml`
@@ -112,7 +112,7 @@ flip Barista over in a single PR.
    `ci.yml`, the `tamper:` project in `.moon/workspace.yml`.
 10. **`deploy/Dockerfile`:** remove the `COPY packages/tamper/…` lines — and
     rewire the build's dependency resolution (the fiddly part, below).
-11. **Docs:** update `CLAUDE.md`, `AGENTS.md`, `packages/tamper/TAMPER-DESIGN.md`
+11. **Docs:** update `CLAUDE.md`, `AGENTS.md`, `packages/tamper/./TAMPER-DESIGN.md`
     references to the new home.
 12. **Verify:** `go -C apps/barista build ./...`, `GOWORK=off go build`, the full
     `-race` suite, and the release Docker build end-to-end.
@@ -225,7 +225,7 @@ final path `github.com/suryakencana007/tamper`; adjust if the name changes.
       `grep -rl 'suryakencana007/barista/packages/tamper' --include='*.go' . | xargs sed -i 's#suryakencana007/barista/packages/tamper#suryakencana007/tamper#g'`
 - [ ] `go build ./...` **green**.
 - [ ] `go test -race ./...` **green** (the parity proof — no behavior change).
-- [ ] Confirm the moved scaffolding is coherent: `README.md`, `TAMPER-DESIGN.md`,
+- [ ] Confirm the moved scaffolding is coherent: `README.md`, `./TAMPER-DESIGN.md`,
       the `PHASE*`/`REPO-SPLIT` sketches, `sqlc.yaml`, `examples/`.
 - [ ] Add the new repo's own CI (`go vet` / `go test -race` / `golangci-lint`,
       + the sqlc regen check); copy the repo-root `.golangci.yaml` rules.
@@ -257,7 +257,7 @@ final path `github.com/suryakencana007/tamper`; adjust if the name changes.
         `git config --global url."https://<token>@github.com/".insteadOf "https://github.com/"` in the builder stage.
       - (b) replace + sibling: check out both repos in CI, add `tamper/` to the
         build context, keep the `replace` in `go.mod`.
-- [ ] Update docs: `CLAUDE.md`, `AGENTS.md`, `packages/tamper/TAMPER-DESIGN.md`
+- [ ] Update docs: `CLAUDE.md`, `AGENTS.md`, `packages/tamper/./TAMPER-DESIGN.md`
       references to the new home.
 - [ ] `go -C apps/barista build ./...` **green**.
 - [ ] `GOWORK=off go build ./...` **green** (the no-workspace path the image uses).

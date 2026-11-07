@@ -15,7 +15,7 @@ import (
 // exactly one built-in role resolves to Superuser, and custom roles must never
 // reach it. The write side rejects it (MemPermissionStore.Grant strips it) and
 // the Slice-3 DB CHECK structurally excludes it from role_permissions (see
-// PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md §4). allows() treats a leaked "*" as an
+// ../docs/phases/PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md §4). allows() treats a leaked "*" as an
 // inert literal key (fail-closed), never as superuser.
 const SuperuserKey = "*"
 
@@ -98,7 +98,7 @@ type PermissionStore interface {
 // A PermissionSet seeded so that each built-in role resolves to the
 // downward-closure of its rank reproduces an RBAC engine's decisions
 // byte-for-byte (Decision.Allowed; Reason differs and is non-control-flow) —
-// see PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md §3.2 and permissionset_parity_test.go.
+// see ../docs/phases/PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md §3.2 and permissionset_parity_test.go.
 //
 // Deny-by-default is a hard contract: an empty set, an unknown key, and a store
 // error all resolve to deny (error where the question could not be evaluated).

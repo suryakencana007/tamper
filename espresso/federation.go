@@ -13,7 +13,7 @@ package espresso
 // (start/callback/exchange) and the authed block (link-start). Handing
 // registration back to the app keeps the auth boundary legible at the
 // call site and keeps route paths — which are app wire surface — app
-// owned. See PHASE4D-BOUNDARY-DECISION.md §A10.
+// owned. See ../docs/phases/PHASE4D-BOUNDARY-DECISION.md §A10.
 //
 // OWNERSHIP — tamper owns the RFC/browser-shaped mechanics: the state
 // cookie's sign/verify/set/clear, the IdP token exchange + ID-token

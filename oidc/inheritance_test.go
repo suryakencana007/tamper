@@ -11,7 +11,7 @@ import (
 	"github.com/suryakencana007/tamper/tenant"
 )
 
-// Slice 12c — IdP inheritance (PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2/§4.2.1).
+// Slice 12c — IdP inheritance (../docs/phases/PHASE12-TENANT-INHERITANCE-SKETCH.md §4.2/§4.2.1).
 //
 // These tests build REAL registries: rebuildLocked ends in BuildProvider, which
 // runs discovery against the issuer, so the fake IdP fixture is the only way to

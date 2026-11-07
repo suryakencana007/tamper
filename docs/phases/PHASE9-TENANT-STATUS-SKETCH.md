@@ -4,12 +4,12 @@ Status: **accepted 2026-11-01; implemented in #82** (`espresso/activetenant.go`,
 12 tests, seven mutation proofs). The four open questions in §8 were answered by
 adopting this sketch's own proposals; they are recorded there.
 
-This sketch covers TD-06 from `tech-debt.md`. It is the first half of a pair;
+This sketch covers TD-06 from `../tasks/tech-debt.md`. It is the first half of a pair;
 TD-05 (a writable tenant lifecycle) gets its own amendment when it lands, and §8
 says exactly what changes here when it does.
 
-It follows `PHASE8-PLATFORM-ADMIN-SKETCH.md` and
-`PHASE8B-AUTHZ-TENANT-SKETCH.md` in shape and in posture: opt-in, read-only,
+It follows `./PHASE8-PLATFORM-ADMIN-SKETCH.md` and
+`./PHASE8B-AUTHZ-TENANT-SKETCH.md` in shape and in posture: opt-in, read-only,
 deny is a miss.
 
 ---

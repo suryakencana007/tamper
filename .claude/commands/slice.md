@@ -19,9 +19,9 @@ Read, and do not skip:
 1. `CLAUDE.md` — the standing rules. Rule 6 (an optional upgrade ships a guard **and**
    a test that the guard fires) and rule 7 (improvements spotted en route are separate
    changes) bite most often.
-2. The phase sketch named by the slice (`PHASE*-SKETCH.md`), and `tech-debt.md` for
+2. The phase sketch named by the slice (`PHASE*-SKETCH.md`), and `../../docs/tasks/tech-debt.md` for
    the item it closes.
-3. `PHASE7-AGENT-MANIFEST.md` for the shape a slice spec takes, even when the slice is
+3. `../../docs/phases/PHASE7-AGENT-MANIFEST.md` for the shape a slice spec takes, even when the slice is
    not Phase 7.
 
 **Anything touching `identity`, `crypto`, `oidc`, `saml`, `scim`, `espresso`,
@@ -35,7 +35,7 @@ sketch usually gets wrong", below).
 Do not plan from the tech-debt prose. Grep for the symbols it names and enumerate the
 real surface:
 
-- `tech-debt.md` items have been **incomplete** (TD-28's list was eight methods short,
+- `../../docs/tasks/tech-debt.md` items have been **incomplete** (TD-28's list was eight methods short,
   and had been short when it was written). Enumerate the whole type, then diff.
 - Confirm the line numbers it cites still point where it says — a phase's own slices
   move them.

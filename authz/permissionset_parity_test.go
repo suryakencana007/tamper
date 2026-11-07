@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// This is the Slice-1 byte-parity gate (PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md §3.2,
+// This is the Slice-1 byte-parity gate (../docs/phases/PHASE5-CUSTOM-ROLE-RBAC-SKETCH.md §3.2,
 // framework layer): a PermissionSet engine seeded so each built-in role resolves
 // to the downward-closure of its rank reproduces an RBAC engine's decisions
 // byte-for-byte (Decision.Allowed) on a Barista-shaped fixture.

@@ -71,7 +71,7 @@ With `tenant.ID`:
 
 That last line is the part worth being explicit about: `tenant.New("")` is *the zero ID*,
 so a caller who forgot to thread a tenant through gets **no filter** rather than an empty
-result. The proposal in `tech-debt.md` asks for the opposite — *"an unset value means 'no
+result. The proposal in `../tasks/tech-debt.md` asks for the opposite — *"an unset value means 'no
 filter' only when the caller says so explicitly"* — and this sketch **rejects** that
 wording, because `tenant.ID` already makes "explicit" structural: the caller writes nothing
 for "no filter" and writes `tenant.Single` for the empty tenant. A second opt-in flag would
@@ -169,7 +169,7 @@ how *"we can query per tenant"* becomes *"we cannot query per tenant in practice
 
 1. **15a — this sketch**, accepted, with §2's rejection of the proposal's wording recorded.
 2. **15b — `audit`**: the two fields, the query terms, the index, the plan test.
-3. **15c — docs**: TD-11 closed in `tech-debt.md`, `flow.md`'s audit row, `CHANGELOG`. No
+3. **15c — docs**: TD-11 closed in `../tasks/tech-debt.md`, `../design/flow.md`'s audit row, `CHANGELOG`. No
    migration: this is additive and the audit format does not change.
 
 ---
@@ -181,7 +181,7 @@ how *"we can query per tenant"* becomes *"we cannot query per tenant in practice
 - It does not change `clusterIDs`/`ListScoped`, or the canonical payload, or
   `canonical_version`.
 - It does not decide *who* may query across tenants. That is the application's gate, and
-  `tech-debt.md`'s "What is ready to use" already points at the two tools for it
+  `../tasks/tech-debt.md`'s "What is ready to use" already points at the two tools for it
   (`RequireDecision` with its 404-vs-403 split, and `Event.TenantID` separate from
   `Actor.TenantID`).
 - It does not touch TD-12 (a service account has one tenant) or TD-13 (2FA policy per

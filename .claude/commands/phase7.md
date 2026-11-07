@@ -12,12 +12,12 @@ If `--plan` is passed, produce the plan and stop before writing any code.
 
 Read, in this order, and do not skip any:
 
-1. `PHASE7-AGENT-MANIFEST.md` — find the slice block whose `id` matches the
+1. `../../docs/phases/PHASE7-AGENT-MANIFEST.md` — find the slice block whose `id` matches the
    argument. **That block is your specification.** If no block matches, list the
    available slice ids and stop.
 2. The sketch section named in that block's `design_ref`, in
-   `PHASE7-MULTITENANCY-SKETCH.md`.
-3. `TAMPER-DESIGN.md` §"The extraction playbook" — especially step 5, on tests
+   `../../docs/phases/PHASE7-MULTITENANCY-SKETCH.md`.
+3. `../../docs/design/TAMPER-DESIGN.md` §"The extraction playbook" — especially step 5, on tests
    that stay green while guarding nothing.
 4. Every path in the slice's `reads` list.
 
@@ -131,7 +131,7 @@ Some `dod` lines need a machine this one is not:
 
 Do **not** mark those lines done, and do not quietly drop them. State them as
 outstanding, name the nearest local proxy you ran instead, and add them to
-`PHASE7-HANDOFF.md` so the machine that has Barista and Docker knows exactly
+`../../docs/phases/PHASE7-HANDOFF.md` so the machine that has Barista and Docker knows exactly
 what to run.
 
 ## When to stop and ask

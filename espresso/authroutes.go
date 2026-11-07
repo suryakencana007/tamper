@@ -177,7 +177,7 @@ type AuthRoutesConfig struct {
 // middleware position. Handing registration back to the app also keeps
 // the auth boundary legible at the call site and leaves route paths,
 // which are app wire surface, app owned. FederationRoutes follows the
-// same shape; see PHASE4D-BOUNDARY-DECISION.md §A10.
+// same shape; see ../docs/phases/PHASE4D-BOUNDARY-DECISION.md §A10.
 type AuthRoutes struct {
 	svc IdentityService
 	cfg AuthRoutesConfig

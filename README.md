@@ -9,11 +9,16 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.11.0 — pooled tenancy, and a queryable audit log.** One process, N tenants,
-> deny by default. **v0.11.0 is additive**: `audit.Filter` gained `TenantID` and
-> `ActorTenantID`, so a console can ask "activity in tenant X" without the whole export —
-> and a composite index makes those pages ~140× cheaper (measured 1844 µs → 13 µs). Positional `audit.Filter`
-> literals must become keyed ones.
+> **Status: v0.12.0 — a second factor you can demand per role.** `identity.SecondFactorPolicy`
+> is a port your app implements, so "platform admins must use 2FA, customers need not" is a
+> mapping you own rather than a process-wide switch. Sessions now say what they proved: `amr`
+> names the **methods** (`pwd`, `otp`, `saml`) while `acr` keeps meaning the **policy class**,
+> and `espresso.StepUpRequireMethods` lets `RequireFreshAuth` require one — a locally-enrolled
+> TOTP session can finally satisfy step-up. **v0.12.0 is additive** for every call, with one
+> source-level break: a variadic mint no longer satisfies an interface declared with the old
+> signature (see the changelog). It also carries two SAML fixes — a `<NameID>` outside the
+> assertion namespace now invalidates the assertion (GO-2026-6909), and the response is bounded
+> at 1 MiB — plus the docs moved into [`./docs`](./docs).
 >
 > Coming from 0.8.0? **v0.9.0 was breaking** — the tenant is in every signature that names
 > a user or a session: follow [`./docs/migrations/MIGRATION-v0.9.md`](./docs/migrations/MIGRATION-v0.9.md).
@@ -31,7 +36,7 @@ table, owns a cookie brand, or freezes your audit vocabulary.
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.11.0
+go get github.com/suryakencana007/tamper@v0.12.0
 ```
 
 ## What's shipped

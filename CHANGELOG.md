@@ -7,6 +7,26 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
+## [Unreleased]
+
+### Added
+
+- **A platform service account — TD-12.** A machine credential had exactly one tenant, so
+  platform-level automation (provisioning a tenant, syncing across tenants) had no principal it
+  could use: the options were one credential per tenant, a human admin session, or bypassing the
+  gate and losing the audit attribution. `espresso.RequirePlatformServiceAccount` is a second
+  gate, and `Principal.Scope` says what a credential is valid for. The two gates are **mutually
+  exclusive** — a platform credential is refused by `RequireServiceAccount` and a tenant
+  credential by the platform gate, both with the same 401 and body as a bad token, so a probe
+  cannot tell "wrong scope" from "wrong secret". Scope is **deny-by-default**: an unknown scope
+  satisfies neither gate. A platform credential must carry **no home tenant** (an ambiguous
+  credential is refused), and `tenantOfPrincipal` never answers a tenant for one, so it can
+  never reach a store. Its audit actor is a service account with an empty home tenant — not
+  `tenant.Single`, which would be a claim about the deployment; the stored payload is unchanged
+  either way, because making the scope a distinct hashed field would change the canonical
+  payload and that is its own decision. **Additive**: `Scope`'s zero value is today's tenant
+  credential, and an unscoped credential behaves exactly as before.
+
 ## [0.12.0] — 2026-11-07
 
 **A second factor you can actually demand per role — and two SAML fixes that a review found

@@ -152,7 +152,8 @@ pass them.
 | `RequireEntitlement(store, capability, resolve)` | Gate for paid features. |
 | `RequireFreshAuth(maxAge, acrValues, opts…)` | Step-up: requires a recent authentication, an accepted ACR, and — with `StepUpRequireMethods("otp")` — a proved **method**. The two axes are independent: a method does not lift a class requirement, and a class does not supply a method. A denial says which axis failed (`StepUpDenyMissingMethod`). |
 | `RequireDecision(DecisionGate)` | PDP gate: visibility check (404), then tier check (403). The gate has its own `Tenant` resolver (required) and an `AllowEntered` flag; the token must be for that tenant. |
-| `RequireServiceAccount(validator)` | Machine credentials. The tenant comes from the token. |
+| `RequireServiceAccount(validator)` | Machine credentials. The tenant comes from the token. Accepts only a **tenant** credential. |
+| `RequirePlatformServiceAccount(validator)` | Machine credentials for a **platform surface** (tenant provisioning, cross-tenant automation). Accepts only `Scope=platform` with no home tenant. Mutually exclusive with the gate above: the wrong kind is a 401, indistinguishable from a bad token. |
 | `Throttled(throttle, key)` | Rate limit per address, per tenant, or per service account. |
 | `Auditor.For` / `Auditor.Mutation` | Writes an audit event after a 2xx response. |
 | `StartLogin(resolver, email)` | Home-realm discovery with throttling and a minimum response time. |
@@ -489,6 +490,11 @@ the design documents.
   user id (`VerifyTOTP`, `EnrollTOTP`, `Refresh`, `Logout`) are not
   tenant-scoped. The `authz` ports (#56) and `espresso.IdentityService`
   (#59) take the tenant on every call.
+- **A credential's authority is one of two kinds, never both.** `Principal.Scope` is the zero
+  value for a tenant credential, so nothing that predates it changes; a platform credential is
+  refused on tenant routes and a tenant credential on platform routes. The tenant a service
+  account acts in comes from the validated token, never from a path or header — a platform
+  credential has no tenant at all, so it cannot be handed to a store as one.
 - **Refresh rotation copies the tenant, `auth_time`, `acr` and `amr` unchanged.** A rotation
   never adds a method: the session proved what it proved, and a refresh is not a new
   authentication.

@@ -78,7 +78,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-09 | `tamper.New` cannot turn on audit v4 | resolved by #46 | — | — |
 | TD-10 | The TOTP path mints a token without a tenant | fixed by #40 | — | — |
 | TD-11 | The audit log cannot be queried per tenant | fixed by #112, #114 | — | — |
-| TD-12 | A service account has only one tenant | gap | P2 | Tamper |
+| TD-12 | A service account has only one tenant | fixed by #126 | — | — |
 | TD-13 | Second-factor policy cannot be set per role | fixed by #119, #120, #121 | — | — |
 | TD-14 | The per-tenant route mounting pattern is static | fixed by #107, #108 | — | — |
 | TD-15 | SCIM tenant scoping is off by default | fixed by #39 | — | — |
@@ -751,6 +751,33 @@ has no matching principal.
 
 **Proposal for Tamper.** Keep SCIM at one tenant per token. For platform
 automation, add a separate principal that is valid only on platform routes.
+
+**Fix (2026-11-07, #126).** The proposal was taken, and the decision recorded here because it
+is a product decision, not a mechanical one. Three candidates were weighed:
+
+- **A — a separate principal valid only on platform routes (chosen).** Scope on the credential
+  plus a second gate, with the two gates mutually exclusive in both directions.
+- **B — an explicit list of tenants on the principal.** Smaller, and rejected: it invites an
+  "all tenants" value, weakens "one credential, one authority", and every store call still takes
+  a single tenant — which `scimTenant` deliberately refuses to read from a path.
+- **C — leave it to the application.** Rejected on the audit trail: cross-tenant operations are
+  the ones most worth attributing, and they would lose `audit.ActorService`.
+
+Two assumptions the review should be able to attack, both stated in the PR:
+
+1. A platform credential is valid **only** on platform routes and carries **no home tenant** —
+   one that names a tenant is ambiguous, and is refused. Found the hard way: the first test
+   version's fixtures all named a tenant, so a gate that had lost its scope check still refused
+   them, and a **single-tenant** service account (empty `TenantID`) would have reached the
+   platform surface. The mutant survived until the fixture was fixed.
+2. The two gates answer with the **same 401 and body as a bad token**, so a probe cannot tell
+   "wrong scope" from "wrong secret". An unknown scope satisfies neither gate.
+
+`PrincipalScope`'s zero value is the tenant credential, so nothing that predates it changes.
+The actor carries the zero tenant id rather than `tenant.Single` — `Single` is a claim about the
+deployment — and the stored payload is identical either way, so the chain is untouched; making
+the scope a distinct *hashed* actor field would change the canonical payload and is its own
+decision.
 
 ### TD-13 — Second-factor policy cannot be set per role
 

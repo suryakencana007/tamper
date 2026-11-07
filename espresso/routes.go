@@ -235,6 +235,13 @@ func tenantOfPrincipal(ctx context.Context) (tenant.ID, bool) {
 	if !ok {
 		return tenant.ID{}, false
 	}
+	// A platform credential has no home tenant. FromStored("") would answer Single, which is a
+	// claim about the DEPLOYMENT; the truth here is that this credential has no tenant at all,
+	// so it must never be handed to a store. RequireServiceAccount already refuses it, and this
+	// is the second lock on the same door.
+	if p.Scope == PrincipalScopePlatform {
+		return tenant.ID{}, false
+	}
 	return tenant.FromStored(p.TenantID), true
 }
 

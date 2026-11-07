@@ -7,7 +7,20 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
-## [Unreleased]
+## [0.12.0] — 2026-11-07
+
+**A second factor you can actually demand per role — and two SAML fixes that a review found
+after the advisory was already closed.**
+
+The 2FA gap was never a missing mechanism: the login gate and the action gate both existed. It
+was a missing *policy* — `WithTOTPRequired` is process-wide, so "platform admins must use 2FA,
+customers need not" could not be said. It could not be said for a second reason that took a
+pre-flight to see: a session that had passed a second factor still carried the local-password
+`acr`, so the only step-up that worked was another IdP's. This release adds the port, the claim
+that names what a session actually proved (`amr`), and the gate that can require it.
+
+Additive for every caller. One source-level break, called out below: a variadic mint no longer
+satisfies an interface declared with the old signature.
 
 ### Added
 
@@ -19,8 +32,6 @@ All notable changes to tamper are recorded here. Versions follow
   supply a method), a token minted before `amr` existed is refused by a method gate, and with
   no option set the gate behaves exactly as before. The `IdentityService` port doc now says
   which `amr` values each leg must set. New denial reason: `StepUpDenyMissingMethod`.
-
-
 - **Per-user second-factor policy** (Phase 16 slice 16b, TD-13). `identity.SecondFactorPolicy`
   is a port the application implements — the same shape as `ImpersonationPolicy`, because
   "platform admins must use 2FA, customers need not" is a role mapping, and `identity` must
@@ -32,8 +43,6 @@ All notable changes to tamper are recorded here. Versions follow
   `WithTOTPRequired` is a **floor**: a policy may add requirements but cannot exempt a user
   from one the deployment already made for everyone (verified by a test in both directions). Sessions now name their methods: `["pwd"]` from a password login, `["pwd","otp"]`
   from the enrolment ceremony (see `amr` above).
-
-
 - **`amr` on access tokens** (Phase 16 slice 16b, TD-13). `crypto.AccessClaims.AMR` names the
   authentication **methods** a session proved — `AMRPassword`, `AMROTP`, `AMRSAML` — while
   `acr` keeps meaning the **policy class**. The two are different questions, and keeping them
@@ -70,9 +79,6 @@ All notable changes to tamper are recorded here. Versions follow
   10–40 KiB. Over the bound the answer is `ErrAssertionInvalid` — the same generic error as
   any other parse failure, so it cannot become an oracle.
 
-Nothing yet. What is left in `./docs/tasks/tech-debt.md` is **TD-12** (a service account has one tenant)
-and **TD-13** (2FA policy per role) — both need a product decision — plus TD-27, which is
-Barista's migration.
 
 ---
 
@@ -99,6 +105,10 @@ Barista's migration.
   default); removing it is a separate, named act, `WithMaxResponseBytesUnbounded()`. Tests added
   for the literal, the constructor, the option, both sides of the boundary, and each of those
   four mutants — all four now bite.
+
+**What is left.** TD-13 is closed here — see [`./docs/tasks/tech-debt.md`](./docs/tasks/tech-debt.md).
+What remains is **TD-12** (a service account has one tenant), which needs a product decision,
+and TD-27, which is Barista's migration.
 
 ## [0.11.0] — 2026-11-05
 

@@ -40,7 +40,7 @@ not a separate service. Three properties shape every flow:
 | Function | Purpose |
 |---|---|
 | `NewJWTService`, `WithSigner`, `WithVerifiers` | The JWT service. HS256 is built in. Other signers plug in through the `Signer` interface, with `kid` rotation. |
-| `IssueAccess(userID, tenant, authTime, acr)` | Creates an access token with the claims `sub`, `tid`, `auth_time`, `acr`, `purpose`. |
+| `IssueAccess(userID, tenant, authTime, acr, methods…)` | Creates an access token with the claims `sub`, `tid`, `auth_time`, `acr`, `amr`, `purpose`. `acr` is the **policy class**; `amr` names the **methods proved** — a locally-enrolled TOTP session is `acr=local_password` with `amr=["pwd","otp"]`. The methods are variadic, so an existing call compiles and produces the same bytes. |
 | `IssueAccessEntered(userID, tenant, homeTenant, authTime, acr, ttl)` | Creates an *entered* token: `tid` is the tenant entered, `htid` is the user's home tenant. It checks no right; `Core.EnterTenant` is the entry point. |
 | `VerifyAccess(token, tenant)` | Verifies the token and pins the tenant: `tid` must match exactly. |
 | `ParseAccess(token)` | Verifies the token without the tenant check. It requires `purpose=access`, an `auth_time` and an `acr`. `RequireAuth` uses it; the tenant check comes later in `RequireTenant`. |
@@ -71,7 +71,7 @@ not a separate service. Three properties shape every flow:
 | `Login(tenant, email, pw)` | Password login with throttling and equal timing. Returns `ErrTOTPRequired` when a second factor is needed. |
 | `Refresh(token)` | Rotates the session. `TenantID`, `auth_time`, and `acr` are copied unchanged. |
 | `Logout`, `RevokeAllSessions(user)`, `RevokeAllSessionsForTenant(tenant)` | Revokes sessions: one, all of a user, all of a tenant. |
-| `IssueTokensForUser(user, tenant, authTime, acr)` | Mints a session after TOTP or federation. It reads the user's row, requires the tenant to be the user's, and requires `authTime` and `acr` from the caller. |
+| `IssueTokensForUser(user, tenant, authTime, acr, methods…)` | Mints a session after TOTP or federation. It reads the user's row, requires the tenant to be the user's, and requires `authTime`, `acr` and the proved methods from the caller — **the adapter must say which leg it served**: `["pwd"]` on the password leg, `["pwd","otp"]` on the second, because `identity` cannot tell from the call alone. |
 | `StartTOTPEnrollment`, `CompleteTOTPEnrollment`, `EnrollTOTP`, `VerifyTOTP`, `VerifyRecoveryCode`, `DisableTOTP`, `ClearTOTP` | TOTP lifecycle. |
 | `ResolveByIdentity`, `ProvisionUserWithIdentity`, `Link`, `Unlink`, `ListIdentities` | Multi-IdP account linking and JIT provisioning. |
 | `Invite`, `AcceptInvitation` | Onboarding without SSO, through a single-use token. |
@@ -150,7 +150,7 @@ pass them.
 | `PinTenant(resolve)` | Pins the tenant on a route **before** login. |
 | `RequireTenant(resolve)`, `PinTenant(resolve)`, `FixedRequestTenant` | `resolve` is `func(*http.Request) (tenant.ID, bool)`. `RequireTenant` checks that the token `tid` equals the resolved tenant; anything else, a tenant that did not resolve included, is a 401. `PinTenant` pins a tenant before login and answers 404 when none resolves. An empty answer is never the single tenant; `FixedRequestTenant(tenant.Single)` says it. |
 | `RequireEntitlement(store, capability, resolve)` | Gate for paid features. |
-| `RequireFreshAuth(maxAge, acrValues)` | Step-up: requires a recent authentication and an accepted ACR. |
+| `RequireFreshAuth(maxAge, acrValues, opts…)` | Step-up: requires a recent authentication, an accepted ACR, and — with `StepUpRequireMethods("otp")` — a proved **method**. The two axes are independent: a method does not lift a class requirement, and a class does not supply a method. A denial says which axis failed (`StepUpDenyMissingMethod`). |
 | `RequireDecision(DecisionGate)` | PDP gate: visibility check (404), then tier check (403). The gate has its own `Tenant` resolver (required) and an `AllowEntered` flag; the token must be for that tenant. |
 | `RequireServiceAccount(validator)` | Machine credentials. The tenant comes from the token. |
 | `Throttled(throttle, key)` | Rate limit per address, per tenant, or per service account. |
@@ -356,7 +356,7 @@ Authorization: Bearer <access>
   ├─ RequireTenant        claims.tid == resolve(request) ? continue : 401
   │                        ─> context: tenant.ID
   ├─ RequireEntitlement   EntitlementStore.ForTenant(tenant) ─> feature bought? : 403 FEATURE_NOT_ENABLED
-  ├─ RequireFreshAuth     auth_time recent enough and acr accepted? : 401 STEP_UP_REQUIRED
+  ├─ RequireFreshAuth     auth_time recent, acr accepted, required amr present? : 401 STEP_UP_REQUIRED
   ├─ RequireDecision      authz.Check(routed tenant, Subject{token's home tenant, user},
   │                                    action, Resource{type, id from path})
   │                        ├─ visibility check fails ─> 404 (a deny and a miss look the same)
@@ -489,4 +489,10 @@ the design documents.
   user id (`VerifyTOTP`, `EnrollTOTP`, `Refresh`, `Logout`) are not
   tenant-scoped. The `authz` ports (#56) and `espresso.IdentityService`
   (#59) take the tenant on every call.
-- **Refresh rotation copies the tenant, `auth_time`, and `acr` unchanged.**
+- **Refresh rotation copies the tenant, `auth_time`, `acr` and `amr` unchanged.** A rotation
+  never adds a method: the session proved what it proved, and a refresh is not a new
+  authentication.
+- **`acr` and `amr` answer different questions and neither answers the other.** `acr` is the
+  policy class the deployment accepted; `amr` is the methods the session actually proved. A
+  gate that needs a second factor asks for a *method*, never a new class value — inventing a
+  class would silently stop matching every deployed `acrValues` list.

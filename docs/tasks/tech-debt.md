@@ -79,7 +79,7 @@ gaps: something does not exist, so there is nothing to reproduce.
 | TD-10 | The TOTP path mints a token without a tenant | fixed by #40 | — | — |
 | TD-11 | The audit log cannot be queried per tenant | fixed by #112, #114 | — | — |
 | TD-12 | A service account has only one tenant | gap | P2 | Tamper |
-| TD-13 | Second-factor policy cannot be set per role | gap | P2 | Tamper |
+| TD-13 | Second-factor policy cannot be set per role | fixed by #119, #120, #121 | — | — |
 | TD-14 | The per-tenant route mounting pattern is static | fixed by #107, #108 | — | — |
 | TD-15 | SCIM tenant scoping is off by default | fixed by #39 | — | — |
 | TD-16 | `Verify` reports tamper on a mixed-version chain | resolved by #46 | — | — |
@@ -763,6 +763,37 @@ not".
 **Workaround in the application.** Put `RequireFreshAuth` with strict
 `acrValues` on every platform route. The local-password ACR does not satisfy
 step-up by design, so platform admins must sign in through an IdP with MFA.
+*(Superseded — the workaround was the symptom of the real finding below.)*
+
+**Fix (2026-11-07, #119, #120, #121).** Designed in
+[`../phases/PHASE16-SECOND-FACTOR-POLICY-SKETCH.md`](../phases/PHASE16-SECOND-FACTOR-POLICY-SKETCH.md).
+The item's own evidence was right, and its workaround was the thread worth pulling: it told
+admins to sign in through an IdP with MFA, and the reason turned out to be structural — a
+session that *had* passed a second factor still carried `ACRLocalPassword`
+(`identity/totp.go:104`), so the only `acr` that could satisfy a step-up gate was another IdP's.
+**No ACR value meant "this session proved a second factor"**, which is why stamping a new one
+(`ACRLocalTOTP`) was considered and rejected: an unknown ACR silently stops matching every
+existing `acrValues` list, which is a behaviour change wearing a feature's clothes.
+
+What landed, in three layers:
+
+- **The claim (#119).** `crypto.AccessClaims.AMR` names the **methods** a session proved
+  (`pwd`, `otp`, `saml`) while `acr` keeps meaning the **policy class**. Two different
+  questions, so a second question gets a second field rather than a wider answer in the first.
+  `HasMethod` is how to ask, because a token minted before the claim has no `AMR` at all.
+- **The policy (#120).** `identity.SecondFactorPolicy` — a port the application implements, the
+  shape Phase 11's `ImpersonationPolicy` established, because a privileged-role mapping is the
+  app's to own and `identity` must not learn what a role is. `SecondFactorRequirement{AtLogin,
+  ForActions, GraceUntil}` is the three models recorded as decided: **A** block the password
+  leg until enrolment, **B** let the route demand a step-up, **C** postpone the block to a
+  deadline. `WithTOTPRequired` survives as a **floor** — a policy may add requirements but
+  cannot exempt a user from one the deployment already made for everyone, tested in both
+  directions. A policy that errors **denies**.
+- **The gate (#121).** `espresso.StepUpRequireMethods`, so `RequireFreshAuth` can require a
+  method and not only a class. Without it the port's `ForActions` could only advise.
+
+Failure shape: the denial is `StepUpDenyMissingMethod`, so the audit row and the SPA envelope
+say which axis failed instead of blaming the `acr`. Absent option = byte-identical to before.
 
 ### TD-14 — The per-tenant route mounting pattern is static *(fixed by #107, #108)*
 
@@ -1188,7 +1219,8 @@ Suggested slice order if this work moves into Tamper:
    eager per-tenant provisioning, and plans, IdP and domains inherit at runtime in
    `tenant`/`oidc`/`saml`.
 8. **TD-17, TD-18, TD-20, TD-23, TD-26** — merged (#49 to #52, #54).
-9. **TD-12, TD-13** — the rest. **TD-14 closed in #107/#108**, so the dynamic tenant
+9. **TD-12** — the rest. **TD-13 closed in #119–#121** (a second factor can now be demanded per
+   role), and **TD-14 closed in #107/#108**, so the dynamic tenant
    surface ships; **TD-28 closed in #100/#101**, and with it
    the last item that was purely tamper's own work.
 

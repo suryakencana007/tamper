@@ -107,9 +107,13 @@ tamper names no table and reads no foreign model.
 ```go
 // identity
 type SecondFactorRequirement struct {
-	AtLogin    bool          // model A
-	ForActions bool          // model B — the routes decide via RequireFreshAuth
-	Grace      time.Duration // 0 = in force now; >0 = model C
+	AtLogin    bool      // model A
+	ForActions bool      // model B — the routes decide via RequireFreshAuth
+	GraceUntil time.Time // zero = in force now; a future instant = model C
+
+	// AMENDED while implementing: this field was a time.Duration, which cannot work —
+	// tamper would have to know WHEN the requirement began, and only the application
+	// knows that. A deadline carries the anchor the duration lacked. Shipped in #120.
 }
 
 type SecondFactorPolicy interface {

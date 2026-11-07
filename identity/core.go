@@ -37,6 +37,10 @@ type Core struct {
 	throttling   Throttling      // zero value = no rate limiting; see WithThrottling
 	invitations  InvitationStore // nil = invitation verbs error (opt-in, 7j-1)
 	memberships  MembershipStore // nil = EnterTenant errors (opt-in, Phase 8)
+	// secondFactor is the per-user second-factor policy; nil = no policy (the
+	// process-wide totpRequired switch keeps its meaning).
+	secondFactor SecondFactorPolicy
+
 	// impersonation is the policy Impersonate asks; nil = impersonation is off
 	// (opt-in, Phase 11). impersonationTTL is the lifetime of the token it mints.
 	impersonation    ImpersonationPolicy
@@ -283,11 +287,14 @@ func (c *Core) Login(ctx context.Context, tenantID tenant.ID, email, password st
 		return User{}, Tokens{}, ErrInvalidCredentials
 	}
 
-	if user.TOTPEnrolled || c.totpRequired {
+	// An enrolled user always needs the code. A user who is NOT enrolled needs it only if
+	// the policy says so for them (Phase 16, model A) — the process-wide switch is the
+	// fallback when no policy is wired.
+	if user.TOTPEnrolled || c.secondFactorRequiredAtLogin(ctx, tenant.FromStored(user.TenantID), user.ID) {
 		return user, Tokens{}, ErrTOTPRequired
 	}
 
-	tokens, err := c.issueTokens(ctx, user.ID, tenant.FromStored(user.TenantID), c.now().Unix(), c.defaultACR)
+	tokens, err := c.issueTokens(ctx, user.ID, tenant.FromStored(user.TenantID), c.now().Unix(), c.defaultACR, amrForLogin()...)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
@@ -335,7 +342,7 @@ func (c *Core) Login(ctx context.Context, tenantID tenant.ID, email, password st
 //
 // Nothing else about the user is consulted — not the enrollment state,
 // not the credentials.
-func (c *Core) IssueTokensForUser(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
+func (c *Core) IssueTokensForUser(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string, amr ...string) (Tokens, error) {
 	// Wiring first, before anything is read: a token-less Core and an
 	// unset tenant say so whatever else is true.
 	if err := c.mintGate(tenantID, authTime, acr); err != nil {
@@ -356,7 +363,7 @@ func (c *Core) IssueTokensForUser(ctx context.Context, userID string, tenantID t
 	if !user.Active {
 		return Tokens{}, ErrUserInactive
 	}
-	return c.issueTokens(ctx, userID, tenantID, authTime, acr)
+	return c.issueTokens(ctx, userID, tenantID, authTime, acr, amr...)
 }
 
 // Refresh validates and rotates a refresh session: the old row is
@@ -563,14 +570,14 @@ func (c *Core) DefaultACR() string { return c.defaultACR }
 // tenantID is stamped on the session row verbatim and is never read or
 // defaulted: substituting anything for it here would invent a tenant
 // the caller did not name.
-func (c *Core) issueTokens(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string) (Tokens, error) {
+func (c *Core) issueTokens(ctx context.Context, userID string, tenantID tenant.ID, authTime int64, acr string, amr ...string) (Tokens, error) {
 	// Every caller has already passed this. It is here so that one that
 	// has not gets identity's own errors, not crypto's wrapped as a
 	// signing failure.
 	if err := c.mintGate(tenantID, authTime, acr); err != nil {
 		return Tokens{}, err
 	}
-	access, err := c.jwt.IssueAccess(userID, tenantID, authTime, acr)
+	access, err := c.jwt.IssueAccess(userID, tenantID, authTime, acr, amr...)
 	if err != nil {
 		return Tokens{}, fmt.Errorf("identity: issue access token: %w", err)
 	}

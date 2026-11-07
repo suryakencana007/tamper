@@ -10,6 +10,18 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Added
 
+- **Per-user second-factor policy** (Phase 16 slice 16b, TD-13). `identity.SecondFactorPolicy`
+  is a port the application implements — the same shape as `ImpersonationPolicy`, because
+  "platform admins must use 2FA, customers need not" is a role mapping, and `identity` must
+  not learn what a role is. `SecondFactorRequirement{AtLogin, ForActions, GraceUntil}` answers
+  three questions: block the password login until enrolment (model A), let the routes demand
+  a step-up (model B), and postpone the block until a deadline (model C). Wired with
+  `WithSecondFactorPolicy`; a `Core` without one behaves exactly as before, `WithTOTPRequired`
+  keeps its meaning, and **a policy that errors denies** — an unreadable policy must never open
+  a login. Sessions now name their methods: `["pwd"]` from a password login, `["pwd","otp"]`
+  from the enrolment ceremony (see `amr` above).
+
+
 - **`amr` on access tokens** (Phase 16 slice 16b, TD-13). `crypto.AccessClaims.AMR` names the
   authentication **methods** a session proved — `AMRPassword`, `AMROTP`, `AMRSAML` — while
   `acr` keeps meaning the **policy class**. The two are different questions, and keeping them

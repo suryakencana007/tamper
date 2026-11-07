@@ -101,7 +101,8 @@ func (c *Core) CompleteTOTPEnrollment(ctx context.Context, tenantID tenant.ID, u
 	// tenantID, not FromStored(user.TenantID): they are equal — userInTenant just
 	// proved it — and minting for the tenant the caller asked for is the property
 	// this phase is about.
-	tokens, err := c.issueTokens(ctx, userID, tenantID, enrolledAt.Unix(), c.defaultACR)
+	// The enrolment ceremony verified a code, so this session names both methods.
+	tokens, err := c.issueTokens(ctx, userID, tenantID, enrolledAt.Unix(), c.defaultACR, amrForSecondFactor()...)
 	if err != nil {
 		return User{}, Tokens{}, err
 	}

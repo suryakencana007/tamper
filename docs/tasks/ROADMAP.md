@@ -8,6 +8,12 @@ pointer and the process rule for every item.
 **Everything tamper-owned is closed.** `./tech-debt.md` holds one item, **TD-27**, and it is
 Barista's migration rather than this library's. The items below are new work, not debt.
 
+## What has already been proven
+
+[`./PROOF-SWEEP.md`](./PROOF-SWEEP.md) records the guards whose mutants were run — twenty bite,
+and the two that could not fail were deleted or made machine-checked rather than kept as
+decoration. Re-run it before claiming a new guard works.
+
 ## The rule that decides order — not size
 
 From `./tech-debt.md` §Process limits: any change touching **`identity`, `crypto/jwt.go`,

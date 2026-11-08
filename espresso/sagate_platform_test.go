@@ -314,3 +314,42 @@ func TestPlatformGate_CredentialFailureSemantics(t *testing.T) {
 		}
 	})
 }
+
+// The contract scimTenant relies on, tested where it is actually decided.
+//
+// scimTenant used to carry a second check — `!id.Valid()` — that no mutant could reach, because
+// this function answers a valid id whenever it answers one at all. Deleting a guard is only safe
+// if the thing it defended is checked somewhere it CAN fail, so that is here: every principal a
+// tenant credential can produce resolves to a valid id or to false, and a platform credential
+// resolves to false. A future resolver that answered (zero, true) fails this test rather than
+// silently handing a store an unset tenant.
+func TestTenantOfPrincipal_AlwaysAnswersAValidIDOrFalse(t *testing.T) {
+	cases := []struct {
+		name      string
+		principal Principal
+		wantOK    bool
+	}{
+		{"single-tenant credential", Principal{ID: "sa"}, true},
+		{"multi-tenant credential", Principal{ID: "sa", TenantID: "acme"}, true},
+		{"platform credential", Principal{ID: "sa-platform", Scope: PrincipalScopePlatform}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.WithValue(context.Background(), principalKey{}, tc.principal)
+			id, ok := tenantOfPrincipal(ctx)
+
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (principal %+v)", ok, tc.wantOK, tc.principal)
+			}
+			if ok && !id.Valid() {
+				t.Errorf("ok = true with an INVALID id (%q) — scimTenant deletes its own check and "+
+					"depends on this being false; a store call would receive an unset tenant",
+					id)
+			}
+			if !ok && id.Valid() {
+				t.Errorf("ok = false but the id is valid (%q) — a refusal and a miss must not "+
+					"smuggle a usable tenant out of the resolver", id)
+			}
+		})
+	}
+}

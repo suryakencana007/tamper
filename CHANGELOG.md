@@ -7,6 +7,19 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
+## [Unreleased]
+
+### Changed
+
+- **A guard that could not fail was deleted rather than kept** (#133). `scimTenant` refused a
+  SCIM request when the tenant it resolved was invalid — a check no mutant could reach, because
+  the resolver answers a valid id whenever it answers one at all. It is gone, and the invariant
+  it defended is now a tested contract (`TestTenantOfPrincipal_AlwaysAnswersAValidIDOrFalse`)
+  that fails at the source if a future resolver ever hands back `(zero, true)`. The audit actor's
+  choice of an empty tenant over `tenant.Single` stays, with the reason machine-checked: a test
+  fails if the two ever become distinguishable. `./docs/tasks/PROOF-SWEEP.md` records the whole
+  sweep — twenty guards whose mutants bite, the two that did not, and the method to repeat it.
+
 ## [0.13.0] — 2026-11-08
 
 **Automation that acts across tenants, without a credential that can read everything.**

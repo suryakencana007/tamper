@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -137,5 +138,43 @@ func TestDocsVersionPinsMatchTheChangelog(t *testing.T) {
 			t.Errorf("%s does not pin %s — the newest released version in CHANGELOG.md is v%s, "+
 				"and a stale pin recommends a version that is not the latest", page, want, version)
 		}
+	}
+}
+
+// A claim about a document, checked the way any other claim is.
+//
+// docs/tasks/PROOF-SWEEP.md opens with "## Bite (n)" and then lists n rows. The first version said
+// 14 with 20 rows underneath — a number recalled rather than counted, in the one file whose
+// subject is guards that appear to work. If the heading and the table can drift, the sweep's own
+// summary is the first thing that stops being trustworthy.
+func TestProofSweepCountsMatchItsRows(t *testing.T) {
+	body, err := os.ReadFile("docs/tasks/PROOF-SWEEP.md")
+	if err != nil {
+		t.Fatalf("read PROOF-SWEEP.md: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^## Bite \((\d+)\)`).FindSubmatch(body)
+	if m == nil {
+		t.Fatal("PROOF-SWEEP.md has no `## Bite (n)` heading")
+	}
+	claimed, err := strconv.Atoi(string(m[1]))
+	if err != nil {
+		t.Fatalf("heading count %q is not a number: %v", m[1], err)
+	}
+
+	section := strings.Split(strings.Split(string(body), "## Bite")[1], "## Could not fail")[0]
+	rows := 0
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.Contains(line, "---") || strings.HasPrefix(line, "| Guard") {
+			continue
+		}
+		rows++
+	}
+
+	if claimed != rows {
+		t.Errorf("the sweep claims %d guards bite but its table has %d rows — count the rows, "+
+			"then make the heading agree (or delete the number)", claimed, rows)
+	}
+	if rows < 10 {
+		t.Errorf("only %d rows parsed — the table shape changed and this test is no longer reading it", rows)
 	}
 }

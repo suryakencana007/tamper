@@ -126,24 +126,18 @@ func NewSCIMRoutes(cfg SCIMConfig, users scim.UserStore, groups scim.GroupStore)
 func scimTenant(ctx context.Context) tenant.ID {
 	MustGetPrincipal(ctx) // the panic, with its message, for a route mounted outside the gate
 	id, ok := tenantOfPrincipal(ctx)
-	if !ok || !id.Valid() {
-		// Reachable by mounting this surface under RequirePlatformServiceAccount, where the
-		// credential has no home tenant by design and tenantOfPrincipal answers none.
+	if !ok {
+		// A platform credential has no home tenant by design, so there is no tenant to scope a
+		// store call with, and this is where that misconfiguration is caught.
 		//
-		// Before the platform gate existed this could not happen: tenantOfPrincipal resolves
-		// through FromStored, which answers Single for "" and New(v) otherwise, so the value
-		// was always a VALID ID. The platform gate introduced the only way to reach an unset
-		// one, and an unset tenant is not something to hand a store and hope — the app's store
-		// may treat it as "no filter". Panicking keeps the invariant this function already
-		// relied on: every store call below gets a resolved tenant, or the route was
-		// misconfigured and says so.
-		//
-		// WHICH HALF OF THIS CONDITION IS ACTUALLY LOAD-BEARING, measured rather than assumed:
-		// `!ok` is — it is what fires when the platform credential reaches here, and dropping it
-		// goes red. `!id.Valid()` is NOT reachable today, because tenantOfPrincipal always
-		// answers a valid id when it answers one at all, and a mutant that removes just that
-		// conjunct SURVIVES. It is kept as the guard for the day a resolver returns (zero, true),
-		// and it is documented as unproven rather than counted as a proof.
+		// There used to be a second conjunct here — `|| !id.Valid()` — and it was DELETED rather
+		// than kept: no mutant could reach it, because tenantOfPrincipal answers a valid id
+		// whenever it answers one at all (it resolves through tenant.FromStored, which returns
+		// Single for "" and New(v) otherwise). A guard that cannot fail is worse than no guard,
+		// because it is read as protection. The invariant it was defending now lives where it can
+		// be checked: TestTenantOfPrincipal_AlwaysAnswersAValidIDOrFalse pins the contract of the
+		// function this one calls, so a future resolver that answered (zero, true) fails there,
+		// at the source, with a message about the contract instead of a store call with no tenant.
 		panic("tamper/espresso: SCIM route mounted under the platform gate — " +
 			"a platform credential has no tenant to scope a store call with")
 	}

@@ -7,7 +7,26 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
-## [Unreleased]
+## [0.13.0] — 2026-11-08
+
+**Automation that acts across tenants, without a credential that can read everything.**
+
+Every multi-tenant deployment eventually grows a job that is not *in* a tenant: provisioning a
+new customer, syncing a directory, reconciling plans up the hierarchy. Until this release such a
+job had three options, and all three were bad — one service account per tenant (N secrets, N
+rotations, and none of them existing yet for the tenant being created), a human admin's session
+(every 30 days it expires at 3am in a cron job), or stepping outside the gate and losing the
+audit attribution exactly where it matters most.
+
+The fix is a second *kind* of machine credential rather than a wider first one.
+`espresso.RequirePlatformServiceAccount` accepts a credential whose `Scope` is `platform`, valid
+only on platform routes and carrying no home tenant; `RequireServiceAccount` keeps accepting only
+tenant credentials. The two gates are **mutually exclusive**, the wrong kind is refused with the
+same 401 as a bad token, and an unknown scope satisfies neither — so a reader can tell what a
+credential is for by looking at one field, and a probe cannot learn which check it failed.
+
+Additive: `Scope`'s zero value is today's tenant credential, so nothing that exists today
+changes behaviour.
 
 ### Added
 
@@ -33,6 +52,10 @@ All notable changes to tamper are recorded here. Versions follow
   either way, because making the scope a distinct hashed field would change the canonical
   payload and that is its own decision. **Additive**: `Scope`'s zero value is today's tenant
   credential, and an unscoped credential behaves exactly as before.
+
+**What is left.** TD-13 closed in 0.12.0 and **TD-12 closes here** — both in
+[`./docs/tasks/tech-debt.md`](./docs/tasks/tech-debt.md). What remains is **TD-27** alone,
+and it is Barista's migration rather than tamper's: every gap this library owned is closed.
 
 ## [0.12.0] — 2026-11-07
 
@@ -133,9 +156,7 @@ satisfies an interface declared with the old signature.
   for the literal, the constructor, the option, both sides of the boundary, and each of those
   four mutants — all four now bite.
 
-**What is left.** TD-13 closed in 0.12.0 and **TD-12** closes in the next release — both in
-[`./docs/tasks/tech-debt.md`](./docs/tasks/tech-debt.md). What remains after that is TD-27,
-which is Barista's migration.
+
 
 ## [0.11.0] — 2026-11-05
 

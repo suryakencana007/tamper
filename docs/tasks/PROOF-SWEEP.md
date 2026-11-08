@@ -8,7 +8,10 @@ Method, so it can be repeated: copy the tree, replace one condition with a const
 a comparison the branch was written to catch), `go build ./...`, then run the package's tests. A
 mutant that does not compile is not a mutant — it is a broken edit, and it proves nothing.
 
-## Bite (14)
+## Bite (20)
+
+First written as 14 with 20 rows underneath: the number was a memory, not a count. It is
+checked now — `TestProofSweepCountsMatchItsRows` fails if the heading and the table disagree.
 
 | Guard | Mutant | Where |
 |---|---|---|

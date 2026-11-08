@@ -1,6 +1,6 @@
 # ROADMAP — planned work, and how to pick it up
 
-Twelve open items, tracked as GitHub issues **#130–#141** under three milestones, and on the
+Thirteen open items — **#29** plus **#130–#141** — under three milestones, and on the
 [project board](https://github.com/users/suryakencana007/projects/6). This file exists so a
 future session does not have to query GitHub to find out what is next: it carries the evidence
 pointer and the process rule for every item.
@@ -23,6 +23,7 @@ sketch, and a large doc change needs none.
 |---|---|---|
 | [#130](https://github.com/suryakencana007/tamper/issues/130) `saml`: validate `MetadataURL` as an absolute URL | **yes** (PHASE17 amendment) | `saml/provider.go` — the `ACSURL` check added in #124 is the twin; PHASE17's "worth its own item" note |
 | [#131](https://github.com/suryakencana007/tamper/issues/131) CI: a `gofmt` gate, after making the sqlc comment gofmt-stable | no | `audit/internal/sqlitestore/sqltypes/blob.go` — read the comment **before** running `gofmt -w`, which would corrupt the SQL literal `x''` into a curly quote |
+| [#29](https://github.com/suryakencana007/tamper/issues/29) `espresso/samlroutes.go`: the state-cookie slot-mismatch comment still claims a **silent** failure | no (comment) | `samlroutes.go:43–53` and `:229` vs line 461, which answers **400 `SAML_ASSERTION_UNCORRELATED`**. Filed 2026-08-11, and the reason to fix it is not the typo: the claim is what an embedder reads when deciding how much to guard its own slot wiring. **Check whether the loud path has a test at all** — nothing in `espresso/*_test.go` matches `uncorrelated`/`InResponseTo`, so a corrected comment may be an unverified claim |
 
 ## Milestone 2 · Proof and documentation
 

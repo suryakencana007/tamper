@@ -1253,6 +1253,9 @@ Suggested slice order if this work moves into Tamper:
 
 ## Process limits
 
+**Planned work lives in [`./ROADMAP.md`](./ROADMAP.md)** — issues #130–#141, with the sketch
+requirement stated per item. This section is the rule that orders them.
+
 `CLAUDE.md` says Phase 7 is complete, and `../phases/PHASE7-MULTITENANCY-SKETCH.md` is a
 design freeze. Any item that touches `identity`, `crypto/jwt.go`, `oidc`,
 `saml`, `scim`, `espresso`, or `audit` needs a sketch amendment (or a new

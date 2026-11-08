@@ -136,3 +136,16 @@ other is the A.8.17 clock note, recorded in
 synchronised clock reading, it is the caller's timestamp bumped forward on
 collision to preserve chain order.
 <!-- PHASE7:END -->
+
+<!-- ROADMAP:BEGIN -->
+## What is next
+
+All work this library owned is closed. Nothing is left in `./docs/tasks/tech-debt.md` except
+**TD-27**, which is Barista's migration rather than tamper's.
+
+The planned work is `./docs/tasks/ROADMAP.md`: twelve items as issues #130–#141 under three
+milestones, each with the evidence it is grounded in and an explicit "needs a sketch first or
+not" — because the frozen-package rule in `./docs/tasks/tech-debt.md` §Process limits decides
+the order, not the size of the diff. Read that file before starting anything new; it also
+carries the standing rules and the shared definition of done.
+<!-- ROADMAP:END -->

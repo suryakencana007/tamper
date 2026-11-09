@@ -169,3 +169,48 @@ construction with the field named in the message.
 Nothing else in this sketch changes. The guard, the bound, the Allowance and the invariants stay
 as written; this document is amended rather than rewritten, because the reason the item was left
 out turned out to be the thing worth correcting.
+
+---
+
+## Fourth review — the namespace audit, beyond `NameID` (#132)
+
+This sketch said plainly: *"It does not address other libraries' namespace-blind tags; the audit is
+this one path."* This is that audit, and its answer is that `NameID` was not the only name-matched
+element — nor the most consequential one.
+
+**Method.** Read every struct tag in `crewjam/saml@v0.5.1` for the assertion tree and mark the ones
+declared with a **local name only** (no namespace), because those are the fields a
+foreign-namespace element populates. Then ask, per field, whether tamper or an application trusts
+what it carries. Verdict per field:
+
+| Field | Tag | Trusted by | Verdict |
+|---|---|---|---|
+| `Assertion.Subject` | *(none)* | the identity, and the parent of the tree below | **vulnerable** |
+| `Subject.NameID` | `xml:"NameID"` | the subject identity | **vulnerable** — the original fix |
+| `Subject.SubjectConfirmations` | `xml:"SubjectConfirmation"` | correlation, and the replay key | **vulnerable** |
+| `SubjectConfirmation.SubjectConfirmationData` | *(none)* | `InResponseTo`, `Recipient` — correlation | **vulnerable** |
+| `Assertion.AttributeStatements` / `Attribute` / `AttributeValue` | `xml:"AttributeStatement"`, `xml:"Attribute"`, `xml:"AttributeValue"` | **applications**, for JIT provisioning and authorization | **vulnerable, and the worst of them** |
+| `Assertion.AuthnStatements` | `xml:"AuthnStatement"` | `AuthnInstant`, `SessionIndex` handed to applications | **vulnerable** |
+| `Assertion.Issuer` | `xml:"urn:oasis:names:tc:SAML:2.0:assertion Issuer"` | IdP validation | **not vulnerable** — namespace-qualified, so it cannot be steered |
+
+The last row is the one worth keeping: a guard for a field that is already safe is noise, and noise
+is what teaches people to widen guards until they mean nothing. It is verified in the vendored
+source, not assumed from the advisory's wording — which, as the third review found, is a habit
+worth keeping.
+
+**The fix is a set, not a second special case.** `rejectForeignNameID` now checks every element in
+`localNameMatchedElements` instead of `NameID` alone, with the same rule: the element must be in
+the assertion namespace, which the SAML spec requires of all of them, so a legitimate IdP is
+unaffected (`saml:` prefix or default `xmlns` — both resolved by `encoding/xml`, and both asserted).
+
+**Why attributes are the worst.** `NameID` steers *which* identity a session becomes; an attribute
+steers what the application *grants* it. `ParsedAssertion.Attribute("email")` is what a JIT
+provisioning hook keys on, and `AttributeValues("groups")` is what an authorization mapping reads.
+A signed assertion carrying an extra foreign-namespace `AttributeStatement` can therefore add or
+override values an application trusts, and slices append rather than replace — so the attack does
+not even have to displace a legitimate attribute.
+
+**What this does not do.** It does not patch the library, and it does not look at elements outside
+this tree (`Response` fields, `Conditions`, `Status`) — the audit followed what tamper and its
+callers trust, and `Conditions` is validated by the library against its own clock. A future audit
+of the protocol-level elements is a separate item rather than a claim made here.

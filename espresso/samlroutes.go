@@ -44,12 +44,20 @@ import (
 // cookie through. The app wires ReadStateCookie() so the two can't
 // drift.
 //
-// NOTE the failure mode differs from OIDC's, and the difference is
-// dangerous: an OIDC slot mismatch 401s every exchange — loud, and any
-// test catches it. A SAML mismatch just makes hasState false, which is
-// indistinguishable from legitimate IdP-initiated SSO, so link mode
-// SILENTLY becomes login. That is TD-FUNC-28's exact symptom. The
-// app-side end-to-end link test is what actually guards this.
+// A slot mismatch here fails LOUDLY, and that is worth stating because this
+// comment used to claim the opposite. The ACS reads the cookie BEFORE the
+// parse, because the cookie supplies the AuthnRequest id used as the
+// correlator: a drifted slot leaves expectedRequestID empty, while a genuine
+// SP-initiated assertion still carries the InResponseTo this SP sent. That
+// combination is row 4 of saml.correlate's truth table and answers
+// saml.ErrUncorrelated, which the ACS maps to 400 SAML_ASSERTION_UNCORRELATED
+// (see samlACSFailure). It does NOT silently become a login.
+//
+// Where the guarantee is tested: the truth table itself in
+// saml/replay_test.go ("correlator stripped mid-flow", "THE captured-assertion
+// replay"), and the 400 mapping in espresso/samlroutes_error_test.go. The
+// app-side end-to-end link test is still worth having — it is what exercises
+// the two halves together — but it is no longer the only guard.
 const samlStateCookieSlotName = "tamper_saml_state"
 
 // SAMLOutcome is what the app's post-assertion hook returns.
@@ -225,8 +233,8 @@ func NewSAMLRoutes(cfg SAMLConfig, hooks SAMLHooks) (*SAMLRoutes, error) {
 
 // ReadStateCookie is the middleware the app mounts on the ACS route.
 // Wiring it through this method rather than the app naming the slot is
-// what stops the reader and the handler disagreeing — a drift whose SAML
-// symptom is silent (see samlStateCookieSlotName).
+// what stops the reader and the handler disagreeing — a drift the ACS
+// answers as 400 SAML_ASSERTION_UNCORRELATED (see samlStateCookieSlotName).
 func (s *SAMLRoutes) ReadStateCookie() func(http.Handler) http.Handler {
 	return ReadNamedCookie(samlStateCookieSlotName, s.cfg.StateCookie.Name())
 }
@@ -450,27 +458,7 @@ func (s *SAMLRoutes) ACS(ctx context.Context, providerID string, form SAMLAssert
 
 	assertion, err := prov.ParseAssertion(ctx, form.SAMLResponse, form.RelayState, expectedRequestID)
 	if err != nil {
-		switch {
-		case errors.Is(err, saml.ErrReplayStoreUnavailable):
-			// The ledger is ours; a store outage is a 503, not a client 4xx.
-			return Redirect{}, espressofw.ErrServiceUnavailable("saml replay store unavailable").
-				WithCode("SAML_REPLAY_STORE_UNAVAILABLE").Wrap(err)
-		case errors.Is(err, saml.ErrAssertionReplayed):
-			return Redirect{}, espressofw.ErrBadRequest("saml assertion already consumed").
-				WithCode("SAML_ASSERTION_REPLAYED")
-		case errors.Is(err, saml.ErrUncorrelated), errors.Is(err, saml.ErrNoSubjectConfirmation):
-			return Redirect{}, espressofw.ErrBadRequest("saml assertion does not answer this flow's request").
-				WithCode("SAML_ASSERTION_UNCORRELATED")
-		case errors.Is(err, saml.ErrIdPInitiatedDisabled):
-			return Redirect{}, espressofw.ErrBadRequest("idp-initiated saml sso is disabled").
-				WithCode("SAML_IDP_INITIATED_DISABLED")
-		default:
-			// Signature / timing / audience family stays collapsed — it is
-			// oracle-sensitive, unlike the replay/correlation codes above
-			// (which only tell a party already holding a valid assertion
-			// something it already knows).
-			return Redirect{}, espressofw.ErrBadRequest("saml assertion invalid").WithCode("SAML_ASSERTION_INVALID")
-		}
+		return Redirect{}, samlACSFailure(err)
 	}
 
 	// Mode dispatch. Empty mode reads as login so cookies signed before
@@ -548,4 +536,35 @@ func (s *SAMLRoutes) refreshCookies(tokens identity.Tokens) []*http.Cookie {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   s.cfg.Cookies.MaxAgeSeconds,
 	}}
+}
+
+// samlACSFailure maps a parse failure onto the response. Extracted from the ACS
+// handler so the mapping is a thing a test can call: the comments around the
+// state cookie describe which failure a slot mismatch produces, and until this
+// was its own function that description was prose that nothing checked.
+//
+// The shape of the mapping is deliberate, and the test asserts both halves of
+// it. The replay and correlation codes are distinct, because they tell a party
+// already holding a valid assertion something it already knows. The
+// signature/timing/audience family stays COLLAPSED into one generic error,
+// because a caller who can tell "wrong signature" from "wrong audience" has an
+// oracle.
+func samlACSFailure(err error) error {
+	switch {
+	case errors.Is(err, saml.ErrReplayStoreUnavailable):
+		// The ledger is ours; a store outage is a 503, not a client 4xx.
+		return espressofw.ErrServiceUnavailable("saml replay store unavailable").
+			WithCode("SAML_REPLAY_STORE_UNAVAILABLE").Wrap(err)
+	case errors.Is(err, saml.ErrAssertionReplayed):
+		return espressofw.ErrBadRequest("saml assertion already consumed").
+			WithCode("SAML_ASSERTION_REPLAYED")
+	case errors.Is(err, saml.ErrUncorrelated), errors.Is(err, saml.ErrNoSubjectConfirmation):
+		return espressofw.ErrBadRequest("saml assertion does not answer this flow's request").
+			WithCode("SAML_ASSERTION_UNCORRELATED")
+	case errors.Is(err, saml.ErrIdPInitiatedDisabled):
+		return espressofw.ErrBadRequest("idp-initiated saml sso is disabled").
+			WithCode("SAML_IDP_INITIATED_DISABLED")
+	default:
+		return espressofw.ErrBadRequest("saml assertion invalid").WithCode("SAML_ASSERTION_INVALID")
+	}
 }

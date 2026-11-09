@@ -11,6 +11,14 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Changed
 
+- **A comment that described a silent SAML failure was describing something that no longer
+  existed** (#29). A state-cookie slot mismatch is answered as **400 `SAML_ASSERTION_UNCORRELATED`**
+  — the ACS reads the cookie before the parse because it supplies the correlator — so an embedder
+  reading the old note would have guarded against a silent degradation that cannot happen. The
+  mapping is now a function with a test on it, which also pins the half that must stay collapsed:
+  signature, timing and audience failures keep one generic code, because a caller who can tell
+  them apart has an oracle.
+
 - **A guard that could not fail was deleted rather than kept** (#133). `scimTenant` refused a
   SCIM request when the tenant it resolved was invalid — a check no mutant could reach, because
   the resolver answers a valid id whenever it answers one at all. It is gone, and the invariant

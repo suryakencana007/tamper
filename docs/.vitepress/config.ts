@@ -60,6 +60,7 @@ export default defineConfig({
     nav: [
       { text: "Guide", link: "/guide/", activeMatch: "/guide/" },
       { text: "Examples", link: "/examples/", activeMatch: "/examples/" },
+      { text: "API", link: "/api/", activeMatch: "/api/" },
       { text: "Architecture", link: "/design/TAMPER-DESIGN", activeMatch: "/design/" },
       { text: "Decisions", link: "/adrs/", activeMatch: "/adrs/" },
       { text: "Changelog", link: "/changelog", activeMatch: "/changelog" },
@@ -85,6 +86,10 @@ export default defineConfig({
       {
         text: "Examples",
         items: [{ text: "The examples, and what each proves", link: "/examples/" }],
+      },
+      {
+        text: "API reference",
+        items: [{ text: "Every exported package", link: "/api/" }],
       },
       {
         text: "Architecture",

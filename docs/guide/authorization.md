@@ -88,3 +88,7 @@ mux.Handle("/platform/", espresso.RequirePlatformServiceAccount(validator)(platf
 
 A credential's authority is one of two kinds, never both — see
 [SCIM](./scim) for the surface that motivated the split.
+
+---
+
+Looking a name up? The [API reference](../api/) lists every exported package.

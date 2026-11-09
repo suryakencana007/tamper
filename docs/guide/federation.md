@@ -79,3 +79,7 @@ be asked for a stronger authentication than the last one).
 
 Every federation route is tenant-scoped like the rest of the surface: the tenant is resolved
 from the request, and the session it produces carries that tenant.
+
+---
+
+Looking a name up? The [API reference](../api/) lists every exported package.

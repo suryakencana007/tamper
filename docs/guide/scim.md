@@ -86,3 +86,7 @@ customer" answerable separately, which is exactly what you want to read during a
 [`examples/scim`](https://github.com/suryakencana007/tamper/tree/main/examples/scim) is a
 runnable SCIM server with an in-memory store, including the gate ordering
 (`RequireServiceAccount` outermost, the rate limiter outside it).
+
+---
+
+Looking a name up? The [API reference](../api/) lists every exported package.

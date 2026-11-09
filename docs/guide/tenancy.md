@@ -152,3 +152,7 @@ func main() {
 	fmt.Println(crypto.AMRPassword, crypto.AMROTP, crypto.AMRSAML)
 }
 ```
+
+---
+
+Looking a name up? The [API reference](../api/) lists every exported package.

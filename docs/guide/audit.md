@@ -93,3 +93,7 @@ mux.Handle("/api/projects/", espresso.RequireAuth(jwtService)(
 
 A service-account actor stashed by a gate upstream wins untouched — name, id, and its own
 tenant — so a machine's provisioning shows up as the machine.
+
+---
+
+Looking a name up? The [API reference](../api/) lists every exported package.

@@ -69,6 +69,14 @@ changes behaviour.
 
 ### Added
 
+- **A shared SAML replay ledger** (#137): `saml.NewSQLiteAssertionReplayStore`. `saml` shipped one
+  implementation, documented "for a single process", while `BuildProvider`'s own doc told callers to
+  pass a shared store for multiple replicas — so every multi-replica deployment wrote one, and two
+  replicas that disagree do not produce an error: they produce a second session. The store lets the
+  database arbitrate — one `INSERT ... ON CONFLICT DO NOTHING`, outcome from the row count — and an
+  outage returns an error (→ 503), never a silent replay and never a fresh verdict. `PurgeExpiredBefore`
+  is on the concrete type for the application's scheduler; the port deliberately has no such method.
+
 - **`identity.PasswordPolicy` — a port for what may be set as a password** (#138). The library
   keeps its floor (`MinPasswordLen`..`MaxPasswordLen`) and gains an application hook for everything
   else a deployment needs — a breach list, a length by role, a refusal of the user's own email —

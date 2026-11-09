@@ -46,9 +46,15 @@ An assertion is a bearer credential for a session. tamper consumes each one exac
 against a ledger you supply:
 
 ```go ignore
-saml.NewMemAssertionReplayStore()   // one process
-// or your own shared store for several replicas
+saml.NewMemAssertionReplayStore()                 // one process
+saml.NewSQLiteAssertionReplayStore("replay.db")   // several processes on one host
+// or implement the port against a real database
 ```
+
+The SQLite store arbitrates through the database — a single `INSERT ... ON CONFLICT DO NOTHING`
+whose outcome is the row count — so two replicas cannot both accept the same assertion. It is not
+for a shared network filesystem: share the file between processes on one machine, or implement the
+port.
 
 A ledger outage returns `ErrReplayStoreUnavailable` → **503, never a silent accept**. A
 consumed assertion returns `ErrAssertionReplayed`.

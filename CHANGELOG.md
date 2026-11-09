@@ -11,6 +11,11 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Changed
 
+- **`saml` refuses a relative `metadata_url` at construction** (#130), the twin of the earlier
+  `acs_url` fix. The reason it was left out is the interesting part and is corrected in the
+  sketch: nothing dereferences it while building a request, so it cannot panic — true, and not the
+  standard. A misconfiguration fails at `New`, naming the field.
+
 - **A comment that described a silent SAML failure was describing something that no longer
   existed** (#29). A state-cookie slot mismatch is answered as **400 `SAML_ASSERTION_UNCORRELATED`**
   — the ACS reads the cookie before the parse because it supplies the correlator — so an embedder

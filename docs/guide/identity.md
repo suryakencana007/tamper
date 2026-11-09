@@ -117,3 +117,7 @@ declaration needs updating. Direct calls are unaffected.
 Access tokens are purpose-bound: a `purpose=access` token, an entered token, and an
 impersonated token are not interchangeable, and every gate checks the purpose before
 anything else.
+
+---
+
+Looking a name up? The [API reference](../api/) lists every exported package.

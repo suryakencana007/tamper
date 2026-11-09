@@ -11,6 +11,13 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Changed
 
+- **An API reference, and a decision about versioning** (#135). `docs/api/` lists every exported
+  package and its names, generated from `go doc -short` and checked by a test — a renamed symbol
+  fails CI instead of quietly leaving the page describing a previous version. The versioning
+  question is answered on the same page: this site documents the current release, with the version
+  on every page generated from the changelog, and breaking changes carry migration guides;
+  per-version sites were rejected with the reason and the condition that would reverse it.
+
 - **The documentation's Go snippets are compiled** (#134). A fenced ` ```go ` block must be a
   complete file — package clause and imports included — and it is built by
   `TestDocsSnippetsCompile`; a fragment is marked ` ```go ignore `, and that count is pinned, so

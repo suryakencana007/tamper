@@ -86,3 +86,7 @@ In order of precedence, and this order is the security model:
 
 If none of those produce a tenant, the request is a 401 or a 404 — never "the default
 tenant".
+
+---
+
+Looking a name up? The [API reference](../api/) lists every exported package.

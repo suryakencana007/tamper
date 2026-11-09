@@ -91,3 +91,7 @@ Multi-tenancy is the same shape with a tenant resolver, and it is covered in
 5. [Federation](./federation) — OIDC and SAML, per tenant.
 6. [Provisioning](./scim) — SCIM 2.0 over your store.
 7. [Audit](./audit) — the chain, queries, and redaction.
+
+---
+
+Looking a name up? The [API reference](../api/) lists every exported package.

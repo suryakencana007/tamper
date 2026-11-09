@@ -51,12 +51,45 @@ func rejectForeignNameID(samlResponse string) error {
 			return nil
 		}
 		start, ok := tok.(xml.StartElement)
-		if !ok || start.Name.Local != "NameID" {
+		if !ok || !localNameMatchedElements[start.Name.Local] {
 			continue
 		}
+		// The set below is the audit's result (#132): every element crewjam declares with a
+		// LOCAL-NAME tag that carries something tamper or an application trusts. NameID was the
+		// first fix; the same blindness applies to the rest, and three matter more than NameID:
+		//
+		//	Subject              the identity, and the parent of everything below it
+		//	SubjectConfirmation  correlation, and the replay key
+		//	AttributeValue       what applications key JIT provisioning and authorization on
+		//
+		// Issuer is deliberately NOT in the set: crewjam declares it
+		// `xml:"urn:oasis:names:tc:SAML:2.0:assertion Issuer"`, so it is namespace-qualified and
+		// cannot be steered. Verified in the vendored source rather than assumed — a guard for a
+		// field that is already safe is noise, and noise is what teaches people to widen guards.
 		if start.Name.Space != assertionNS {
-			return fmt.Errorf("%w: NameID element in namespace %q is not the subject's NameID",
-				ErrAssertionInvalid, start.Name.Space)
+			return fmt.Errorf("%w: %s element in namespace %q is not the assertion's own",
+				ErrAssertionInvalid, start.Name.Local, start.Name.Space)
 		}
 	}
+}
+
+// localNameMatchedElements are the elements crewjam/saml v0.5.1 declares with a LOCAL-NAME tag —
+// no namespace — so a foreign-namespace element populates the same Go field. Each is either read
+// by tamper (NameID, Subject, SubjectConfirmation, SubjectConfirmationData) or handed to an
+// application that trusts it (Attribute, AttributeValue, AuthnStatement).
+//
+// It is an allow-list of names to CHECK, not of names to allow: anything unlisted is ignored by
+// the scan. The listed elements must be in the assertion namespace, which is what the SAML spec
+// requires of every one of them, so a legitimate IdP is unaffected — it writes them with a
+// `saml:` prefix or a default xmlns, and encoding/xml resolves both. The test table proves that
+// rather than asserting it.
+var localNameMatchedElements = map[string]bool{
+	"NameID":                  true,
+	"Subject":                 true,
+	"SubjectConfirmation":     true,
+	"SubjectConfirmationData": true,
+	"AttributeStatement":      true,
+	"Attribute":               true,
+	"AttributeValue":          true,
+	"AuthnStatement":          true,
 }

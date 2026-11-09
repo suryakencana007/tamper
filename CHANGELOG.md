@@ -151,6 +151,14 @@ satisfies an interface declared with the old signature.
 
 ### Security
 
+- **The namespace guard now covers every element `crewjam/saml` matches by local name** (#132),
+  not only `NameID`. The audit found six more: `Subject`, `SubjectConfirmation`,
+  `SubjectConfirmationData`, `AttributeStatement`, `Attribute`, `AttributeValue`, `AuthnStatement`.
+  **Attributes are the worst of them**: `NameID` steers which identity a session becomes, an
+  attribute steers what an application grants it — and a slice of attributes appends, so the
+  attack does not even need to displace a legitimate one. `Issuer` is deliberately excluded: it is
+  already namespace-qualified in the vendored library, verified rather than assumed.
+
 - **SAML: a `<NameID>` outside the assertion namespace now invalidates the assertion**
   (GO-2026-6909). `crewjam/saml` through v0.5.1 declares `Subject` as `xml:"NameID"`, a
   local-name match, so a signed assertion could carry `<NameID>` in a foreign namespace and

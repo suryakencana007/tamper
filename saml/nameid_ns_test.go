@@ -155,3 +155,43 @@ func TestParseAssertion_DefaultBoundAllowsRealisticResponses(t *testing.T) {
 		t.Fatalf("err = %v — a 60-byte assertion must not hit the size bound", err)
 	}
 }
+
+// The audit #132 asked for, as a test: every element crewjam matches by LOCAL NAME is refused in a
+// foreign namespace, and each is accepted in the assertion namespace.
+//
+// The second half matters as much as the first. A guard that refuses a legitimate IdP's assertion
+// breaks logins, so every name in the set is also asserted to PASS with the assertion namespace —
+// once as a `saml:` prefix, once as a default xmlns, which are the two ways real IdPs write them.
+func TestRejectForeignNameID_LocalNameMatchedElements(t *testing.T) {
+	const prefixed = `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+  <saml:Subject><saml:NameID>alice</saml:NameID>
+    <saml:SubjectConfirmation><saml:SubjectConfirmationData InResponseTo="r"/></saml:SubjectConfirmation>
+  </saml:Subject>
+  <saml:AuthnStatement AuthnInstant="2026-01-01T00:00:00Z" SessionIndex="s"/>
+  <saml:AttributeStatement><saml:Attribute Name="email"><saml:AttributeValue>a@b</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>
+</saml:Assertion>`
+	const defaultNS = `<Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion">
+  <Subject><NameID>alice</NameID><SubjectConfirmation><SubjectConfirmationData InResponseTo="r"/></SubjectConfirmation></Subject>
+  <AuthnStatement SessionIndex="s"/>
+  <AttributeStatement><Attribute Name="email"><AttributeValue>a@b</AttributeValue></Attribute></AttributeStatement>
+</Assertion>`
+
+	for name, doc := range map[string]string{"prefixed": prefixed, "default xmlns": defaultNS} {
+		if err := rejectForeignNameID(encodeAssertion(doc)); err != nil {
+			t.Errorf("%s: a legitimate assertion was refused: %v — the guard must not break real IdPs", name, err)
+		}
+	}
+
+	// The other direction, one element at a time: the same document with one element moved into a
+	// foreign namespace must be refused, because crewjam would read it anyway.
+	for _, el := range []string{
+		"NameID", "Subject", "SubjectConfirmation", "SubjectConfirmationData",
+		"AttributeStatement", "Attribute", "AttributeValue", "AuthnStatement",
+	} {
+		foreign := `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" xmlns:evil="urn:evil">` +
+			"<evil:" + el + ">x</evil:" + el + "></saml:Assertion>"
+		if err := rejectForeignNameID(encodeAssertion(foreign)); err == nil {
+			t.Errorf("a foreign-namespace <%s> was accepted — crewjam matches it by local name", el)
+		}
+	}
+}

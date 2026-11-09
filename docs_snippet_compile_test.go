@@ -82,7 +82,7 @@ func TestDocsSnippetsCompile(t *testing.T) {
 	// packages and passing — a guard that could not fail, in the test written to stop
 	// documentation from drifting. Found by running the mutant that breaks a snippet's API call
 	// and watching it survive.
-	root := filepath.Join("snippetcheck_tmp")
+	const root = "snippetcheck_tmp"
 	if err := os.RemoveAll(root); err != nil {
 		t.Fatalf("clean %s: %v", root, err)
 	}

@@ -5,7 +5,7 @@ denies.
 
 ## `tenant.ID`
 
-```go
+```go ignore
 id := tenant.New("acme")     // a real tenant
 id.Valid()                   // true
 id.IsSingle()                // false
@@ -28,7 +28,7 @@ the first row" bugs.
 
 ## Ports, not tables
 
-```go
+```go ignore
 type Store interface {
     Create(ctx context.Context, d Descriptor) (Descriptor, error)
     Get(ctx context.Context, id ID) (Descriptor, error)
@@ -48,7 +48,7 @@ Your app owns the schema; tamper owns the vocabulary. A `Resolver` that answers
 A runtime-created tenant must not need a restart. `espresso` mounts the auth surfaces once
 and can fill a tenant segment from the tenant the request resolved to:
 
-```go
+```go ignore
 // /t/{tenant}/auth: one surface, every tenant, present and future.
 s.MountPrefix(mux, "/t/{tenant}/auth")
 ```
@@ -97,3 +97,58 @@ cap and a defence against a self-parented row). Two things flow down it, and one
 
 The [`examples/tenanthierarchy`](https://github.com/suryakencana007/tamper/tree/main/examples/tenanthierarchy)
 program demonstrates the whole walk, including reconciliation when a parent's plan changes.
+
+## Snippets you can run
+
+The two blocks below are **compiled** by the docs test (`go test -run TestDocsSnippetsCompile`),
+so they cannot drift from the API they describe. A fenced block marked `go` must therefore be a
+complete file — package clause and imports included — which is also what makes it copy-pasteable.
+Fragments are marked `go ignore`, and the count of those is pinned in the test, so an exemption
+cannot be taken by omission.
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/suryakencana007/tamper/tenant"
+)
+
+func main() {
+	acme := tenant.New("acme")
+	fmt.Println(acme.Valid(), acme.IsSingle()) // true false
+
+	// The zero value is not "the default tenant": it is unset, and every
+	// gate that receives it denies. Single is a different value that
+	// happens to stringify to the same "".
+	var unset tenant.ID
+	fmt.Println(unset.Valid(), unset.IsSingle()) // false false
+
+	// An empty string is invalid on purpose: a lookup that produced
+	// nothing must deny rather than select the single-tenant bucket.
+	fmt.Println(tenant.New("").Valid()) // false
+
+	fmt.Println(tenant.Single.Valid(), tenant.Single.IsSingle()) // true true
+}
+```
+
+The same separation, one level up: `acr` is the policy class and `amr` names the methods a
+session proved, which is what lets a step-up gate ask for a second factor without inventing a
+class value.
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/suryakencana007/tamper/crypto"
+)
+
+func main() {
+	// The class this deployment accepted, and the methods the session proved.
+	fmt.Println(crypto.ACRLocalPassword)
+	fmt.Println(crypto.AMRPassword, crypto.AMROTP, crypto.AMRSAML)
+}
+```

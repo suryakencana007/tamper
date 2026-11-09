@@ -3,7 +3,7 @@
 `audit` writes a **hash-chained** log: each event's hash covers its own payload and the
 previous hash, so removing or editing a row breaks the chain and verification says where.
 
-```go
+```go ignore
 logger, err := audit.NewSQLiteLogger("audit.db", audit.SQLiteLoggerOptions{ /* … */ })
 ```
 
@@ -14,7 +14,7 @@ Anything else — where your events live — is a `audit.Logger` you implement.
 
 ## Events
 
-```go
+```go ignore
 type Event struct {
     Action   audit.Action
     Resource audit.ResourceType
@@ -35,7 +35,7 @@ reading an incident: who did this, and for which customer.
 
 ## Reading it
 
-```go
+```go ignore
 page, err := logger.List(ctx, audit.Filter{
     TenantID:      tenant.New("acme"),   // this tenant's activity
     ActorTenantID: tenant.New("acme"),   // and only what acme's own users did
@@ -52,7 +52,7 @@ different questions, and a console needs both.
 `Verify` walks the chain and reports the first divergence with enough context to be acted
 on — which is what you run at boot, and what an auditor runs on an export:
 
-```go
+```go ignore
 res, err := logger.Verify(ctx)
 ```
 
@@ -85,7 +85,7 @@ recorded rather than deleted, because a GDPR-covered market under DPAs can reviv
 `espresso.NewAuditor(logger, emailLookup)` wraps a mutating handler and emits an event for
 it, so attribution does not depend on every handler remembering to log:
 
-```go
+```go ignore
 mux.Handle("/api/projects/", espresso.RequireAuth(jwtService)(
     auditor.Mutation("project.create", "project", "")(
         http.HandlerFunc(createProject))))

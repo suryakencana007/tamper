@@ -172,6 +172,14 @@ func BuildProvider(cfg ProviderConfig, idpMetadata *crewjamsaml.EntityDescriptor
 	if err != nil {
 		return nil, fmt.Errorf("saml: provider %q: parse metadata_url: %w", cfg.ID, err)
 	}
+	// The twin of the acs_url check below, and left out for a reason that did not hold: this one
+	// cannot panic, because nothing dereferences it while building a request. But a relative
+	// metadata URL is equally a configuration error, and "it cannot crash" is not the standard —
+	// the standard is that a misconfiguration fails at New and says which field was wrong.
+	if !metadataURL.IsAbs() || metadataURL.Host == "" {
+		return nil, fmt.Errorf("saml: provider %q: metadata_url must be an absolute URL with a host, got %q",
+			cfg.ID, cfg.MetadataURL)
+	}
 
 	sp := &crewjamsaml.ServiceProvider{
 		EntityID:    cfg.EntityID,

@@ -151,3 +151,21 @@ no-panic test has teeth.
 **Left alone deliberately, and worth its own item:** `MetadataURL` is validated the same weak
 way (parse only). Nothing dereferences it during request construction, so nothing panics, but a
 relative metadata URL is equally a configuration error this gate lets through.
+
+### The twin check that was left out (#130)
+
+`BuildProvider` validated `acs_url` with `url.Parse` alone until #124, which accepted `"not a
+url"`; that value reached the request builder, which panicked, so it was fixed. `metadata_url`
+was validated the same weak way and **deliberately left alone**, with the note above: nothing
+dereferences it while building a request, so there is no crash to point at.
+
+That is the wrong standard, and this amendment says why. The refusal of a relative `acs_url`
+exists because the misconfiguration must fail at `New` — the panic was the symptom, not the
+reason. A relative `metadata_url` is the same configuration error wearing a quieter failure, and
+"it cannot crash" only means the operator finds out later, from an IdP fetch that fails for
+reasons the config does not name. So the check is added: absolute, with a host, refused at
+construction with the field named in the message.
+
+Nothing else in this sketch changes. The guard, the bound, the Allowance and the invariants stay
+as written; this document is amended rather than rewritten, because the reason the item was left
+out turned out to be the thing worth correcting.

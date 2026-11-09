@@ -200,3 +200,29 @@ jobs:
 
       - name: Build the site
         run: bun run docs:build
+
+  # gofmt was never checked here, and the reason it could not simply be added is worth keeping:
+  # audit/internal/sqlitestore/sqltypes/blob.go was not gofmt-clean, and running gofmt on it
+  # rewrites the SQL literal x'' inside a doc comment into a curly quote — corrupting the sentence
+  # that explains why the column DEFAULT is unreachable through sqlc. The comment was rewritten to
+  # be stable (the literal now sits in an indented block, which gofmt leaves alone), so the gate
+  # can exist. A gate that cannot be satisfied teaches people to bypass it.
+  gofmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # The same source the other job uses: a hardcoded version here would be a second truth
+          # about which Go the repository targets, in the workflow that exists to catch drift.
+          go-version-file: go.mod
+
+      - name: Every file is formatted
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi

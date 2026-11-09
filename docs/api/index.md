@@ -375,6 +375,10 @@ func BuildRegistryFromConfigs(ctx context.Context, configs []ProviderConfig, fet
 type ProviderStore interface{ ... }
 type ProviderSummary struct{ ... }
 type RotateResult struct{ ... }
+type SQLiteAssertionReplayStore struct{ ... }
+func NewSQLiteAssertionReplayStore(dbPath string, opts ...SQLiteReplayOption) (*SQLiteAssertionReplayStore, error)
+type SQLiteReplayOption func(*sqliteReplayConfig)
+func WithSQLiteReplayBusyTimeout(d time.Duration) SQLiteReplayOption
 type StateCookieClaims struct{ ... }
 func VerifyStateCookieWithSecret(secret []byte, token, issuer string, nowFn func() time.Time) (StateCookieClaims, error)
 ```

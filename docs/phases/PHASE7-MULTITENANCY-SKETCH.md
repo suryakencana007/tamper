@@ -495,6 +495,50 @@ Saying it costs nothing and closes a question every evaluator will ask.
    can revive it, and if it does, the analysis above is the analysis to re-run
    — not a new one.
 
+   **REVISITED 2026-11-09, for TD-139 (audit retention and compaction).** Same
+   analysis, re-run rather than rewritten, and the answer is unchanged:
+   **still NOT TRIGGERED.** No signed or in-pipeline DPA requiring physical
+   per-tenant removal has been produced, and no counsel position refusing
+   redaction as discharge has been recorded. Both halves of the condition are
+   absent, and the condition needs both. Recording this because the revisit was
+   asked for and "we looked again and nothing changed" is a result — the
+   alternative is that a reader cannot tell a re-checked decision from an
+   unexamined one.
+
+   **What the revisit DID find is a gap that is not the DPA question at all.**
+   Reading `walkChain` and `Verify` for this item (`audit/audit_sqlite.go:438`,
+   `:452`) showed that the first surviving row's `PrevHash` is taken as the
+   chain baseline — deliberately, and documented: after a retention prune it
+   points at a deleted predecessor, and the recompute check still proves nobody
+   edited the *surviving* rows.
+
+   The consequence is not documented anywhere, and it is the thing that matters
+   for retention: **a deleted prefix is invisible to `Verify`.** Pruning by
+   policy and excising the oldest rows by hand produce the same verdict, so
+   today `Verify` cannot answer "was the beginning of this chain removed by us,
+   and when" — which is precisely the question an auditor asks of a compacted
+   log, and the question ISO 27001 A.5.33 (protection of records from
+   destruction) cares about. The single-chain decision is unchanged; what is
+   missing is an **anchor**: a recorded statement of where the chain began
+   after each prune, so the baseline stops being whatever row survived.
+
+   **Scoping decision for TD-139, recorded here because it removes the legal
+   dependency for the part that can be built now:**
+
+   - **Uniform, tenant-blind retention stays INSIDE this decision**, as already
+     stated above: `PruneOlderThan` is a provider-defined cutoff, which is
+     correct under a uniform ISMS retention policy and breaks only under
+     per-customer contractual variance — the DPA case.
+   - **The anchor/checkpoint is the engineering gap and needs no legal input.**
+     It is additive: it makes an existing, already-permitted operation
+     (pruning) verifiable. It does not weaken the chain, and if the M5
+     condition is ever triggered it is a prerequisite for the per-tenant
+     variant rather than wasted work.
+   - **Per-tenant segmentation remains RESERVED, not built.** Building it now
+     would surrender the A.5.33 property the decision turned on, in exchange for
+     a hypothetical second enterprise contract — the trade this section already
+     refused once.
+
    **Two obligations ISO does add.**
 
    - The single-writer defect below stops being merely a bug. Under A.8.15 the

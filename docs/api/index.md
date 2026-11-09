@@ -128,10 +128,13 @@ func WithImpersonation(p ImpersonationPolicy, ttl time.Duration) Option
 func WithInvitations(s InvitationStore) Option
 func WithKeySet(keys *crypto.KeySet) Option
 func WithMemberships(s MembershipStore) Option
+func WithPasswordPolicy(p PasswordPolicy) Option
 func WithRefreshTTL(d time.Duration) Option
 func WithSecondFactorPolicy(p SecondFactorPolicy) Option
 func WithTOTPRequired(required bool) Option
 func WithThrottling(t Throttling) Option
+type PasswordPolicy interface{ ... }
+type PasswordPolicyFunc func(ctx context.Context, tenantID tenant.ID, userID, email, password string) error
 type RefreshSession struct{ ... }
 type SecondFactorPolicy interface{ ... }
 type SecondFactorRequirement struct{ ... }

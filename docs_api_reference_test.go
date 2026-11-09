@@ -3,7 +3,6 @@ package tamper_test
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -156,7 +155,7 @@ func publicPackages(t *testing.T) []string {
 			strings.HasPrefix(rel, "examples") || strings.HasSuffix(rel, "tenanttest") {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(rel)); err != nil {
+		if _, err := os.Stat(rel); err != nil {
 			continue
 		}
 		pkgs = append(pkgs, rel)

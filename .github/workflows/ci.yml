@@ -82,10 +82,41 @@ jobs:
       # golangci-lint pinned to the same version the rule set was curated
       # against (see .golangci.yaml). Installed at a fixed tag so the rule
       # set can't drift under a tool bump.
+      #
+      # The install RETRIES, and the reason is measured rather than defensive:
+      # raw.githubusercontent answered HTTP 504 three consecutive times on one
+      # pull request (#148), failing the job without a single finding in the
+      # code. A check that cannot tell "the linter found nothing" from "the
+      # linter never started" is the same defect this repository keeps hunting in
+      # its own tests, so the download is retried and the binary is verified to
+      # exist before it is trusted.
+      #
+      # Retried rather than replaced: the official action installs the same
+      # prebuilt binary, and that binary PANICS here — `file requires newer Go
+      # version go1.27 (application built with go1.26)` — so swapping the source
+      # trades a flake for a crash. Reproduced locally before choosing.
+      #
+      # The version is pinned at v2.11.3 on purpose: a newer linter reports
+      # findings this rule set has never accepted (v2.13.2 flags five gosec hits
+      # in espresso/ and examples/ that CI has never reported). Bump the version
+      # and the annotations together, deliberately.
       - name: Lint
         run: |
-          curl -sSfL "https://raw.githubusercontent.com/golangci/golangci-lint/v2.11.3/install.sh" \
-            | sh -s -- -b "$(go env GOPATH)/bin" v2.11.3
+          installed=""
+          for attempt in 1 2 3 4; do
+            if curl -sSfL --retry 3 --retry-delay 2 --retry-all-errors \
+                "https://raw.githubusercontent.com/golangci/golangci-lint/v2.11.3/install.sh" \
+                | sh -s -- -b "$(go env GOPATH)/bin" v2.11.3; then
+              installed="$?"
+              break
+            fi
+            echo "golangci-lint install attempt ${attempt} failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
+          if ! [ -x "$(go env GOPATH)/bin/golangci-lint" ]; then
+            echo "golangci-lint is not installed after four attempts — treating as failure, not as a clean run" >&2
+            exit 1
+          fi
           "$(go env GOPATH)/bin/golangci-lint" run ./...
 
       # Vulnerability scan. This is an auth library — a reachable CVE in a

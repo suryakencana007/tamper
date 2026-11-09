@@ -69,6 +69,15 @@ changes behaviour.
 
 ### Added
 
+- **`identity.PasswordPolicy` — a port for what may be set as a password** (#138). The library
+  keeps its floor (`MinPasswordLen`..`MaxPasswordLen`) and gains an application hook for everything
+  else a deployment needs — a breach list, a length by role, a refusal of the user's own email —
+  because that list has no end and every item on it is a product decision. The floor runs **first**,
+  so a permissive policy cannot relax tamper's own minimum; an error from the policy **denies**, and
+  leaves no user row behind. Wired with `WithPasswordPolicy`; a `Core` without one behaves exactly
+  as before. No policy implementation ships, deliberately — the port exists so tamper's opinion is
+  not the default.
+
 - **A platform service account — TD-12.** A machine credential had exactly one tenant, so
   platform-level automation (provisioning a tenant, syncing across tenants) had no principal it
   could use: the options were one credential per tenant, a human admin session, or bypassing the

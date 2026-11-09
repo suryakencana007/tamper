@@ -23,6 +23,10 @@ const (
 // refresh-session rotation, and revocation. Construct with New; safe
 // for concurrent use as long as the Store is.
 type Core struct {
+	// passwordPolicy is the application's password rules, consulted after the built-in floor on
+	// every path that sets a password. Nil means "the floor only", which is the pre-#138 behaviour.
+	passwordPolicy PasswordPolicy
+
 	store Store
 	// tenancy + scoped are settled ONCE at construction. The type
 	// assertion runs in New, never per request: a store that cannot
@@ -186,7 +190,9 @@ func (c *Core) Register(ctx context.Context, tenantID tenant.ID, email, password
 	if err != nil {
 		return User{}, Tokens{}, err
 	}
-	if err := validatePassword(password); err != nil {
+	// The floor and the policy, in that order — see checkPassword. The user id is empty because
+	// this path is creating the user.
+	if err := c.checkPassword(ctx, tenantID, "", normalised, password); err != nil {
 		return User{}, Tokens{}, err
 	}
 	hash, err := crypto.HashPassword(password)

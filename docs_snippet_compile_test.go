@@ -31,7 +31,7 @@ func TestDocsSnippetsCompile(t *testing.T) {
 	// The number is COUNTED, not remembered — the first version of this test pinned 27, from
 	// counting a narrower set of files, and failed on a correct walk. Same defect as the
 	// PROOF-SWEEP heading that said 14 over 20 rows, which is why that one is a test too.
-	const wantExempt = 29
+	const wantExempt = 27 // counted against the tracked tree: `grep -c '^```go ignore'` over the same page set
 	// The worked examples in guide/tenancy.md. A floor rather than an exact count, so adding
 	// more compiled snippets is encouraged and removing the last one is not.
 	const minCompiled = 2
@@ -121,13 +121,19 @@ func TestDocsSnippetsCompile(t *testing.T) {
 func docPages(t *testing.T) []string {
 	t.Helper()
 	var pages []string
+	// Generated pages are not documentation source, and one of them is why this list exists:
+	// docs/changelog.md is written by scripts/sync-changelog.mjs at site-build time. It lives in
+	// the working tree after any local `bun run docs:build` and NOT in CI, so this test counted
+	// 29 exempt blocks locally and 27 in CI — a test whose result depended on whether somebody had
+	// built the site. Reported by CI, on the pull request, which is where a guard should fail.
+	generated := map[string]bool{"changelog.md": true}
 	for _, dir := range []string{"docs", "docs/guide", "docs/examples"} {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatalf("read %s: %v", dir, err)
 		}
 		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") || generated[e.Name()] {
 				continue
 			}
 			pages = append(pages, filepath.Join(dir, e.Name()))

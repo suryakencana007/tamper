@@ -8,10 +8,12 @@ import (
 // Blob is a []byte that never marshals to SQL NULL.
 //
 // It exists because of a specific, silent failure mode. The v4 columns added
-// by migration 005 (row_salt and the five c_* PII commitments) are
-// `BLOB NOT NULL DEFAULT x''`, and a column DEFAULT only applies when the
-// INSERT omits the column — but sqlc always names every column, so the
-// DEFAULT is unreachable. A plain []byte field left at its zero value is
+// by migration 005 (row_salt and the five c_* PII commitments) are declared
+//
+//	BLOB NOT NULL DEFAULT x''
+//
+// and a column DEFAULT only applies when the INSERT omits the column — but sqlc
+// always names every column, so the DEFAULT is unreachable. A plain []byte field left at its zero value is
 // therefore sent as an explicit NULL and the insert dies with
 // `NOT NULL constraint failed`.
 //
@@ -30,8 +32,12 @@ import (
 // and copying every row of an append-only hash chain, which is precisely what
 // migration 005 was designed never to do.
 //
-// `COALESCE(?, x'')` in the query is not a fix either; sqlc degrades those
-// parameters to `interface{}` (recorded in ../../../../docs/phases/PHASE7-HANDOFF.md §5).
+// Coercing in the query is not a fix either —
+//
+//	COALESCE(?, x'')
+//
+// — because sqlc degrades those parameters to `interface{}` (recorded in
+// ../../../../docs/phases/PHASE7-HANDOFF.md §5).
 type Blob []byte
 
 // Value implements driver.Valuer. A nil Blob becomes an empty byte string,

@@ -108,7 +108,7 @@ the *type* rather than only the name.
 
 ### `authz`
 
-```go
+```go ignore
 Check(ctx, sub, act, res)                            -> Check(ctx, tenant.ID, sub, act, res)
 CheckBulk(ctx, reqs)                                 -> CheckBulk(ctx, tenant.ID, reqs)
 ListResources(ctx, sub, act, type)                   -> ListResources(ctx, tenant.ID, sub, act, type)
@@ -149,7 +149,7 @@ tenant, and run the leak suite (§5).
 
 ### `scim`
 
-```go
+```go ignore
 UserStore.Get(ctx, id)                      -> Get(ctx, tenant.ID, id)
 UserStore.Create(ctx, w, meta)              -> Create(ctx, tenant.ID, w, meta)
 UserStore.Replace(ctx, id, w, meta)         -> Replace(ctx, tenant.ID, id, w, meta)
@@ -167,7 +167,7 @@ other tenant with `scim.ErrNotFound`.
 
 ### `espresso`
 
-```go
+```go ignore
 RequireTenant(func(*http.Request) string)   -> func(*http.Request) (tenant.ID, bool)
 PinTenant(func(*http.Request) string)       -> func(*http.Request) (tenant.ID, bool)
 RequireTenantAllowEntered(…)                -> same resolver shape   // NEW
@@ -184,7 +184,7 @@ a single-tenant route. Now a tenant that does not resolve (`false`, or the zero
 gets, `PinTenant` with a 404. If you have a genuinely single-tenant router, say
 so:
 
-```go
+```go ignore
 r.Use(tamperespresso.PinTenant(tamperespresso.FixedRequestTenant(tenant.Single)))
 ```
 
@@ -195,7 +195,7 @@ bool)`; behind a tenant gate pass `TenantFromContext`, single-tenant pass
 
 ### `identity`
 
-```go
+```go ignore
 Register(ctx, email, pw)                    -> Register(ctx, tenant.ID, email, pw)
 Login(ctx, email, pw)                       -> Login(ctx, tenant.ID, email, pw)
 IssueTokensForUser(ctx, userID)             -> removed
@@ -211,7 +211,7 @@ IssueTokensForUserInTenant(ctx, tid, …)     -> IssueTokensForUser(ctx, userID,
 
 ### `crypto`
 
-```go
+```go ignore
 Issue(userID)                               -> removed
 Verify(token)                               -> removed
 IssueAccess(userID, authTime, acr)          -> IssueAccess(userID, tenant.ID, authTime, acr)
@@ -235,7 +235,7 @@ VerifyTOTPPendingInTenant(token, tid)       -> VerifyTOTPPending(token, tenant.I
 A user is stored in one home tenant. A **membership** is the right to act
 inside another. Nothing happens unless you wire it.
 
-```go
+```go ignore
 core, _ := identity.New(store, jwt,
     identity.WithMemberships(membershipStore), // your table
     identity.WithEnterTenantTTL(15*time.Minute),
@@ -297,7 +297,7 @@ cache), and it reports the **effect**, while your own `ForTenant` remains the
 `authz` cannot enforce tenant isolation — the query is in your adapter. What it
 can do is state the obligation and ship the instrument that checks it:
 
-```go
+```go ignore
 // import authztest "github.com/suryakencana007/tamper/authz/tenanttest"
 func TestMyBindingStoreIsolation(t *testing.T) {
     authztest.RunBindingStoreLeakSuite(t, func() authztest.BindingHarness {

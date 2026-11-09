@@ -11,6 +11,12 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Changed
 
+- **The documentation's Go snippets are compiled** (#134). A fenced ` ```go ` block must be a
+  complete file — package clause and imports included — and it is built by
+  `TestDocsSnippetsCompile`; a fragment is marked ` ```go ignore `, and that count is pinned, so
+  an exemption cannot be taken by omission. The `guide/tenancy.md` examples are the first to be
+  converted.
+
 - **`saml` refuses a relative `metadata_url` at construction** (#130), the twin of the earlier
   `acs_url` fix. The reason it was left out is the interesting part and is corrected in the
   sketch: nothing dereferences it while building a request, so it cannot panic — true, and not the

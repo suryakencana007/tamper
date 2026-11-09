@@ -22,7 +22,7 @@ themselves, and where an adapter that forgot **still compiled**.
 So the rule for this upgrade is: **if a method takes a user id or a refresh token,
 it now also takes a `tenant.ID`, and you pass the tenant the request was routed to.**
 
-```go
+```go ignore
 // before
 user, tokens, err := core.Refresh(ctx, refreshToken)
 
@@ -153,7 +153,7 @@ application does nothing.
 
 The same changes apply, and the answer is `tenant.Single`, said out loud:
 
-```go
+```go ignore
 core.Refresh(ctx, tenant.Single, refreshToken)
 ```
 

@@ -6,7 +6,7 @@ console ask "who can do this?", are here.
 
 ## Subject, Resource, Action
 
-```go
+```go ignore
 type Subject struct {
     UserID   string
     TenantID tenant.ID   // the subject's HOME tenant
@@ -27,7 +27,7 @@ needs a binding *there*.
 
 ## One interface, two engines
 
-```go
+```go ignore
 type Authorizer interface {
     Check(ctx context.Context, req CheckRequest) (Decision, error)
     // reverse queries: who can do this, and what can this subject do
@@ -53,7 +53,7 @@ Every path that cannot answer confidently denies:
 
 ## The transport gate
 
-```go
+```go ignore
 // visibility first (404), then the tier check (403).
 mux.Handle("/api/projects/", espresso.RequireDecision(gate)(projectsHandler))
 ```
@@ -77,7 +77,7 @@ Both come from the same store the forward check reads, so they cannot disagree w
 Machine credentials do not go through the subject path. They authenticate with their own
 gate, and the tenant comes from the validated credential:
 
-```go
+```go ignore
 // A tenant credential: acts inside Principal.TenantID, nowhere else.
 mux.Handle("/scim/v2/", espresso.RequireServiceAccount(validator)(scimHandler))
 

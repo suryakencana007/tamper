@@ -4,7 +4,7 @@
 enrolment, and linking several external identities to one user. It sits behind a single
 `identity.Store` port, and it mints tokens through `crypto`.
 
-```go
+```go ignore
 core, err := identity.New(store, jwtService,
     identity.WithRefreshTTL(30*24*time.Hour),
     identity.WithDefaultACR(crypto.ACRLocalPassword),
@@ -25,7 +25,7 @@ is what makes step-up expressible: a locally-enrolled TOTP session is
 
 ## Step-up: ask for a fresh session, and for a method
 
-```go
+```go ignore
 // Fresh in the last 15 minutes, and this deployment's accepted policy class.
 mux.Handle("/admin", espresso.RequireFreshAuth(15*time.Minute,
     []string{crypto.ACRLocalPassword})(adminHandler))
@@ -52,7 +52,7 @@ is refused by a method gate — the safe direction.
 `WithTOTPRequired(true)` is process-wide: everybody, or nobody. When the policy is a role
 mapping — *platform admins must use 2FA, a read-only viewer need not* — implement the port:
 
-```go
+```go ignore
 type SecondFactorPolicy interface {
     RequiredFor(ctx context.Context, tenantID tenant.ID, userID string) (SecondFactorRequirement, error)
 }
@@ -64,7 +64,7 @@ type SecondFactorRequirement struct {
 }
 ```
 
-```go
+```go ignore
 core, err := identity.New(store, jwtService,
     identity.WithSecondFactorPolicy(myPolicy),
 )
@@ -87,7 +87,7 @@ same shape as the impersonation policy, and for the same reason.)
 `identity` cannot tell from a call alone whether it is serving the password leg or the
 second leg. The adapter must say so, because a method gate depends on it:
 
-```go
+```go ignore
 // password leg
 tok, err := core.IssueTokensForUser(ctx, user, tenantID, authTime, acr, crypto.AMRPassword)
 

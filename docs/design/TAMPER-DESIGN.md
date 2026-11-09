@@ -204,7 +204,7 @@ the previous one has a Barista façade in production.
 
 ## The `Authorizer` — the framework's spine (shipped, Phase 1a)
 
-```go
+```go ignore
 // Subject / Resource are small comparable structs {Type, ID string} —
 // opaque, app-defined; Tamper never hard-codes a taxonomy. Groups are NOT
 // subjects: group indirection is the BindingStore's concern.
@@ -267,7 +267,7 @@ Shipped in Phase 6 (the standalone-packaging milestone). See
 [`README.md`](../../README.md) for the getting-started and
 [`examples/quickstart`](../../examples/quickstart) for a runnable version.
 
-```go
+```go ignore
 // 1. Build the engines. JWT is required; everything else is optional and
 //    nil-encodes "not configured". Fails at wiring, never per-request.
 tp, err := tamper.New(tamper.Config{

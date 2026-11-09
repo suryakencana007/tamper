@@ -14,7 +14,7 @@ client secrets are sealed with the KEK keyset from `crypto` rather than stored i
 
 ## SAML, in more detail
 
-```go
+```go ignore
 provider, err := saml.BuildProvider(cfg, idpMetadata, replayStore,
     saml.WithMaxResponseBytes(1<<20),   // the default; raise or remove it deliberately
 )
@@ -45,7 +45,7 @@ Parsing an assertion is deliberately strict about the things an attacker control
 An assertion is a bearer credential for a session. tamper consumes each one exactly once
 against a ledger you supply:
 
-```go
+```go ignore
 saml.NewMemAssertionReplayStore()   // one process
 // or your own shared store for several replicas
 ```
@@ -55,7 +55,7 @@ consumed assertion returns `ErrAssertionReplayed`.
 
 ## What tamper hands back
 
-```go
+```go ignore
 assertion, err := provider.ParseAssertion(ctx, samlResponse, relayState, expectedRequestID)
 assertion.NameID()                    // the subject identity
 assertion.Attribute("email")           // attribute lookup, Name or FriendlyName
@@ -65,7 +65,7 @@ assertion.AttributeValues("groups")    // every value, multi-element or comma-se
 Your application decides what to do with those: link to an existing user, provision a new
 one, or refuse. That decision is policy, and policy lives in your app —
 
-```go
+```go ignore
 // The link step is an app hook, so "unknown user" can mean JIT provisioning
 // or a refusal, depending on the tenant.
 hooks := tamperespresso.FederationHooks{ /* … */ }

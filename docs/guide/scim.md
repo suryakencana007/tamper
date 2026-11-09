@@ -8,7 +8,7 @@ surface behind a machine-credential gate.
 
 This is the rule the whole surface is built around:
 
-```go
+```go ignore
 // Authenticate the machine credential. The tenant it vouches for is the only
 // tenant this request will ever touch.
 mux.Handle("/scim/v2/", espresso.RequireServiceAccount(validator)(scimRoutes))
@@ -19,7 +19,7 @@ is authenticated, so the request looks legitimate in every log, and it reads eve
 customer's directory by editing one URL segment. So the store call always receives the
 tenant from the validated credential:
 
-```go
+```go ignore
 // One helper per store method the transport calls, so the place the tenant is handed
 // to a store exists exactly once per call site.
 func (s *SCIMRoutes) userGet(ctx context.Context, id string) (scim.UserRecord, error) {
@@ -45,7 +45,7 @@ directory sync) gets a principal without inventing a credential that can read ev
 
 ## What you implement
 
-```go
+```go ignore
 type UserStore interface {
     Create(ctx context.Context, tenantID tenant.ID, u UserWrite, meta WriteMeta) (UserRecord, error)
     Get(ctx context.Context, tenantID tenant.ID, id string) (UserRecord, error)
@@ -72,7 +72,7 @@ same call with an empty filter, so there is no second code path to keep in sync.
 
 Every mutation is attributed to the service account, not "some user":
 
-```go
+```go ignore
 // The gate stashes an audit actor, so the event says which machine did it.
 ctx = audit.WithActor(ctx, audit.ActorService(saID, saName, tenantID))
 ```

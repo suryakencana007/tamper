@@ -61,7 +61,7 @@ You implement ports; tamper implements the engines. The three you will meet firs
 | `identity.Store` | Users, credentials, sessions, TOTP secrets, identity links |
 | `audit.Sink`/logger | Where audit events go (the SQLite chain, or your own store) |
 
-```go
+```go ignore
 type Store interface {
     CreateUser(ctx context.Context, tenantID tenant.ID, email string, hash []byte) (User, error)
     FindUserByEmail(ctx context.Context, tenantID tenant.ID, email string) (User, error)

@@ -46,7 +46,7 @@ that only shows up in production.
 The whole point of the ports is that a small application is genuinely small. A single
 tenant, password login, one protected route:
 
-```go
+```go ignore
 // 1. The engines. Every store is a port your app implements.
 core, err := identity.New(store, jwtService)
 if err != nil {

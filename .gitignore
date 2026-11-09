@@ -19,3 +19,6 @@ docs/.vitepress/dist/
 docs/.vitepress/cache/
 docs/changelog.md
 docs/.vitepress/version.json
+
+# Scratch package the docs snippet test builds in (docs_snippet_compile_test.go)
+snippetcheck_tmp/

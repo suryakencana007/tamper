@@ -22,7 +22,7 @@ now something you say rather than something tamper assumes.
 
 Before v0.4.0 a tenant was a `string`, and `""` meant two different things:
 
-```go
+```go ignore
 core.Login(ctx, "", email, password)   // "I am single-tenant"
 core.Login(ctx, "", email, password)   // "I forgot to thread the tenant"
 ```
@@ -33,7 +33,7 @@ deployment is a cross-tenant read.
 
 v0.4.0 threads `tenant.ID`, whose **zero value is invalid**:
 
-```go
+```go ignore
 core.Login(ctx, tenant.Single, email, password)      // legal, explicit
 core.Login(ctx, tenant.New("acme"), email, password) // legal, explicit
 core.Login(ctx, tenant.ID{}, email, password)        // ErrTenantRequired
@@ -130,7 +130,7 @@ CREATE UNIQUE INDEX user_identities_tenant_provider_subject_key
     ON user_identities (tenant_id, provider, subject);
 ```
 
-```go
+```go ignore
 // 4. Your Store's queries constrain on the tenant. This is the isolation
 //    contract, and tamper cannot verify it for you — see §6.
 func (s *Store) UserByEmail(ctx context.Context, tid tenant.ID, email string) (identity.User, error) {
@@ -147,7 +147,7 @@ func (s *Store) UserByEmail(ctx context.Context, tid tenant.ID, email string) (i
 }
 ```
 
-```go
+```go ignore
 // 5. Resolve the tenant per request and pin it.
 r.Use(espresso.PinTenant(func(r *http.Request) string {
 	return subdomain(r.Host)   // or a path segment, or a header
@@ -191,7 +191,7 @@ rather than only the name.
 
 ### identity
 
-```go
+```go ignore
 // Store — TenantScopedStore is folded in and gone
 UserByEmail(ctx, email)                          -> UserByEmail(ctx, tenant.ID, email)
 CountUsers(ctx)                                  -> CountUsers(ctx, tenant.ID)
@@ -217,7 +217,7 @@ identity.ErrTenancyDisabled                      -> removed; there is no disable
 
 ### crypto
 
-```go
+```go ignore
 IssueAccess(userID, authTime, acr)               -> IssueAccess(userID, tenant.ID, authTime, acr)
 IssueAccessForTenant(userID, tid, authTime, acr) -> IssueAccess(userID, tenant.ID, authTime, acr)
 VerifyAccess(token)                              -> VerifyAccess(token, tenant.ID)   // now CHECKS the tenant
@@ -234,7 +234,7 @@ VerifyAccessInTenant(token, tid)                 -> VerifyAccess(token, tenant.I
 
 ### oidc / saml
 
-```go
+```go ignore
 GetRegistry(ctx)                                 -> GetRegistry(ctx, tenant.ID)
 GetRegistryForTenant(ctx, tid)                   -> GetRegistry(ctx, tenant.ID)
 Reload(ctx) / ReloadForTenant(ctx, tid)          -> Reload(ctx, tenant.ID)
@@ -248,7 +248,7 @@ type TenantScopedProviderStore                   -> folded into ProviderStore
 
 ### espresso
 
-```go
+```go ignore
 TenantFromContext(ctx) (string, bool)            -> (tenant.ID, bool)
 TenantFromRoutedContext(r) (string, bool)        -> (tenant.ID, bool)
 RequireEntitlement(store, cap, resolve, ...)     -> resolve is now func(*http.Request) (tenant.ID, bool)
@@ -259,7 +259,7 @@ SAMLHooks.Registry                               -> func(ctx, tenant.ID) (*saml.
 
 ### audit
 
-```go
+```go ignore
 ActorService(saID, saName)                       -> ActorService(saID, saName, tenant.ID)
 ActorServiceInTenant(saID, saName, tid)          -> ActorService(saID, saName, tenant.ID)
 EntitlementStore.ForTenant(ctx, tid string)      -> ForTenant(ctx, tenant.ID)
@@ -295,7 +295,7 @@ You need `PinTenant` if you serve OIDC/SAML start legs, which you almost
 certainly do: the provider registry is keyed by tenant now, so a start leg has
 to know whose IdP to look up. Before v0.4.0 it read an unscoped registry.
 
-```go
+```go ignore
 r := espresso.Portafilter()
 
 // Single-tenant: say so once, globally.
@@ -357,7 +357,7 @@ compiles perfectly and leaks every row.
 Run the conformance suite against your store. It is the instrument built for
 exactly this and it is one call:
 
-```go
+```go ignore
 func TestStore_NoCrossTenantLeaks(t *testing.T) {
 	tenanttest.RunLeakSuite(t, func() identity.Store { return newTestStore(t) })
 }

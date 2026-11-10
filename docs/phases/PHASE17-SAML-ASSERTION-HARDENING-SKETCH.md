@@ -214,3 +214,57 @@ not even have to displace a legitimate attribute.
 this tree (`Response` fields, `Conditions`, `Status`) — the audit followed what tamper and its
 callers trust, and `Conditions` is validated by the library against its own clock. A future audit
 of the protocol-level elements is a separate item rather than a claim made here.
+
+---
+
+## Fifth review — the upstream fix exists, and the fork is cancelled (#140)
+
+The third review recorded: *"There is nothing to upgrade to, which is why the CI allowance
+exists."* **That is no longer true**, and the correction matters more than most: it was the premise
+for forking `crewjam/saml` and opening a PR upstream.
+
+`crewjam/saml` now publishes **v0.5.2** and **v0.6.3**. Per-element verification against the module
+cache (match the ELEMENT NAME in the tag, not the Go field name):
+
+| Element | v0.5.1 | v0.5.2 | v0.6.3 |
+|---|---|---|---|
+| `NameID` | local-name | qualified | qualified |
+| `SubjectConfirmation` / `SubjectConfirmationData` | local-name | qualified | qualified |
+| `AttributeStatement` / `Attribute` / `AttributeValue` | local-name | qualified | qualified |
+| `AuthnStatement` | local-name | qualified | qualified |
+| `Issuer` | qualified | qualified | qualified |
+
+The nil guards are there too (`"assertion has no Subject"`, `"…no Conditions"`,
+`hasBearerSubjectConfirmation`), and upstream **crewjam/saml#693** is already tracking the advisory's
+fixed version.
+
+**A probe, because a table of tags is not a behaviour.** One document, the same shape in both
+versions — an assertion with an `AttributeStatement` whose `Attribute`/`AttributeValue` are in a
+foreign namespace:
+
+```
+v0.5.1   Subject built=false NameID="" foreignAttrs=1   <- the foreign attribute LANDED
+v0.6.3   Subject built=false NameID="" foreignAttrs=0   <- ignored
+```
+
+Two things come out of that, and one is a correction to the fourth review:
+
+- **Attributes were the worst of the set, confirmed empirically**: a foreign-namespace
+  `AttributeValue` reached `Assertion.AttributeStatements` in v0.5.1, so an application reading
+  `Attribute("email")` could see a value the IdP never meant as an attribute. v0.6.3 ignores it.
+- **The `Subject` row of the fourth review was overstated.** The audit listed `Assertion.Subject`
+  as vulnerable; the probe shows a foreign-namespace `<Subject>` does **not** populate it in either
+  version (Go does not match a namespaced element to a field whose type declares a qualified
+  `XMLName`). The guard is not wrong to cover it — refusing is cheap — but the claim was not
+  verified when it was written, and this is the check it lacked.
+
+**What this means for the fork plan: cancelled.** The fix is upstream; contributing a duplicate
+patch would be work with a negative value, and the honest record is that the item's premise went
+stale between being written and being read — the fourth such instance in this roadmap (TD-14, TD-13,
+#137's SCIM path, this one).
+
+**And the guard's status changes too.** With every element it checks now namespace-qualified in the
+library, `saml/nameid_ns.go` no longer prevents anything the library misses — it changes WHAT
+happens: tamper refuses the whole assertion, where the library ignores the foreign element and
+proceeds with the legitimate one. Deleting it is therefore a behaviour change that needs its own
+argument and its own tests, not a tidy-up smuggled into a dependency bump.

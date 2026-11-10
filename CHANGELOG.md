@@ -11,6 +11,16 @@ All notable changes to tamper are recorded here. Versions follow
 
 ### Changed
 
+- **`crewjam/saml` upgraded to v0.6.3, and the GO-2026-6909 CI allowance removed** (#140). The
+  advisory's namespace-blindness is fixed upstream — every element this repository's own audit
+  flagged is now namespace-qualified in the library — so the allowance that existed because "there
+  is nothing to upgrade to" no longer has a reason to exist. The vulnerability scan is the evidence
+  now, not something being suppressed. Worth reading in the sketch: a probe showed a
+  foreign-namespace `AttributeValue` **did** reach the parsed attributes in v0.5.1 (an application
+  reading `Attribute("email")` could see a value the IdP never meant as an attribute) and does not
+  in v0.6.3; and it corrected one row of our own audit, which had listed `Assertion.Subject` as
+  vulnerable without verifying it.
+
 - **An API reference, and a decision about versioning** (#135). `docs/api/` lists every exported
   package and its names, generated from `go doc -short` and checked by a test — a renamed symbol
   fails CI instead of quietly leaving the page describing a previous version. The versioning

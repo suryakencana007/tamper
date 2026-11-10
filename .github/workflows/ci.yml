@@ -140,21 +140,31 @@ jobs:
       # where a mismatched toolchain either misreports the stdlib or fails
       # outright with "package requires newer Go version".
       - name: Vulnerability scan
-        # GO-2026-6909 (crewjam/saml through v0.5.1, "Fixed in: N/A") is allow-listed
-        # NARROWLY, and only because both halves are handled on our side:
+        # The GO-2026-6909 allowance is GONE: crewjam/saml is at v0.6.3, which carries the
+        # fixes, so this scan is the evidence rather than the thing being suppressed.
         #
-        #   1. nil <Issuer> panic in validateAssertion — reachable only when
-        #      ExpectedIDPEntityID is set (tamper never sets it), and caught by the
-        #      recover barrier in saml/parse.go regardless.
-        #   2. namespace-blind Subject.NameID — CLOSED by saml/nameid_ns.go, which
-        #      rejects any NameID outside the assertion namespace before the library
-        #      reads it (tests in saml/nameid_ns_test.go).
+        # What the allowance said, and what was wrong with it. It listed two halves:
         #
-        # Anything else still fails the build. Drop this allowance when a fixed
-        # crewjam/saml release exists.
+        #   1. "nil <Issuer> panic — reachable only when ExpectedIDPEntityID is set (tamper
+        #      never sets it)". That field does not exist in v0.5.1 at all (grep: 0
+        #      occurrences), so the precondition was not narrow — it was absent, and ANY
+        #      signed assertion omitting <Issuer> panicked. PHASE17's second review corrected
+        #      this; the comment kept the original wording for two releases.
+        #   2. "namespace-blind Subject.NameID — CLOSED by saml/nameid_ns.go". True, and it
+        #      was one name-matched element out of eight. The audit in #132 found the others,
+        #      and the probe recorded in PHASE17 found the one that actually landed: a foreign
+        #      AttributeValue reached the parsed attributes in v0.5.1 and does not in v0.6.3.
+        #
+        # v0.6.3 fixes all of them in the library (per-element verification in PHASE17), so
+        # nothing is allow-listed and the condition the old comment named is met.
+        #
+        # Anything found still fails the build. tamper's own guard in saml/nameid_ns.go stays
+        # for now: with the library ignoring foreign elements instead of tamper refusing the
+        # assertion, removing it changes behaviour, which is its own change with its own
+        # argument.
         run: |
           set -uo pipefail
-          ALLOW="GO-2026-6909"
+          ALLOW=""
           out="$(mktemp)"
           rc=0
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > "$out" 2>/dev/null || rc=$?

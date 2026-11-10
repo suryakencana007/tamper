@@ -144,8 +144,11 @@ func TestVerifyChainPostMigration_PrunedChainIsClean(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot guard on a pruned chain: %v", err)
 	}
-	if result.Count != 2 {
-		t.Errorf("Count = %d, want 2", result.Count)
+	// 3, not 2, since Phase 20: the prune now writes a checkpoint naming the hash it removed, so the
+	// chain after pruning is c, d AND that checkpoint. The count is the chain, and the anchor is
+	// part of the chain — which is the whole point of putting it there rather than in a side table.
+	if result.Count != 3 {
+		t.Errorf("Count = %d, want 3 (c, d and the prune checkpoint)", result.Count)
 	}
 }
 

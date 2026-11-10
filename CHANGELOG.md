@@ -69,6 +69,15 @@ changes behaviour.
 
 ### Added
 
+- **An audit chain that says it was pruned** (#139): a prune now writes a checkpoint naming the hash
+  it removed, and `Verify` accepts a non-genesis baseline only when a checkpoint in the chain names
+  it — so pruning by policy and excising the oldest rows by hand finally produce **different
+  verdicts**. `VerifyResult` gained `Pruned` + `AnchoredAt`. Two consequences worth reading: a chain
+  pruned **before** this release has no checkpoint and now verifies as **TAMPERED** (the safe
+  direction), and `audit.Logger` gained `AnchorCurrentChain`, an administrative act that writes the
+  missing checkpoint into the chain rather than a switch that skips verification. **Source-level
+  break:** a consumer implementing `audit.Logger` must add that one method.
+
 - **A shared SAML replay ledger** (#137): `saml.NewSQLiteAssertionReplayStore`. `saml` shipped one
   implementation, documented "for a single process", while `BuildProvider`'s own doc told callers to
   pass a shared store for multiple replicas — so every multi-replica deployment wrote one, and two

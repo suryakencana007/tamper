@@ -231,6 +231,7 @@ func SetClusterID(ctx context.Context, id string)
 func VerifyCommitments(e Event) (checked bool, err error)
 func WithActor(ctx context.Context, a Actor) context.Context
 type Action string
+const ActionChainPruned Action = "system.audit.chain_pruned"
 type ActionCount struct{ ... }
 type Actor struct{ ... }
 func ActorFromContext(ctx context.Context) Actor

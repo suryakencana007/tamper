@@ -56,7 +56,14 @@ func (c *captureLogger) CountByActionSince(context.Context, time.Time) ([]audit.
 	return nil, nil
 }
 func (c *captureLogger) DeleteEventByID(context.Context, string) error { return nil }
-func (c *captureLogger) Close() error                                  { return nil }
+
+// AnchorCurrentChain completes audit.Logger after Phase 20. This test double is the first place the
+// interface extension broke a real implementer — which is what "source-level break" means, and why
+// the CHANGELOG says so rather than mentioning the method in passing.
+func (c *captureLogger) AnchorCurrentChain(context.Context) (audit.Event, error) {
+	return audit.Event{}, nil
+}
+func (c *captureLogger) Close() error { return nil }
 
 func (c *captureLogger) snapshot() []audit.Event {
 	c.mu.Lock()

@@ -251,8 +251,15 @@ func TestSQLiteLogger_PruneOlderThan(t *testing.T) {
 	if res.Tamper {
 		t.Fatalf("Verify reports tamper post-prune at index %d (Total=%d)", res.FirstBadIndex, res.Total)
 	}
-	if got, want := res.Total, int64(2); got != want {
-		t.Errorf("Total post-prune = %d, want %d", got, want)
+	// 3, not 2, since Phase 20: the prune writes a CHECKPOINT naming the hash it removed, and the
+	// checkpoint is part of the chain — that is the point of putting it in the chain rather than in
+	// a side table an attacker with delete access could also edit.
+	if got, want := res.Total, int64(3); got != want {
+		t.Errorf("Total post-prune = %d, want %d (survivors + the prune checkpoint)", got, want)
+	}
+	if !res.Pruned || res.AnchoredAt == "" {
+		t.Errorf("VerifyResult = %+v, want Pruned=true and AnchoredAt set — a clean walk that does "+
+			"not say it was pruned is indistinguishable from one that was never pruned", res)
 	}
 }
 

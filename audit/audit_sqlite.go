@@ -2,7 +2,9 @@ package audit
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -471,11 +473,36 @@ func walkChain(rows []sqlitestore.Event) VerifyResult {
 		return VerifyResult{}
 	}
 
+	// THE ANCHOR RULE, second form. A prune removes a prefix, so the first surviving row's PrevHash
+	// points at a row that is gone — and the checkpoint that legitimises it is appended at the TAIL,
+	// not at the boundary (which explains why the first draft of this rule, checking row 0 for
+	// being a checkpoint itself, failed the existing prune test). So: collect every checkpoint in
+	// the chain, and accept a non-genesis baseline only when one of them names it.
+	//
+	// Before Phase 20 any non-genesis baseline was accepted, which made a pruned prefix and an
+	// excised one verify identically — the gap this closes. A checkpoint can only vouch for a hash
+	// that a prune recorded, and the checkpoint is itself chained, so an attacker who deletes rows
+	// must also forge a checkpoint that verifies.
+	anchored := map[string]bool{}
+	for _, r := range rows {
+		if e := fromRow(r); e.Action == ActionChainPruned && e.ResourceID != "" {
+			anchored[e.ResourceID] = true
+		}
+	}
+
+	res := VerifyResult{Total: total}
 	var prev []byte
 	for i, r := range rows {
 		e := fromRow(r)
 		if i == 0 {
 			prev = e.PrevHash
+			if !isZeroHash(e.PrevHash) {
+				if !anchored[hex.EncodeToString(e.PrevHash)] {
+					return VerifyResult{Total: total, Tamper: true, FirstBadIndex: 0}
+				}
+				res.Pruned = true
+				res.AnchoredAt = hex.EncodeToString(e.PrevHash)
+			}
 		} else if !bytesEqual(e.PrevHash, prev) {
 			return VerifyResult{Total: total, Tamper: true, FirstBadIndex: int64(i)}
 		}
@@ -488,7 +515,17 @@ func walkChain(rows []sqlitestore.Event) VerifyResult {
 		}
 		prev = e.Hash
 	}
-	return VerifyResult{Total: total}
+	return res
+}
+
+// isZeroHash reports the genesis baseline: HashSize zero bytes.
+func isZeroHash(b []byte) bool {
+	for _, x := range b {
+		if x != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // PruneOlderThan deletes events strictly older than cutoff and returns
@@ -499,11 +536,110 @@ func walkChain(rows []sqlitestore.Event) VerifyResult {
 // who need long-term integrity proof should archive the audit DB
 // before pruning fires.
 func (l *SQLiteLogger) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	// The checkpoint goes in FIRST, through the ordinary append path, so it is a chained event
+	// with a row salt and commitments like everything else. Two transactions rather than one, and
+	// the ORDER is what makes that safe: a crash between them leaves the chain STRICTER, not
+	// weaker — every row still present, plus a checkpoint recording a prune that has not run yet.
+	// Both the intermediate and the final state verify clean.
+	pruned, err := l.lastHashAtOrBefore(ctx, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	if pruned != nil {
+		if _, err := l.recordChainCheckpoint(ctx, pruned, ActorSystem("audit_chain_prune")); err != nil {
+			return 0, err
+		}
+	}
+
 	n, err := l.store.Queries.PruneOlderThan(ctx, cutoff.UTC())
 	if err != nil {
 		return 0, fmt.Errorf("audit: prune: %w", err)
 	}
 	return n, nil
+}
+
+// AnchorCurrentChain records a checkpoint for the CURRENT first surviving row, so a chain pruned
+// before checkpoints existed can be made verifiable again. The actor comes from the context when
+// there is one (audit.WithActor), because this is an administrative act and should read as one.
+//
+// It refuses an unpruned chain: there is nothing to anchor, and a checkpoint naming a hash that is
+// still present would claim a prune that never happened.
+func (l *SQLiteLogger) AnchorCurrentChain(ctx context.Context) (Event, error) {
+	first, err := l.oldestPrevHash(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	if isZeroHash(first) {
+		return Event{}, fmt.Errorf("audit: chain is not pruned — its first row is the genesis row, " +
+			"so there is nothing to anchor")
+	}
+	return l.recordChainCheckpoint(ctx, first, ActorFromContext(ctx))
+}
+
+// recordChainCheckpoint appends the checkpoint event naming prunedThrough (the hash of a row that
+// is already gone, or is about to be). It goes through Log, so the hash chain, the row salt, the
+// commitments and the single-writer transaction are the ones every other event gets.
+func (l *SQLiteLogger) recordChainCheckpoint(ctx context.Context, prunedThrough []byte, actor Actor) (Event, error) {
+	if actor.Type == "" {
+		actor = ActorSystem("audit_chain")
+	}
+	return l.Log(ctx, Event{
+		ID:           newCheckpointID(),
+		At:           time.Now().UTC(),
+		Action:       ActionChainPruned,
+		ResourceType: "audit_chain",
+		ResourceID:   hex.EncodeToString(prunedThrough),
+		Actor:        actor,
+	})
+}
+
+// lastHashAtOrBefore returns the hash of the newest row the prune would remove, or nil when the
+// prune removes nothing — in which case no checkpoint is written, because an anchor for a prune
+// that did not happen is a false statement in an append-only log.
+//
+// Raw SQL because no sqlc query returns exactly this, and regenerating the generated layer for one
+// statement is churn this repository has paid for before. The ORDER BY matches GetLatestHash's, so
+// "the newest row" means the same thing in both places.
+func (l *SQLiteLogger) lastHashAtOrBefore(ctx context.Context, cutoff time.Time) ([]byte, error) {
+	// STRICTLY older than the cutoff, mirroring PruneOlderThan's own `DELETE ... WHERE at < ?` —
+	// the generated query, which this SELECT must agree with to the character. The first draft used
+	// <= and named a row the delete does not remove, so the checkpoint anchored the wrong hash and
+	// Verify reported tamper at index 0 on a legitimate prune. Found by running the existing prune
+	// test, which is the second time in this slice that an existing test caught a boundary error.
+	const q = `SELECT hash FROM events WHERE at < ? ORDER BY at DESC, canonical_version DESC, id DESC LIMIT 1`
+	var hash []byte
+	err := l.store.DB.QueryRowContext(ctx, q, cutoff.UTC()).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("audit: prune: find last row at or before cutoff: %w", err)
+	}
+	return hash, nil
+}
+
+// oldestPrevHash returns the PrevHash of the OLDEST surviving row: the hash the chain currently
+// claims as its baseline.
+func (l *SQLiteLogger) oldestPrevHash(ctx context.Context) ([]byte, error) {
+	const q = `SELECT prev_hash FROM events ORDER BY at ASC, canonical_version ASC, id ASC LIMIT 1`
+	var prev []byte
+	err := l.store.DB.QueryRowContext(ctx, q).Scan(&prev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("audit: chain is empty — there is no chain to anchor")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("audit: anchor: read oldest row: %w", err)
+	}
+	return prev, nil
+}
+
+// newCheckpointID is the one event id this package generates for itself; every other event arrives
+// with an id from a caller. Random rather than sequential, so a checkpoint says nothing about how
+// many exist.
+func newCheckpointID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return "chain-pruned-" + hex.EncodeToString(b)
 }
 
 // CountByActionSince returns per-action counts of audit events strictly

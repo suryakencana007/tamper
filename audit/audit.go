@@ -38,6 +38,14 @@ const HashSize = sha256.Size
 // "project.create", "cluster.member.grant", "auth.login".
 type Action string
 
+// ActionChainPruned is the checkpoint an audit log writes for ITSELF when it prunes: its
+// ResourceID carries the hash of the last row the prune removed, so the surviving chain can say
+// where it now begins and that the beginning was removed deliberately.
+//
+// It is an ordinary chained event — not a side table — because an anchor the chain does not
+// protect is one an attacker with delete access can remove with the same access.
+const ActionChainPruned Action = "system.audit.chain_pruned"
+
 // ResourceType narrows the resource_id column to a known kind so
 // queries by (resource_type, resource_id) don't accidentally collide
 // across types. Empty for actions that don't target a specific
@@ -384,6 +392,12 @@ type VerifyResult struct {
 	Total         int64
 	Tamper        bool
 	FirstBadIndex int64
+
+	// Pruned reports that this chain has been compacted, and AnchoredAt is the hash the surviving
+	// chain now begins from (hex). A clean walk that does not say it was pruned is
+	// indistinguishable from one that never was, which is the gap Phase 20 closes.
+	Pruned     bool
+	AnchoredAt string
 }
 
 // Logger is the audit-log primitive consumed by middleware + service
@@ -457,6 +471,16 @@ type Logger interface {
 	// DeleteEventByID query.
 	DeleteEventByID(ctx context.Context, id string) error
 
+	// AnchorCurrentChain records a checkpoint naming the hash the CURRENT first surviving row
+	// points at, and returns the event it wrote. It exists for one situation: a chain pruned
+	// before checkpoints existed has no anchor, and therefore verifies as TAMPERED — correctly,
+	// since an unanchored prefix is what the check is for. An operator who knows that prefix was
+	// removed by policy says so once, here, and the statement is itself auditable.
+	//
+	// This is deliberately NOT a mode that skips verification: the only way to make a pruned chain
+	// verify is to write a checkpoint into it, which is a record, not a bypass.
+	AnchorCurrentChain(ctx context.Context) (Event, error)
+
 	// Close releases the backing connection. NoopLogger.Close is a
 	// no-op.
 	Close() error
@@ -509,6 +533,9 @@ func (NoopLogger) CountByActionSince(_ context.Context, _ time.Time) ([]ActionCo
 // DeleteEventByID is a no-op. NoopLogger doesn't persist events so
 // there's nothing to delete. Matches the rest of NoopLogger's
 // silently-succeed shape (consistent with Log, PruneOlderThan, etc.).
+// AnchorCurrentChain is a no-op: NoopLogger has no chain to anchor.
+func (NoopLogger) AnchorCurrentChain(_ context.Context) (Event, error) { return Event{}, nil }
+
 func (NoopLogger) DeleteEventByID(_ context.Context, _ string) error { return nil }
 
 // Close is a no-op.

@@ -57,6 +57,12 @@ func (c *captureLogger) CountByActionSince(context.Context, time.Time) ([]audit.
 
 func (c *captureLogger) DeleteEventByID(context.Context, string) error { return nil }
 
+// AnchorCurrentChain completes audit.Logger after Phase 20 — the second implementer in this
+// repository that the interface extension broke.
+func (c *captureLogger) AnchorCurrentChain(context.Context) (audit.Event, error) {
+	return audit.Event{}, nil
+}
+
 func (c *captureLogger) Close() error { return nil }
 
 func (c *captureLogger) snapshot() []audit.Event {

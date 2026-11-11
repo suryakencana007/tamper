@@ -9,13 +9,22 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.13.0 — automation that acts across tenants, with a credential that cannot read
-> them at random.** `espresso.RequirePlatformServiceAccount` accepts a machine credential whose
-> `Scope` is `platform`: valid only on platform routes, carrying no home tenant, and **mutually
-> exclusive** with the tenant gate — a tenant credential is refused there and a platform
-> credential here, both with the same 401 as a bad token, so a probe cannot tell which check it
-> failed. Unknown scopes satisfy neither gate. **v0.13.0 is additive**: `Scope`'s zero value is
-> today's tenant credential.
+> **Status: v0.14.0 — a proof-and-hardening release.** Four things that looked fine were not: a
+> guard in SCIM no mutant could reach (deleted rather than kept), a SAML comment describing a silent
+> failure the code had stopped producing, a doc comment whose rewrite would corrupt the sentence it
+> protects, and a dependency pinned at a vulnerable version on the belief that no fix existed — it
+> had shipped two releases earlier. Three capabilities arrived with them: `identity.PasswordPolicy`
+> (a port, with the library's own floor underneath it), `saml.NewSQLiteAssertionReplayStore` (two
+> replicas can no longer both accept one assertion), and an audit chain that proves a prune was
+> policy rather than tampering.
+>
+> **One source-level break**: `audit.Logger` gained `AnchorCurrentChain`, so a consumer implementing
+> that interface must add one method. A chain pruned before this release has no checkpoint and now
+> verifies as **TAMPERED** — the safe direction, with an administrative remedy that writes the
+> missing checkpoint into the chain rather than a switch that skips verification.
+>
+> v0.13.0 added the platform service account; v0.12.0 the per-role second factor (`amr` beside
+> `acr`). The docs are at **https://suryakencana007.github.io/tamper/**, generated from `docs/`.
 >
 > v0.12.0 gave you a second factor you can demand **per role** (`identity.SecondFactorPolicy`),
 > sessions that say what they proved (`amr` beside `acr`), and `espresso.StepUpRequireMethods` so
@@ -51,7 +60,7 @@ site; the working record (phase sketches, tech-debt) deliberately is not.
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.13.0
+go get github.com/suryakencana007/tamper@v0.14.0
 ```
 
 ## What's shipped

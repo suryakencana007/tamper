@@ -7,7 +7,63 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
-## [Unreleased]
+## [0.14.0] — 2026-11-10
+
+**A proof-and-hardening release: four things that looked fine were not, and two gaps that were
+described but not covered are now covered.**
+
+Every change here began as a claim that did not survive being checked. A guard in SCIM that no
+mutant could reach, deleted rather than kept. A SAML comment that described a silent failure the
+code had stopped producing. A doc comment whose rewrite would corrupt the sentence it protects —
+which is why a formatting gate could not exist until it was fixed. A test harness that "compiled"
+the documentation by building zero packages, because the scratch directory began with a dot and Go
+skips those. And a dependency pinned at a vulnerable version on the belief that no fix existed: it
+had shipped two releases earlier.
+
+Two capabilities arrive as well, both from the roadmap's Milestone 3: a `PasswordPolicy` port with
+the library's own floor underneath it, a shared SAML replay ledger so two replicas cannot both
+accept one assertion, and an audit chain that can prove it was pruned by policy rather than
+tampered with.
+
+**A correction to this file, made in the same change.** Three entries belonging to this release had
+been written under the `## [0.13.0]` heading — one of my `### Added` anchors disappeared during a
+rebase conflict resolution, so later inserts fell into the previous release's section. The published
+`v0.13.0` tag was unaffected (verified against the tag: it carries none of them), but the file on
+`main` read as though 0.13.0 had shipped features it never had. They are moved here, and the tag is
+the check that keeps that claim honest rather than a reading of the current file.
+
+**One source-level break**, called out where it belongs: `audit.Logger` gained
+`AnchorCurrentChain`, so a consumer implementing that interface must add one method. A chain pruned
+before this release has no checkpoint and now verifies as **TAMPERED** — the safe direction, with an
+administrative remedy that writes the missing checkpoint into the chain.
+
+### Added
+
+- **A shared SAML replay ledger** (#137): `saml.NewSQLiteAssertionReplayStore`. `saml` shipped one
+  implementation, documented "for a single process", while `BuildProvider`'s own doc told callers to
+  pass a shared store for multiple replicas — so every multi-replica deployment wrote one, and two
+  replicas that disagree do not produce an error: they produce a second session. The store lets the
+  database arbitrate — one `INSERT ... ON CONFLICT DO NOTHING`, outcome from the row count — and an
+  outage returns an error (→ 503), never a silent replay and never a fresh verdict. `PurgeExpiredBefore`
+  is on the concrete type for the application's scheduler; the port deliberately has no such method.
+
+- **An audit chain that says it was pruned** (#139): a prune now writes a checkpoint naming the hash
+  it removed, and `Verify` accepts a non-genesis baseline only when a checkpoint in the chain names
+  it — so pruning by policy and excising the oldest rows by hand finally produce **different
+  verdicts**. `VerifyResult` gained `Pruned` + `AnchoredAt`. Two consequences worth reading: a chain
+  pruned **before** this release has no checkpoint and now verifies as **TAMPERED** (the safe
+  direction), and `audit.Logger` gained `AnchorCurrentChain`, an administrative act that writes the
+  missing checkpoint into the chain rather than a switch that skips verification. **Source-level
+  break:** a consumer implementing `audit.Logger` must add that one method.
+
+- **`identity.PasswordPolicy` — a port for what may be set as a password** (#138). The library
+  keeps its floor (`MinPasswordLen`..`MaxPasswordLen`) and gains an application hook for everything
+  else a deployment needs — a breach list, a length by role, a refusal of the user's own email —
+  because that list has no end and every item on it is a product decision. The floor runs **first**,
+  so a permissive policy cannot relax tamper's own minimum; an error from the policy **denies**, and
+  leaves no user row behind. Wired with `WithPasswordPolicy`; a `Core` without one behaves exactly
+  as before. No policy implementation ships, deliberately — the port exists so tamper's opinion is
+  not the default.
 
 ### Changed
 
@@ -78,32 +134,6 @@ Additive: `Scope`'s zero value is today's tenant credential, so nothing that exi
 changes behaviour.
 
 ### Added
-
-- **An audit chain that says it was pruned** (#139): a prune now writes a checkpoint naming the hash
-  it removed, and `Verify` accepts a non-genesis baseline only when a checkpoint in the chain names
-  it — so pruning by policy and excising the oldest rows by hand finally produce **different
-  verdicts**. `VerifyResult` gained `Pruned` + `AnchoredAt`. Two consequences worth reading: a chain
-  pruned **before** this release has no checkpoint and now verifies as **TAMPERED** (the safe
-  direction), and `audit.Logger` gained `AnchorCurrentChain`, an administrative act that writes the
-  missing checkpoint into the chain rather than a switch that skips verification. **Source-level
-  break:** a consumer implementing `audit.Logger` must add that one method.
-
-- **A shared SAML replay ledger** (#137): `saml.NewSQLiteAssertionReplayStore`. `saml` shipped one
-  implementation, documented "for a single process", while `BuildProvider`'s own doc told callers to
-  pass a shared store for multiple replicas — so every multi-replica deployment wrote one, and two
-  replicas that disagree do not produce an error: they produce a second session. The store lets the
-  database arbitrate — one `INSERT ... ON CONFLICT DO NOTHING`, outcome from the row count — and an
-  outage returns an error (→ 503), never a silent replay and never a fresh verdict. `PurgeExpiredBefore`
-  is on the concrete type for the application's scheduler; the port deliberately has no such method.
-
-- **`identity.PasswordPolicy` — a port for what may be set as a password** (#138). The library
-  keeps its floor (`MinPasswordLen`..`MaxPasswordLen`) and gains an application hook for everything
-  else a deployment needs — a breach list, a length by role, a refusal of the user's own email —
-  because that list has no end and every item on it is a product decision. The floor runs **first**,
-  so a permissive policy cannot relax tamper's own minimum; an error from the policy **denies**, and
-  leaves no user row behind. Wired with `WithPasswordPolicy`; a `Core` without one behaves exactly
-  as before. No policy implementation ships, deliberately — the port exists so tamper's opinion is
-  not the default.
 
 - **A platform service account — TD-12.** A machine credential had exactly one tenant, so
   platform-level automation (provisioning a tenant, syncing across tenants) had no principal it

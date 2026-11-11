@@ -40,6 +40,19 @@ sketch, and a large doc change needs none.
 | [#134](https://github.com/suryakencana007/tamper/issues/134) Compile the Go snippets in the documentation | no | `espresso`'s `docs_snippet_compile_test.go` is the model; the bug it prevents is my invented `identity.New(cfg, store, jwtSvc)` |
 | [#135](https://github.com/suryakencana007/tamper/issues/135) An API reference, and versioned docs on the site | no | `docs/.vitepress/config.ts` sidebar; espresso publishes `docs/api/*` |
 
+### Deferred out of Milestone 3 (2026-11-10)
+
+Two items were moved out rather than closed, and the reason is the same for both: **neither can be
+decided or exercised by whoever is writing code.**
+
+| Issue | Why it is deferred |
+|---|---|
+| [#136](https://github.com/suryakencana007/tamper/issues/136) WebAuthn/passkeys | Needs product answers first: attestation policy (none or verified), whether a passkey satisfies `ForActions` alone or only beside another factor, what happens to existing TOTP enrolments, and whether the challenge store is a port like every other. Writing a sketch that guesses four product decisions would produce a document nobody could approve. |
+| [#141](https://github.com/suryakencana007/tamper/issues/141) a public demo | Needs hosting, credentials and a decision about who pays for it. Nothing in the repository can supply those, and a demo that quietly costs somebody money is worse than no demo. |
+
+They stay open and carry their evidence; they are out of the milestone so that a milestone can
+close on what was actually finished.
+
 ## Milestone 3 · New capability
 
 | Issue | Sketch? | What to read first |

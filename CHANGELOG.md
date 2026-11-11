@@ -19,8 +19,8 @@ All notable changes to tamper are recorded here. Versions follow
   message, no `SBOM`, an unparseable stream, or a database older than 30 days all fail. It blocks
   only findings **reachable from this module** (by looking for this module in the trace, not by trace
   length), and it is covered by `vuln_gate_test.go`, which feeds it nine shapes and asserts each exit
-  code. The Go toolchain moved to **go1.27.4**, a release with no open standard-library advisories —
-  the eleven stdlib findings were fixed upstream, not tolerated. One advisory stays allow-listed with
+  code. The Go toolchain moved to **go1.26.11**, a release with no open standard-library advisories for this line —
+  the eleven stdlib findings were fixed upstream, not tolerated. (It stays on the 1.26 line because the pinned linter is built with 1.26 and refuses a 1.27 target — a real constraint, discovered by CI rather than assumed.) One advisory stays allow-listed with
   its reason written beside it: `GO-2026-6909`, whose database entry says "Fixed in: NONE" although
   upstream shipped the fix in v0.5.2 (upstream `crewjam/saml#693` tracks the metadata).
 

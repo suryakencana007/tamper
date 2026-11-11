@@ -48,3 +48,50 @@ checked now — `TestProofSweepCountsMatchItsRows` fails if the heading and the 
 Nothing else in this set could not fail. Where a guard is unreachable today but kept as protection
 for a *future* shape, the code says so in a comment that names the reachable half and the
 unreachable one — an unproven guard is labelled, never counted.
+
+## The gate that could not fail — the vulnerability scan (#159)
+
+The sweep above is about guards in the product. This is the same defect found **in the checks**, and
+it is the most expensive instance because a blind security gate reports success.
+
+**What it did.** The step in `ci.yml` parsed `govulncheck -json` output with
+
+```python
+for line in fh:
+    obj = json.loads(line)
+```
+
+`govulncheck@v1.6.0` does **not** emit JSON-lines. It emits a stream of **pretty-printed** JSON
+objects, each spanning many lines. So every line raised `JSONDecodeError`, every error was
+`continue`d as "the stream mixes message kinds", `found` stayed empty, and the step passed. It had
+passed on every run since it was written.
+
+**How it was found.** A local scan reported twelve findings — including `GO-2026-6909` attributed to
+`crewjam/saml@v0.6.3`, a version that carries the fix — while CI was green. The obvious reading was
+"the advisory's metadata is stale". The correct reading, one probe later: the *parser* was blind.
+
+**What the fix is.**
+
+- The parser is a file, `scripts/vuln_gate.py`, and it parses the stream with `raw_decode`.
+- It refuses to report clean when the report is unusable: no `config` message, no `SBOM`, an
+  unparseable stream, or a **database older than 30 days** all exit non-zero. A scanner reading a
+  stale snapshot reports exactly what a clean scan reports.
+- It blocks only findings **reachable from this module**, by looking for this module in the trace —
+  not by trace length. A vulnerable symbol in a dependency also carries a trace; that distinction
+  was the second bug in the rewrite, caught by a fixture.
+- The toolchain moved to a release with no open stdlib advisories (`go1.27.4`), which is a real fix
+  rather than an allowance.
+- One advisory is allow-listed, with its reason and its removal condition written beside it:
+  `GO-2026-6909`, whose database entry says `Fixed in: NONE` even though upstream shipped the fix in
+  v0.5.2 (upstream issue #693 tracks the metadata).
+
+**The test that makes it impossible to re-break.** `vuln_gate_test.go` feeds the gate nine shapes —
+a pretty-printed finding, a different finding, the allow-listed advisory, a module-level advisory, a
+finding whose trace stays in a dependency, a missing `config`, a stale database, an unparseable
+report, and a clean scan — and asserts each exit code. Against the real data the new gate **fails**
+on the old toolchain (18 findings) and passes on the new one, which is the difference the old step
+could not express.
+
+**The lesson, stated once.** Every guard in this repository is now asked a second question: not only
+"does it reject what it is meant to reject", but **"has it ever rejected anything"**. A check that has
+only ever passed is a hypothesis.

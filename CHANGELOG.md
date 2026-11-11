@@ -7,6 +7,23 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
+## [Unreleased]
+
+### Fixed
+
+- **The vulnerability scan was green because it read nothing** (#159). The CI step parsed
+  `govulncheck -json` per line, but that output is a stream of *pretty-printed* JSON objects spanning
+  many lines — so every line failed to parse, every failure was skipped, and the step passed. It had
+  passed on every run since it was written. The parser is now `scripts/vuln_gate.py`, which parses
+  the stream correctly and **refuses to report clean** when the report is unusable: no `config`
+  message, no `SBOM`, an unparseable stream, or a database older than 30 days all fail. It blocks
+  only findings **reachable from this module** (by looking for this module in the trace, not by trace
+  length), and it is covered by `vuln_gate_test.go`, which feeds it nine shapes and asserts each exit
+  code. The Go toolchain moved to **go1.26.11**, a release with no open standard-library advisories for this line —
+  the eleven stdlib findings were fixed upstream, not tolerated. (It stays on the 1.26 line because the pinned linter is built with 1.26 and refuses a 1.27 target — a real constraint, discovered by CI rather than assumed.) One advisory stays allow-listed with
+  its reason written beside it: `GO-2026-6909`, whose database entry says "Fixed in: NONE" although
+  upstream shipped the fix in v0.5.2 (upstream `crewjam/saml#693` tracks the metadata).
+
 ## [0.14.0] — 2026-11-10
 
 **A proof-and-hardening release: four things that looked fine were not, and two gaps that were

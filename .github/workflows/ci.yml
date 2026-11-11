@@ -140,82 +140,34 @@ jobs:
       # where a mismatched toolchain either misreports the stdlib or fails
       # outright with "package requires newer Go version".
       - name: Vulnerability scan
-        # The GO-2026-6909 allowance is GONE: crewjam/saml is at v0.6.3, which carries the
-        # fixes, so this scan is the evidence rather than the thing being suppressed.
+        # The parser is a file (scripts/vuln_gate.py) because the version that lived here was GREEN
+        # for every run while the scanner reported findings: it parsed govulncheck's output per line,
+        # and that output is a stream of PRETTY-PRINTED objects spanning many lines. Every line
+        # failed to parse, every failure was skipped as "mixed message kinds", and the step passed.
         #
-        # What the allowance said, and what was wrong with it. It listed two halves:
+        # A gate that has never failed is not known to work, so the gate has tests: vuln_gate_test.go
+        # feeds it eight shapes — a finding, an allow-listed advisory, a module-level advisory, a
+        # missing config message, a stale database, an unparseable report, and a clean scan — and
+        # asserts the exit code for each.
         #
-        #   1. "nil <Issuer> panic — reachable only when ExpectedIDPEntityID is set (tamper
-        #      never sets it)". That field does not exist in v0.5.1 at all (grep: 0
-        #      occurrences), so the precondition was not narrow — it was absent, and ANY
-        #      signed assertion omitting <Issuer> panicked. PHASE17's second review corrected
-        #      this; the comment kept the original wording for two releases.
-        #   2. "namespace-blind Subject.NameID — CLOSED by saml/nameid_ns.go". True, and it
-        #      was one name-matched element out of eight. The audit in #132 found the others,
-        #      and the probe recorded in PHASE17 found the one that actually landed: a foreign
-        #      AttributeValue reached the parsed attributes in v0.5.1 and does not in v0.6.3.
-        #
-        # v0.6.3 fixes all of them in the library (per-element verification in PHASE17), so
-        # nothing is allow-listed and the condition the old comment named is met.
-        #
-        # Anything found still fails the build. tamper's own guard in saml/nameid_ns.go stays
-        # for now: with the library ignoring foreign elements instead of tamper refusing the
-        # assertion, removing it changes behaviour, which is its own change with its own
-        # argument.
+        # It also fails when the DATABASE is stale: a scanner reading an old snapshot reports exactly
+        # what a clean scan reports, and treating those as the same thing is how a security gate
+        # becomes decoration.
         run: |
           set -uo pipefail
-          ALLOW=""
           out="$(mktemp)"
           rc=0
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > "$out" 2>/dev/null || rc=$?
-          # govulncheck exits 0 (clean) or 1 (findings). Anything else is the SCANNER
-          # failing — a network or toolchain problem — and a scanner that did not run
-          # must never read as a clean bill of health.
-          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+          # govulncheck: 0 = clean, 3 = findings (v1.6.0), 1 = findings in older versions. Anything
+          # else is the SCANNER failing — a network or toolchain problem — and a scanner that did
+          # not run must never read as a clean bill of health.
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ] && [ "$rc" -ne 3 ]; then
             echo "govulncheck failed to run (exit $rc):" >&2
             head -5 "$out" >&2
             exit 1
           fi
-          if ! grep -q '"config"' "$out"; then
-            echo "govulncheck produced no report — treating as failure, not as clean" >&2
-            exit 1
-          fi
-          python3 - "$out" "$ALLOW" <<'PY'
-          import json, sys
-          path, allow = sys.argv[1], {a for a in sys.argv[2].split(",") if a}
-          found, allowed = [], []
-          with open(path) as fh:
-              for line in fh:
-                  line = line.strip()
-                  if not line:
-                      continue
-                  try:
-                      obj = json.loads(line)
-                  except json.JSONDecodeError:
-                      continue
-                  # govulncheck's -json stream mixes message kinds, and a line that
-                  # decodes may be a string rather than an object; only a finding object
-                  # with an osv id is interesting here.
-                  if not isinstance(obj, dict):
-                      continue
-                  finding = obj.get("finding")
-                  if not isinstance(finding, dict):
-                      continue
-                  osv = finding.get("osv", "")
-                  if not isinstance(osv, str):
-                      continue
-                  (allowed if osv in allow else found).append(osv)
-          if found:
-              print("vulnerabilities:", ", ".join(sorted(set(found))))
-              sys.exit(1)
-          if allowed:
-              print("allow-listed (see the comment in ci.yml):", ", ".join(sorted(set(allowed))))
-          PY
+          python3 scripts/vuln_gate.py "$out"
 
-      # Drift guard: the checked-in sqlc output (audit/sqlitestore) must be
-      # byte-reproducible from sqlc.yaml with the pinned generator. Single
-      # SQLite driver, so `sqlc generate` is the whole pipeline (no build-tag
-      # re-injection like a multi-driver setup).
       - name: sqlc regen check
         run: |
           go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0

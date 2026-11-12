@@ -7,7 +7,21 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
-## [Unreleased]
+## [0.14.1] — 2026-11-11
+
+**A patch release with no API change, for a defect in our own checks — the kind that is invisible
+precisely because it reports success.**
+
+The vulnerability scan in CI had been green on every run since it was written, and it was green
+because it read nothing: the step parsed `govulncheck`'s output line by line, while that output is a
+stream of pretty-printed JSON objects spanning many lines. Every line failed to parse, every failure
+was skipped, and the step passed. It went red the first time it was fed real data — which is how it
+was found, while investigating something else entirely.
+
+Nothing in the library changed except the Go toolchain, which moved to `go1.26.11`: a release that
+carries the fixed version for every standard-library advisory the scan reports. That is a fix, not an
+allowance — the alternative would have been adding IDs to a list and calling the build green.
+
 
 ### Fixed
 

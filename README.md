@@ -9,14 +9,18 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.14.0 — a proof-and-hardening release.** Four things that looked fine were not: a
-> guard in SCIM no mutant could reach (deleted rather than kept), a SAML comment describing a silent
-> failure the code had stopped producing, a doc comment whose rewrite would corrupt the sentence it
-> protects, and a dependency pinned at a vulnerable version on the belief that no fix existed — it
-> had shipped two releases earlier. Three capabilities arrived with them: `identity.PasswordPolicy`
-> (a port, with the library's own floor underneath it), `saml.NewSQLiteAssertionReplayStore` (two
-> replicas can no longer both accept one assertion), and an audit chain that proves a prune was
-> policy rather than tampering.
+> **Status: v0.14.1 — a patch release for a defect in our own checks.** The CI vulnerability scan had
+> been green on every run since it was written, because it read nothing: it parsed `govulncheck`'s
+> output line by line, while that output is a stream of pretty-printed JSON spanning many lines. It is
+> now a tested script (`scripts/vuln_gate.py` + `vuln_gate_test.go`, nine shapes) that refuses to
+> report clean when the report is unusable or its database is stale, blocks only findings reachable
+> from this module, and carries one allow-listed advisory with its reason written beside it. The Go
+> toolchain moved to `go1.26.11`, which closes every standard-library advisory the scan reported.
+>
+> No API change. v0.14.0 added the proof-and-hardening work (`PasswordPolicy`, the SQLite replay
+> ledger, the anchored audit chain) and carries one source-level break —
+> `audit.Logger.AnchorCurrentChain`. The docs are at
+> **https://suryakencana007.github.io/tamper/**, generated from `docs/`.
 >
 > **One source-level break**: `audit.Logger` gained `AnchorCurrentChain`, so a consumer implementing
 > that interface must add one method. A chain pruned before this release has no checkpoint and now
@@ -60,7 +64,7 @@ site; the working record (phase sketches, tech-debt) deliberately is not.
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.14.0
+go get github.com/suryakencana007/tamper@v0.14.1
 ```
 
 ## What's shipped

@@ -318,10 +318,12 @@ other tenant's rows.
 > `math.Ceil` matches the rounding `espresso/throttle.go`'s `setRetryAfter`
 > already uses for the header it CAN set, so the two throttle paths name the
 > same instant. A real header on this path needs an upstream espresso change
-> (e.g. `Error.WithHeader`); that is a separate issue in that repository,
-> never smuggled in here (§6.7), and the gap is recorded rather than silently
-> accepted. Message stays fixed at "too many attempts" — no email, user id or
-> key, per `ThrottledError`'s doc comment.
+> (`Error.WithHeader`), filed as
+> [`suryakencana007/espresso#77`](https://github.com/suryakencana007/espresso/issues/77);
+> that is a separate repository's change, never smuggled in here (§6.7), and
+> the gap is recorded rather than silently accepted. Message stays fixed at
+> "too many attempts" — no email, user id or key, per `ThrottledError`'s doc
+> comment.
 >
 > **3. `/totp/enroll-session` is covered only through the application.**
 > `EnrollTOTPViaSession` is application policy, not an `identity.Core` verb

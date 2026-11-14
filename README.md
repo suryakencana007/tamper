@@ -9,13 +9,13 @@ single binary and mount its routes on your own Espresso router. Every engine is
 decoupled behind a port interface your app implements — Tamper never names a
 table, owns a cookie brand, or freezes your audit vocabulary.
 
-> **Status: v0.14.1 — a patch release for a defect in our own checks.** The CI vulnerability scan had
-> been green on every run since it was written, because it read nothing: it parsed `govulncheck`'s
-> output line by line, while that output is a stream of pretty-printed JSON spanning many lines. It is
-> now a tested script (`scripts/vuln_gate.py` + `vuln_gate_test.go`, nine shapes) that refuses to
-> report clean when the report is unusable or its database is stale, blocks only findings reachable
-> from this module, and carries one allow-listed advisory with its reason written beside it. The Go
-> toolchain moved to `go1.26.11`, which closes every standard-library advisory the scan reported.
+> **Status: v0.14.2 — a patch release with no API change: a throttled credential call answers 429,
+> not 500.** `identity.WithThrottling` makes `Login`, `VerifyTOTP` and `VerifyRecoveryCode` refuse
+> before any store read, and that refusal reached the wire as **500 INTERNAL** — the limiter reporting
+> its own decision as a server fault. It now answers **429 `TOO_MANY_REQUESTS`**, the code the
+> route-level gate already emits, and sets the same **`Retry-After`** header. That header needs
+> espresso **v2.5.0** (`(*Error).WithHeader`), which is now the minimum. The change is additive and
+> only applies where the throttle is installed.
 >
 > No API change. v0.14.0 added the proof-and-hardening work (`PasswordPolicy`, the SQLite replay
 > ledger, the anchored audit chain) and carries one source-level break —
@@ -64,7 +64,7 @@ site; the working record (phase sketches, tech-debt) deliberately is not.
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.14.1
+go get github.com/suryakencana007/tamper@v0.14.2
 ```
 
 ## What's shipped

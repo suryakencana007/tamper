@@ -7,7 +7,18 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
-## [Unreleased]
+## [0.14.2] — 2026-11-15
+
+**A patch release with no API change: an identity throttle that answered 500 now answers 429.**
+
+`identity.WithThrottling` makes `Login`, `VerifyTOTP` and `VerifyRecoveryCode` refuse an attempt
+before any store read, and that refusal reached the wire as **500 INTERNAL** — the limiter reporting
+its own decision as a server fault, paging whoever alerts on 5xx and leaving the client unable to
+tell "wait" from "broken". It now answers **429 `TOO_MANY_REQUESTS`**, the code the route-level
+`Throttled` gate already emits, and sets the same **`Retry-After`** header, rounded by the gate's own
+function so the two paths cannot name different waits. The header needs espresso
+**v2.5.0** — `(*Error).WithHeader` — which this release raises as the new minimum. The change is
+additive, and it only applies where `identity.WithThrottling` is installed.
 
 ### Fixed
 

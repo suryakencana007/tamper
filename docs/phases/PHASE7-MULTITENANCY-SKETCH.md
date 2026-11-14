@@ -283,6 +283,66 @@ route, not a boot failure.
 migration on a real Barista audit DB; a tenant-scoped export contains no
 other tenant's rows.
 
+> **Amendment, 2026-11-14 — 7k-1's transport half: the identity throttle
+> answers 429, and the retry hint goes in the body (#163).**
+>
+> 7k-1 throttled the credential surfaces and gave the *route* gate a 429
+> (`espresso/throttle.go`), but left the errors the limiter returns unmapped:
+> `mapAuthWireError` had no branch for `identity.ErrThrottled`, so a throttled
+> `Login`, `VerifyTOTP` or `VerifyRecoveryCode` fell to `default` and was
+> answered **500 INTERNAL**. The limiter reported its own refusal as a server
+> fault — safe, since the refusal happened, but it pages anyone alerting on 5xx
+> and leaves the client unable to tell "wait" from "broken". Found downstream
+> in `kubuskotak/aio` (issue #163); `main` at v0.14.1 has the same code. The
+> code is its own PR under §6.7; this amendment freezes the three decisions it
+> needs.
+>
+> **1. One code: `ThrottledCode` (`TOO_MANY_REQUESTS`), not a new
+> `RATE_LIMITED`.** `mapAuthWireError` gains one branch before `default` —
+> `errors.Is(err, identity.ErrThrottled)` → `ErrTooManyRequests` with
+> `ThrottledCode` — and `mapTOTPWireError` inherits it through the fallthrough
+> it already has. The constant is the route gate's, so the same condition has
+> one spelling across the whole surface. A second code for one refusal is
+> exactly the drift a versioned wire contract exists to prevent, and a client
+> that already backs off on the route gate's 429 should not have to learn a
+> second code to back off on this one.
+>
+> **2. The retry hint is a `retry_after_seconds` detail, NOT a `Retry-After`
+> header.** This is a limitation of the error path, not a preference. A route
+> handler here returns `error` and never sees the `http.ResponseWriter`, and
+> espresso's `writeHandlerError` honours only a `*espressofw.Error` (or a
+> registered layer error) — a type that carries no header field. So the hint
+> travels where it can: when `errors.As` recovers a `*identity.ThrottledError`
+> with `RetryAfter > 0`, the branch attaches
+> `WithDetail("retry_after_seconds", int(math.Ceil(te.RetryAfter.Seconds())))`.
+> `math.Ceil` matches the rounding `espresso/throttle.go`'s `setRetryAfter`
+> already uses for the header it CAN set, so the two throttle paths name the
+> same instant. A real header on this path needs an upstream espresso change
+> (e.g. `Error.WithHeader`); that is a separate issue in that repository,
+> never smuggled in here (§6.7), and the gap is recorded rather than silently
+> accepted. Message stays fixed at "too many attempts" — no email, user id or
+> key, per `ThrottledError`'s doc comment.
+>
+> **3. `/totp/enroll-session` is covered only through the application.**
+> `EnrollTOTPViaSession` is application policy, not an `identity.Core` verb
+> (`examples/*/identity_adapter.go` stub it out), so nothing in tamper
+> throttles that leg. It becomes a 429 when the app's own implementation
+> returns `identity.ErrThrottled` — the realistic case being an implementation
+> that validates `current_code` through `VerifyTOTP`. Decision 1's fallthrough
+> covers it, and the test drives it with a fake service returning
+> `*identity.ThrottledError`, because the real core cannot produce that error
+> on this surface.
+>
+> **What does not change.** The throttle itself, its keys, its ordering before
+> every store read, and the non-disclosure property are untouched: the branch
+> reads an error the limiter already produced, and the message and detail carry
+> only the bucket's retry time, never anything about the account. The change is
+> additive — a response that used to be a 500 becomes a 429 — and it only fires
+> in a deployment that turned the library's own throttle on. Regression tests
+> pin `ErrInvalidCredentials` at 401 and an unmapped error at 500, so the new
+> branch cannot widen into the neighbouring mappings. `#163` is new and
+> unscheduled; it is not in the milestone tables.
+
 ### M6 — Default flip (v0.4.0)
 
 | Slice | What | Risk |

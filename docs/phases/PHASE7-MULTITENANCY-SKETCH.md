@@ -284,7 +284,8 @@ migration on a real Barista audit DB; a tenant-scoped export contains no
 other tenant's rows.
 
 > **Amendment, 2026-11-14 — 7k-1's transport half: the identity throttle
-> answers 429, and the retry hint goes in the body (#163).**
+> answers 429, and the retry hint is a `Retry-After` header (#163).
+> (Decision 2 amended 2026-11-15, before either change shipped.)**
 >
 > 7k-1 throttled the credential surfaces and gave the *route* gate a 429
 > (`espresso/throttle.go`), but left the errors the limiter returns unmapped:
@@ -307,23 +308,23 @@ other tenant's rows.
 > that already backs off on the route gate's 429 should not have to learn a
 > second code to back off on this one.
 >
-> **2. The retry hint is a `retry_after_seconds` detail, NOT a `Retry-After`
-> header.** This is a limitation of the error path, not a preference. A route
-> handler here returns `error` and never sees the `http.ResponseWriter`, and
-> espresso's `writeHandlerError` honours only a `*espressofw.Error` (or a
-> registered layer error) — a type that carries no header field. So the hint
-> travels where it can: when `errors.As` recovers a `*identity.ThrottledError`
-> with `RetryAfter > 0`, the branch attaches
-> `WithDetail("retry_after_seconds", int(math.Ceil(te.RetryAfter.Seconds())))`.
-> `math.Ceil` matches the rounding `espresso/throttle.go`'s `setRetryAfter`
-> already uses for the header it CAN set, so the two throttle paths name the
-> same instant. A real header on this path needs an upstream espresso change
-> (`Error.WithHeader`), filed as
-> [`suryakencana007/espresso#77`](https://github.com/suryakencana007/espresso/issues/77);
-> that is a separate repository's change, never smuggled in here (§6.7), and
-> the gap is recorded rather than silently accepted. Message stays fixed at
-> "too many attempts" — no email, user id or key, per `ThrottledError`'s doc
-> comment.
+> **2. The retry hint is a `Retry-After` header.** When this amendment was
+> first written the header was not reachable: a route handler here returns
+> `error` and never sees the `http.ResponseWriter`, and espresso's
+> `writeHandlerError` honoured only a `*espressofw.Error` (or a registered
+> layer error) — a type that carried no header field. The hint therefore
+> travelled as a `retry_after_seconds` body detail, and the missing capability
+> went upstream under §6.7 rather than being smuggled in here. It has since
+> arrived: **espresso v2.5.0 adds `(*Error).WithHeader`**. So the branch now
+> attaches `WithHeader("Retry-After", strconv.Itoa(secs))` when `errors.As`
+> recovers a `*identity.ThrottledError` with `RetryAfter > 0`, using exactly the
+> rounding `espresso/throttle.go`'s `setRetryAfter` already applies (ceil,
+> floored at one second), so the identity path and the route gate name the
+> same instant in the same channel. The detail is **removed, not kept beside
+> the header**: it was never released, and two forms for one thing is what
+> standing rule 1 forbids. Tamper's espresso floor moves to v2.5.0 with it.
+> Message stays fixed at "too many attempts" — no email, user id or key, per
+> `ThrottledError`'s doc comment.
 >
 > **3. `/totp/enroll-session` is covered only through the application.**
 > `EnrollTOTPViaSession` is application policy, not an `identity.Core` verb
@@ -337,7 +338,7 @@ other tenant's rows.
 >
 > **What does not change.** The throttle itself, its keys, its ordering before
 > every store read, and the non-disclosure property are untouched: the branch
-> reads an error the limiter already produced, and the message and detail carry
+> reads an error the limiter already produced, and the message and header carry
 > only the bucket's retry time, never anything about the account. The change is
 > additive — a response that used to be a 500 becomes a 429 — and it only fires
 > in a deployment that turned the library's own throttle on. Regression tests

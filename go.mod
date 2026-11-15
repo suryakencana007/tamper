@@ -25,7 +25,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/pquerna/otp v1.5.0
 	github.com/scim2/filter-parser/v2 v2.2.1
-	github.com/suryakencana007/espresso/v2 v2.4.0
+	github.com/suryakencana007/espresso/v2 v2.5.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/oauth2 v0.36.0
 	modernc.org/sqlite v1.53.0
@@ -35,8 +35,8 @@ require (
 	github.com/beevik/etree v1.8.1 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.15.0 // indirect
-	github.com/bytedance/sonic/loader v0.5.0 // indirect
+	github.com/bytedance/sonic v1.15.3 // indirect
+	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/di-wu/parser v0.2.2 // indirect

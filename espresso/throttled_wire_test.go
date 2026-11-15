@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +25,8 @@ import (
 // return *identity.ThrottledError before any store read. Those errors
 // reached mapAuthWireError's default branch and shipped as 500 INTERNAL:
 // the limiter reported its own refusal as a server fault. These tests pin
-// the fixed contract — 429, the route gate's code, a body hint, and no
-// account detail — and the regression that the new branch does not widen
+// the fixed contract — 429, the route gate's code, a Retry-After header, and
+// no account detail — and the regression that the new branch does not widen
 // into its neighbours.
 //
 // The fakes below return exactly what identity.Core returns; proving the
@@ -65,9 +67,8 @@ func (f *throttledEnroller) EnrollTOTPViaSession(context.Context, tenant.ID, str
 
 type wireErrBody struct {
 	Error struct {
-		Code    string         `json:"code"`
-		Message string         `json:"message"`
-		Details map[string]any `json:"details"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
 	} `json:"error"`
 }
 
@@ -80,16 +81,34 @@ func decodeWireErr(t *testing.T, body string) wireErrBody {
 	return b
 }
 
+// renderThrottled renders err the way the framework writes it and returns the
+// recorder, so a test can read the Retry-After header the error now carries.
+func renderThrottled(t *testing.T, err error) *httptest.ResponseRecorder {
+	t.Helper()
+	var w interface {
+		WriteResponse(http.ResponseWriter) error
+	}
+	if !errors.As(err, &w) {
+		t.Fatalf("error %v (%T) does not render a response", err, err)
+	}
+	rec := httptest.NewRecorder()
+	if werr := w.WriteResponse(rec); werr != nil {
+		t.Fatalf("WriteResponse: %v", werr)
+	}
+	return rec
+}
+
 // assertThrottled429 renders err and asserts the whole contract: 429, the
-// route gate's stable code, the fixed message, the optional
-// retry_after_seconds, and that none of the forbidden strings (the
-// attempted address, the key) reached the body.
+// route gate's stable code, the fixed message, the Retry-After header (or none
+// when the error carried no hint), no leftover body detail, and that none of
+// the forbidden strings (the attempted address, the key) reached the body.
 func assertThrottled429(t *testing.T, err error, wantSeconds int, forbidden ...string) {
 	t.Helper()
-	code, body := wire(t, err)
-	if code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429; body=%s", code, body)
+	rec := renderThrottled(t, err)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
 	}
+	body := rec.Body.String()
 	got := decodeWireErr(t, body)
 	if got.Error.Code != ThrottledCode {
 		t.Errorf("code = %q, want %q", got.Error.Code, ThrottledCode)
@@ -97,19 +116,16 @@ func assertThrottled429(t *testing.T, err error, wantSeconds int, forbidden ...s
 	if got.Error.Message != "too many attempts" {
 		t.Errorf("message = %q, want the fixed %q", got.Error.Message, "too many attempts")
 	}
-	detail := got.Error.Details[throttleRetryDetailKey]
-	if wantSeconds == 0 {
-		if detail != nil {
-			t.Errorf("retry_after_seconds = %v present when the error carried no hint", detail)
+	if hdr := rec.Header().Get("Retry-After"); wantSeconds == 0 {
+		if hdr != "" {
+			t.Errorf("Retry-After = %q on an error that carried no hint", hdr)
 		}
-	} else {
-		n, ok := detail.(float64)
-		if !ok {
-			t.Fatalf("retry_after_seconds = %v (%T), want number %d", detail, detail, wantSeconds)
-		}
-		if int(n) != wantSeconds {
-			t.Errorf("retry_after_seconds = %d, want %d", int(n), wantSeconds)
-		}
+	} else if hdr != strconv.Itoa(wantSeconds) {
+		t.Errorf("Retry-After = %q, want %d", hdr, wantSeconds)
+	}
+	// The pre-v2.5.0 body detail is removed, not kept beside the header.
+	if strings.Contains(body, "retry_after_seconds") {
+		t.Errorf("body still carries the removed retry_after_seconds detail: %s", body)
 	}
 	for _, s := range forbidden {
 		if s != "" && strings.Contains(body, s) {
@@ -139,9 +155,9 @@ func TestWire_ThrottledMapsTo429(t *testing.T) {
 }
 
 // TestWire_RetryAfterRoundsUp mirrors TestThrottled_RetryAfterRoundsUp:
-// the body detail and the middleware's Retry-After header must name the
-// same instant, and neither may round down to an instant at which the
-// caller is still refused.
+// the identity error's Retry-After header and the middleware's must name the
+// same instant, and neither may round down to an instant at which the caller
+// is still refused.
 func TestWire_RetryAfterRoundsUp(t *testing.T) {
 	for _, tc := range []struct {
 		after time.Duration
@@ -158,6 +174,25 @@ func TestWire_RetryAfterRoundsUp(t *testing.T) {
 			err := mapAuthWireError(&identity.ThrottledError{RetryAfter: tc.after}, defaultValidationMessage)
 			assertThrottled429(t, err, tc.want)
 		})
+	}
+}
+
+// TestWire_RetryAfterHeaderMatchesTheGate pins the structural claim that the
+// identity path and the route gate cannot diverge: both call retryAfterSeconds.
+// It compares the rendered error's header against setRetryAfter's, so a future
+// edit that reintroduces a second rounding for one wait goes red here.
+func TestWire_RetryAfterHeaderMatchesTheGate(t *testing.T) {
+	for _, after := range []time.Duration{
+		time.Millisecond, 999 * time.Millisecond, time.Second,
+		1500 * time.Millisecond, 2 * time.Second, 90 * time.Second,
+	} {
+		err := mapAuthWireError(&identity.ThrottledError{RetryAfter: after}, defaultValidationMessage)
+		identityHdr := renderThrottled(t, err).Header().Get("Retry-After")
+		gateRec := httptest.NewRecorder()
+		setRetryAfter(gateRec, after)
+		if gateHdr := gateRec.Header().Get("Retry-After"); identityHdr != gateHdr {
+			t.Errorf("after %v: identity answered Retry-After %q, the gate %q", after, identityHdr, gateHdr)
+		}
 	}
 }
 

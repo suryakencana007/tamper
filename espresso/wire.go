@@ -3,7 +3,6 @@ package espresso
 import (
 	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
 
 	espressofw "github.com/suryakencana007/espresso/v2"
@@ -157,20 +156,6 @@ func mapAuthWireError(err error, validationMsg func(error) string) error {
 	}
 }
 
-// throttleRetryDetailKey is the body field carrying the retry hint on a
-// throttled response.
-//
-// A DETAIL and not a Retry-After header, as a constraint of this path
-// rather than a preference: a route handler returns error and never sees
-// the ResponseWriter, and espresso's writeHandlerError honours only a
-// *espressofw.Error, which carries no header field. The route-level
-// Throttled middleware CAN set the header because it holds the writer, so
-// the two throttle paths name the same instant in two channels. A real
-// header here needs an upstream espresso change (suryakencana007/espresso#77);
-// until then this is the honest one. See PHASE7-MULTITENANCY-SKETCH.md,
-// M5 amendment (#163).
-const throttleRetryDetailKey = "retry_after_seconds"
-
 // throttledWireError maps identity.ErrThrottled onto the route gate's
 // stable 429.
 //
@@ -178,18 +163,22 @@ const throttleRetryDetailKey = "retry_after_seconds"
 // middleware already emits — so one condition has one spelling across the
 // surface rather than a second RATE_LIMITED a client has to learn.
 //
-// The message is FIXED and the detail carries only the bucket's retry
-// time. Never the email, user id or key: ThrottledError's doc comment
-// explains that a limiter which echoes the attempted address is a
-// credential-stuffing receipt.
+// The retry hint is the same Retry-After header that middleware sets, carried
+// through espresso's Error.WithHeader (v2.5.0). retryAfterSeconds is the one
+// rounding both paths use, so a client sees one wait, not two. There is
+// deliberately no body detail: the detail was the pre-v2.5.0 stand-in for a
+// header this package could not set, it was never released, and two forms for
+// one thing is what standing rule 1 forbids. See PHASE7-MULTITENANCY-SKETCH.md,
+// M5 amendment (#163).
+//
+// The message is FIXED and the header carries only the bucket's retry time.
+// Never the email, user id or key: ThrottledError's doc comment explains that a
+// limiter which echoes the attempted address is a credential-stuffing receipt.
 func throttledWireError(err error) *espressofw.Error {
 	e := espressofw.ErrTooManyRequests("too many attempts").WithCode(ThrottledCode)
 	var te *identity.ThrottledError
 	if errors.As(err, &te) && te.RetryAfter > 0 {
-		// Round UP, matching setRetryAfter: rounding down names an
-		// instant at which the caller is still refused, and 0 reads as
-		// "retry now" — the hot loop the hint exists to prevent.
-		e = e.WithDetail(throttleRetryDetailKey, int(math.Ceil(te.RetryAfter.Seconds())))
+		e = e.WithHeader("Retry-After", retryAfterSeconds(te.RetryAfter))
 	}
 	return e
 }

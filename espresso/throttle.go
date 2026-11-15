@@ -174,17 +174,25 @@ func WriteSCIMThrottled(w http.ResponseWriter, _ *http.Request, retryAfter time.
 	WriteSCIMErrorTyped(w, http.StatusTooManyRequests, "too many requests", "")
 }
 
-// setRetryAfter writes the RFC 9110 §10.2.3 delay-seconds form.
+// retryAfterSeconds renders the RFC 9110 §10.2.3 delay-seconds value.
 //
 // Rounded UP: rounding down would name an instant at which the caller is
 // still refused, and a client that obeys it to the second gets a second
 // 429 and learns to ignore the header. A sub-second wait becomes 1 for
 // the same reason — the header has no finer unit, and 0 reads as "retry
 // now", which is the hot loop this exists to prevent.
-func setRetryAfter(w http.ResponseWriter, retryAfter time.Duration) {
+//
+// One function because the route gate and the identity error both set this
+// header; a client must not see two roundings for one wait.
+func retryAfterSeconds(retryAfter time.Duration) string {
 	secs := int64(1)
 	if retryAfter > time.Second {
 		secs = int64(math.Ceil(retryAfter.Seconds()))
 	}
-	w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
+	return strconv.FormatInt(secs, 10)
+}
+
+// setRetryAfter writes the RFC 9110 §10.2.3 delay-seconds form.
+func setRetryAfter(w http.ResponseWriter, retryAfter time.Duration) {
+	w.Header().Set("Retry-After", retryAfterSeconds(retryAfter))
 }

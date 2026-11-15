@@ -14,14 +14,14 @@ All notable changes to tamper are recorded here. Versions follow
 - **A throttled identity call answered 500 instead of 429** (#163). `identity.WithThrottling`
   returns `identity.ErrThrottled` from `Login`, `VerifyTOTP` and `VerifyRecoveryCode` before any
   store read, and `espresso`'s `mapAuthWireError` had no branch for it — so the limiter reported
-  its own refusal as an internal fault, paging whoever alerts on 5xx. It now answers **429** with
-  the same `TOO_MANY_REQUESTS` code the route-level `Throttled` gate already emits, and the retry
-  hint travels as a `retry_after_seconds` body detail, rounded up to match that gate's
-  `Retry-After`. A real header on this path needs an upstream espresso change
-  (`suryakencana007/espresso#77`). The message is fixed and never echoes the attempted address or
-  key. Additive: a response that was a 500 becomes a 429, only where the library's own throttle is
-  on. The `/totp/enroll-session` leg is covered through the application's own
-  `EnrollTOTPViaSession`, which is where that leg's limiter lives.
+  its own refusal as an internal fault, paging whoever alerts on 5xx and leaving the client unable
+  to tell "wait" from "broken". It now answers **429** with the same `TOO_MANY_REQUESTS` code the
+  route-level `Throttled` gate already emits, and sets the same **`Retry-After`** header, through
+  espresso's `(*Error).WithHeader` — so the raise is espresso **v2.5.0**, the new minimum. The
+  rounding is the gate's own, and the message is fixed: never the attempted address or key.
+  Additive — a response that was a 500 becomes a 429, only where the library's own throttle is on.
+  The `/totp/enroll-session` leg is covered through the application's own `EnrollTOTPViaSession`,
+  which is where that leg's limiter lives.
 
 ## [0.14.1] — 2026-11-11
 

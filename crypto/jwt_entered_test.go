@@ -188,3 +188,77 @@ func TestParseAccess_RefusesAnImpossibleHomeTenant(t *testing.T) {
 		}
 	}
 }
+
+// An explicit enter mode rides the token; legacy entered tokens stay
+// byte-compatible and are guests, the more restrictive reading.
+func TestIssueAccessEnteredMode_ClaimAndValidation(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	svc := newTestJWT(t, "secret")
+	svc.Testing().SetNow(func() time.Time { return now })
+	acme, platform := tenant.New("acme"), tenant.New("platform")
+
+	member, err := svc.IssueAccessEnteredMode("u-1", acme, platform, now.Unix(), ACRLocalPassword, 0, EnterModeMember)
+	if err != nil {
+		t.Fatalf("IssueAccessEnteredMode(member): %v", err)
+	}
+	if got := payloadKeys(t, member)["em"]; got != string(EnterModeMember) {
+		t.Fatalf("em = %v, want member", got)
+	}
+	mc, err := svc.VerifyAccess(member, acme)
+	if err != nil {
+		t.Fatalf("verify member: %v", err)
+	}
+	if !mc.Member() || mc.Guest() {
+		t.Fatalf("member claims: Member=%v Guest=%v", mc.Member(), mc.Guest())
+	}
+
+	legacy, err := svc.IssueAccessEntered("u-1", acme, platform, now.Unix(), ACRLocalPassword, 0)
+	if err != nil {
+		t.Fatalf("IssueAccessEntered: %v", err)
+	}
+	if _, present := payloadKeys(t, legacy)["em"]; present {
+		t.Fatal("legacy entered token carries an em claim")
+	}
+	lc, err := svc.VerifyAccess(legacy, acme)
+	if err != nil {
+		t.Fatalf("verify legacy: %v", err)
+	}
+	if lc.Member() || !lc.Guest() {
+		t.Fatalf("legacy claims: Member=%v Guest=%v", lc.Member(), lc.Guest())
+	}
+
+	if _, err := svc.IssueAccessEnteredMode("u-1", acme, platform, now.Unix(), ACRLocalPassword, 0, EnterMode("owner")); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("unknown mode err = %v, want ErrInvalidToken", err)
+	}
+}
+
+// An em claim without an htid, or beside an act, was not minted here.
+func TestParseAccess_RefusesImpossibleEnterMode(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	svc := newTestJWT(t, "secret")
+	svc.Testing().SetNow(func() time.Time { return now })
+	acme, platform := tenant.New("acme"), tenant.New("platform")
+
+	cases := []struct {
+		name string
+		act  string
+		tid  string
+		htid string
+		mode EnterMode
+	}{
+		{"mode without htid", "", acme.String(), "", EnterModeMember},
+		{"mode beside act", "admin-1", acme.String(), platform.String(), EnterModeGuest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tok, err := svc.issueAccessWithActor("u-1", tc.act, tc.tid, tc.htid,
+				now.Unix(), ACRLocalPassword, time.Hour, tc.mode)
+			if err != nil {
+				t.Fatalf("mint: %v", err)
+			}
+			if _, err := svc.ParseAccess(tok); !errors.Is(err, ErrInvalidToken) {
+				t.Fatalf("ParseAccess err = %v, want ErrInvalidToken", err)
+			}
+		})
+	}
+}

@@ -7,6 +7,19 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
+## [Unreleased]
+
+### Added
+
+- **Entered-token mode and per-mode TTL.** `crypto.EnterMode` (`member` |
+  `guest`) now travels on an entered access token as the optional `em` claim.
+  `identity.Core.EnterTenantWithMode` mints a member token with the ordinary
+  access-token TTL and a guest token with `WithEnterTenantTTL`; the existing
+  `EnterTenant` is unchanged (no `em`, guest TTL) and legacy tokens remain
+  valid. `AccessClaims.Member`/`Guest` expose the mode, with a legacy token
+  read as a guest — the more restrictive answer. `ParseAccess` refuses an
+  `em` without an `htid`, beside an `act`, or with an unknown value.
+
 ## [0.14.2] — 2026-11-15
 
 **A patch release with no API change: an identity throttle that answered 500 now answers 429.**

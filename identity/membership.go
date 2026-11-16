@@ -51,9 +51,11 @@ func WithMemberships(s MembershipStore) Option {
 	return func(c *Core) { c.memberships = s }
 }
 
-// WithEnterTenantTTL sets the lifetime of the access tokens EnterTenant
-// mints. Without it they live as long as an ordinary access token. A
-// value longer than the JWT service's own TTL fails New.
+// WithEnterTenantTTL sets the lifetime of the access tokens the GUEST path of
+// EnterTenant/EnterTenantWithMode mints. A member token (EnterModeMember) always
+// uses the ordinary access-token TTL. Without this option, guests also live as
+// long as an ordinary access token. A value longer than the JWT service's own
+// TTL fails New.
 //
 // This is the revocation window: an entered token has no refresh
 // session, so a membership that is removed keeps working for at most
@@ -121,6 +123,27 @@ func WithEnterTenantTTL(d time.Duration) Option {
 // EnterTenant decides that the user may be IN the tenant. What they may
 // do there is still the application's authorization decision.
 func (c *Core) EnterTenant(ctx context.Context, session *crypto.AccessClaims, target tenant.ID) (Tokens, error) {
+	return c.enterTenant(ctx, session, target, "")
+}
+
+// EnterTenantWithMode is EnterTenant with an explicit member or guest mode.
+// The mode is carried on the token (AccessClaims.EnterMode) so gates can tell
+// a direct member from a Console guest without a database read.
+//
+// TTL: a member token uses the ordinary access-token TTL; a guest token uses
+// WithEnterTenantTTL (the shorter Console TTL). The legacy EnterTenant keeps
+// its old behaviour — no mode claim and WithEnterTenantTTL — so existing
+// callers and tokens do not change.
+//
+// All membership, user-state and tenant checks are identical to EnterTenant.
+func (c *Core) EnterTenantWithMode(ctx context.Context, session *crypto.AccessClaims, target tenant.ID, mode crypto.EnterMode) (Tokens, error) {
+	if !mode.Valid() {
+		return Tokens{}, fmt.Errorf("%w: unknown enter mode %q", ErrInvalidInput, mode)
+	}
+	return c.enterTenant(ctx, session, target, mode)
+}
+
+func (c *Core) enterTenant(ctx context.Context, session *crypto.AccessClaims, target tenant.ID, mode crypto.EnterMode) (Tokens, error) {
 	if c.memberships == nil {
 		return Tokens{}, ErrNoMembershipStore
 	}
@@ -171,7 +194,19 @@ func (c *Core) EnterTenant(ctx context.Context, session *crypto.AccessClaims, ta
 		return Tokens{}, ErrUserInactive
 	}
 
-	access, err := c.jwt.IssueAccessEntered(userID, target, home, session.AuthTime, session.ACR, c.enterTTL)
+	ttl := c.enterTTL
+	if mode == crypto.EnterModeMember {
+		// A member is not a short-lived guest: the token lives as long as an
+		// ordinary access token. Zero means "the service TTL" to the mint.
+		ttl = 0
+	}
+	var access string
+	if mode == "" {
+		// Legacy: no em claim, byte-identical to pre-mode tokens.
+		access, err = c.jwt.IssueAccessEntered(userID, target, home, session.AuthTime, session.ACR, ttl)
+	} else {
+		access, err = c.jwt.IssueAccessEnteredMode(userID, target, home, session.AuthTime, session.ACR, ttl, mode)
+	}
 	if err != nil {
 		return Tokens{}, fmt.Errorf("identity: issue entered access token: %w", err)
 	}

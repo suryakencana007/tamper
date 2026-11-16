@@ -486,3 +486,63 @@ func TestEnterTenant_AccessTokenIsNotARefreshToken(t *testing.T) {
 		t.Errorf("Refresh with an entered access token: err = %v, want ErrInvalidSession", err)
 	}
 }
+
+// Member and guest enters use different TTLs and carry the mode claim. The
+// legacy EnterTenant stays byte-compatible (no em) and keeps the guest TTL.
+func TestEnterTenantWithMode_TTLAndClaims(t *testing.T) {
+	ctx := context.Background()
+	c, store := enterCore(t, WithEnterTenantTTL(5*time.Minute))
+	admin := platformAdmin(t, c)
+	store.AddMembership(admin.ID, tAcme)
+	s := sess(admin.ID, tPlatform, time.Now().Unix(), testACR)
+
+	member, err := c.EnterTenantWithMode(ctx, s, tAcme, crypto.EnterModeMember)
+	if err != nil {
+		t.Fatalf("member enter: %v", err)
+	}
+	mc, err := c.jwt.VerifyAccess(member.Access, tAcme)
+	if err != nil {
+		t.Fatalf("verify member token: %v", err)
+	}
+	if !mc.Member() || mc.Guest() {
+		t.Fatalf("member claims: Member=%v Guest=%v em=%q", mc.Member(), mc.Guest(), mc.EnterMode)
+	}
+	if got := mc.ExpiresAt.Sub(mc.IssuedAt.Time); got != time.Hour {
+		t.Fatalf("member lifetime = %v, want the ordinary access TTL (1h)", got)
+	}
+
+	guest, err := c.EnterTenantWithMode(ctx, s, tAcme, crypto.EnterModeGuest)
+	if err != nil {
+		t.Fatalf("guest enter: %v", err)
+	}
+	gc, err := c.jwt.VerifyAccess(guest.Access, tAcme)
+	if err != nil {
+		t.Fatalf("verify guest token: %v", err)
+	}
+	if !gc.Guest() || gc.Member() {
+		t.Fatalf("guest claims: Member=%v Guest=%v em=%q", gc.Member(), gc.Guest(), gc.EnterMode)
+	}
+	if got := gc.ExpiresAt.Sub(gc.IssuedAt.Time); got != 5*time.Minute {
+		t.Fatalf("guest lifetime = %v, want the enter TTL (5m)", got)
+	}
+
+	// Legacy path: no em claim, guest TTL, still treated as a guest.
+	legacy, err := c.EnterTenant(ctx, s, tAcme)
+	if err != nil {
+		t.Fatalf("legacy enter: %v", err)
+	}
+	lc, err := c.jwt.VerifyAccess(legacy.Access, tAcme)
+	if err != nil {
+		t.Fatalf("verify legacy token: %v", err)
+	}
+	if lc.EnterMode != "" || !lc.Guest() || lc.Member() {
+		t.Fatalf("legacy claims: em=%q Member=%v Guest=%v", lc.EnterMode, lc.Member(), lc.Guest())
+	}
+	if got := lc.ExpiresAt.Sub(lc.IssuedAt.Time); got != 5*time.Minute {
+		t.Fatalf("legacy lifetime = %v, want the enter TTL", got)
+	}
+
+	if _, err := c.EnterTenantWithMode(ctx, s, tAcme, crypto.EnterMode("owner")); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("unknown mode err = %v, want ErrInvalidInput", err)
+	}
+}

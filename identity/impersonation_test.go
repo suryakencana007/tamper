@@ -43,7 +43,7 @@ func impCore(t *testing.T, p ImpersonationPolicy, ttl time.Duration) (*Core, *Me
 // tid=acme, htid=platform. Impersonation happens as a step inside it.
 func enteredSession(t *testing.T, jwt *crypto.JWTService) *crypto.AccessClaims {
 	t.Helper()
-	tok, err := jwt.IssueAccessEntered("ops", impAcme, impPlatform, time.Now().Unix(), crypto.ACRLocalPassword, time.Hour)
+	tok, err := jwt.IssueAccessEntered("ops", impAcme, impPlatform, time.Now().Unix(), crypto.ACRLocalPassword, time.Hour, crypto.EnterModeGuest)
 	if err != nil {
 		t.Fatalf("IssueAccessEntered: %v", err)
 	}

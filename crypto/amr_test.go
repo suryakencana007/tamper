@@ -94,7 +94,7 @@ func TestHasMethod_NilAndEmpty(t *testing.T) {
 func TestAMR_CarriedByEnteredAndImpersonatedMints(t *testing.T) {
 	j := amrJWT(t)
 	entered, err := j.IssueAccessEntered("u-1", tenant.New("acme"), tenant.New("platform"),
-		1_700_000_000, ACRIncommonSilver, 5_000_000_000, AMRPassword, AMROTP)
+		1_700_000_000, ACRIncommonSilver, 5_000_000_000, EnterModeGuest, AMRPassword, AMROTP)
 	if err != nil {
 		t.Fatalf("IssueAccessEntered: %v", err)
 	}

@@ -254,16 +254,16 @@ func TestSQLStore_Membership(t *testing.T) {
 	m := NewMembership(s, h)
 
 	for _, org := range []tenant.ID{org1, org2, org3} {
-		ok, err := m.IsMember(ctx, "bob", org)
+		ok, err := membershipOK(ctx, m, "bob", org)
 		if err != nil || !ok {
-			t.Fatalf("IsMember(bob, %s) = (%v, %v), want true", org, ok, err)
+			t.Fatalf("Membership(bob, %s) = (%v, %v), want true", org, ok, err)
 		}
 	}
-	if ok, err := m.IsMember(ctx, "bob", org9); err != nil || ok {
-		t.Fatalf("IsMember(bob, org-9) = (%v, %v), want false", ok, err)
+	if ok, err := membershipOK(ctx, m, "bob", org9); err != nil || ok {
+		t.Fatalf("Membership(bob, org-9) = (%v, %v), want false", ok, err)
 	}
 	if got, err := m.MembershipsFor(ctx, "bob"); err != nil || len(got) != 3 {
-		t.Fatalf("MembershipsFor(bob) = (%v, %v), want 3 orgs", ids(got), err)
+		t.Fatalf("MembershipsFor(bob) = (%v, %v), want 3 orgs", memberIDs(got), err)
 	}
 }
 

@@ -38,7 +38,7 @@ func TestIssueAccessEntered_IsForTheTargetAndFromTheHome(t *testing.T) {
 	svc.Testing().SetNow(func() time.Time { return now })
 	acme, globex, platform := tenant.New("acme"), tenant.New("globex"), tenant.New("platform")
 
-	tok, err := svc.IssueAccessEntered("admin-1", acme, platform, now.Unix(), ACRLocalPassword, 0)
+	tok, err := svc.IssueAccessEntered("admin-1", acme, platform, now.Unix(), ACRLocalPassword, 0, EnterModeGuest)
 	if err != nil {
 		t.Fatalf("IssueAccessEntered: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestIssueAccessEntered_RefusesBadTenantPairs(t *testing.T) {
 		{"same tenant", acme, acme, ErrEnteredTenants},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tok, err := svc.IssueAccessEntered("admin-1", tc.target, tc.home, now.Unix(), ACRLocalPassword, 0)
+			tok, err := svc.IssueAccessEntered("admin-1", tc.target, tc.home, now.Unix(), ACRLocalPassword, 0, EnterModeGuest)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
@@ -149,7 +149,7 @@ func TestIssueAccessEntered_TTL(t *testing.T) {
 		{"longer is cut to the service TTL", 24 * time.Hour, time.Hour},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tok, err := svc.IssueAccessEntered("admin-1", acme, platform, now.Unix(), ACRLocalPassword, tc.ttl)
+			tok, err := svc.IssueAccessEntered("admin-1", acme, platform, now.Unix(), ACRLocalPassword, tc.ttl, EnterModeGuest)
 			if err != nil {
 				t.Fatalf("IssueAccessEntered: %v", err)
 			}
@@ -186,5 +186,76 @@ func TestParseAccess_RefusesAnImpossibleHomeTenant(t *testing.T) {
 		if _, err := svc.VerifyAccess(tok, tenant.FromStored(pair[0])); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("%s: VerifyAccess err = %v, want ErrInvalidToken", name, err)
 		}
+	}
+}
+
+// Every entered mint writes a valid mode; the old legacy shape (no em) is
+// refused rather than guessed as guest.
+func TestIssueAccessEntered_AlwaysWritesMode(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	svc := newTestJWT(t, "secret")
+	svc.Testing().SetNow(func() time.Time { return now })
+	acme, platform := tenant.New("acme"), tenant.New("platform")
+
+	for _, mode := range []EnterMode{EnterModeMember, EnterModeGuest} {
+		tok, err := svc.IssueAccessEntered("u-1", acme, platform, now.Unix(), ACRLocalPassword, 0, mode)
+		if err != nil {
+			t.Fatalf("IssueAccessEntered(%s): %v", mode, err)
+		}
+		if got := payloadKeys(t, tok)["em"]; got != string(mode) {
+			t.Fatalf("em = %v, want %s", got, mode)
+		}
+		claims, err := svc.VerifyAccess(tok, acme)
+		if err != nil {
+			t.Fatalf("verify %s: %v", mode, err)
+		}
+		if claims.Member() != (mode == EnterModeMember) || claims.Guest() != (mode == EnterModeGuest) {
+			t.Fatalf("%s claims: Member=%v Guest=%v", mode, claims.Member(), claims.Guest())
+		}
+	}
+
+	if _, err := svc.IssueAccessEntered("u-1", acme, platform, now.Unix(), ACRLocalPassword, 0, EnterMode("owner")); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("unknown mode err = %v, want ErrInvalidToken", err)
+	}
+
+	// A token that is entered by shape but carries no em was not minted by
+	// this service. It is refused, not read as guest.
+	noMode, err := svc.issueAccess("u-1", acme.String(), platform.String(), now.Unix(), ACRLocalPassword, time.Hour)
+	if err != nil {
+		t.Fatalf("forge no-mode token: %v", err)
+	}
+	if _, err := svc.ParseAccess(noMode); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("entered token without em parsed: err = %v", err)
+	}
+}
+
+// An em claim without an htid, or beside an act, was not minted here.
+func TestParseAccess_RefusesImpossibleEnterMode(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	svc := newTestJWT(t, "secret")
+	svc.Testing().SetNow(func() time.Time { return now })
+	acme, platform := tenant.New("acme"), tenant.New("platform")
+
+	cases := []struct {
+		name string
+		act  string
+		tid  string
+		htid string
+		mode EnterMode
+	}{
+		{"mode without htid", "", acme.String(), "", EnterModeMember},
+		{"mode beside act", "admin-1", acme.String(), platform.String(), EnterModeGuest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tok, err := svc.issueAccessWithActor("u-1", tc.act, tc.tid, tc.htid,
+				now.Unix(), ACRLocalPassword, time.Hour, tc.mode)
+			if err != nil {
+				t.Fatalf("mint: %v", err)
+			}
+			if _, err := svc.ParseAccess(tok); !errors.Is(err, ErrInvalidToken) {
+				t.Fatalf("ParseAccess err = %v, want ErrInvalidToken", err)
+			}
+		})
 	}
 }

@@ -61,6 +61,7 @@ var (
 	errWrongTenant        = errors.New("token tid does not match the tenant it was verified for")
 	errBadHomeTenant      = errors.New("htid without a different tid")
 	errBadImpersonator    = errors.New("act without an htid, or acting as itself")
+	errBadEnterMode       = errors.New("entered token without a valid em, or em on a non-entered token")
 )
 
 // ErrTenantRequired — [JWTService.IssueAccess] or
@@ -361,6 +362,15 @@ type AccessClaims struct {
 	// omitempty: every other token shape has no act on the wire, so
 	// existing tokens stay byte-identical.
 	ActorID string `json:"act,omitempty"`
+	// EnterMode is REQUIRED on every entered token: "member" or "guest".
+	// IssueAccessEntered always writes it; ParseAccess refuses an entered
+	// token without a valid value. It is absent on ordinary and impersonated
+	// tokens, and ParseAccess refuses a non-empty value there.
+	//
+	// It grants nothing. Every verifier still compares TenantID with the
+	// tenant it was asked about; this claim lets a route decide whether a
+	// member's privileges apply.
+	EnterMode EnterMode `json:"em,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -391,7 +401,7 @@ func (j *JWTService) IssueAccessImpersonated(target, actor string, tenantID, act
 	if ttl <= 0 || ttl > j.ttl {
 		ttl = j.ttl
 	}
-	return j.issueAccessWithActor(target, actor, tenantID.String(), actorHome.String(), authTime, acr, ttl, amr...)
+	return j.issueAccessWithActor(target, actor, tenantID.String(), actorHome.String(), authTime, acr, ttl, "", amr...)
 }
 
 // ActorTenantID returns the tenant the token's subject is from: the
@@ -521,11 +531,18 @@ var ErrSelfImpersonation = errors.New("auth: an impersonated token needs an acto
 // never longer-lived than an ordinary one. It has no refresh session
 // behind it, so its lifetime is how long a removed right keeps working.
 //
+// mode is required and is written as the `em` claim; there is no entered
+// token without it. A known mode that the caller derived from the
+// application's MembershipStore is the only accepted input.
+//
 // Both tenants must be set (ErrTenantRequired), neither may be the
 // single tenant, and they must differ (ErrEnteredTenants). An entered
 // token with an empty htid would be indistinguishable from an ordinary
 // one, and a token "entering" its own home tenant is an ordinary token.
-func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID tenant.ID, authTime int64, acr string, ttl time.Duration, amr ...string) (string, error) {
+func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID tenant.ID, authTime int64, acr string, ttl time.Duration, mode EnterMode, amr ...string) (string, error) {
+	if !mode.Valid() {
+		return "", fmt.Errorf("%w: unknown enter mode %q", ErrInvalidToken, mode)
+	}
 	if !tenantID.Valid() || !homeTenantID.Valid() {
 		return "", ErrTenantRequired
 	}
@@ -535,20 +552,20 @@ func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID te
 	if ttl <= 0 || ttl > j.ttl {
 		ttl = j.ttl
 	}
-	return j.issueAccess(userID, tenantID.String(), homeTenantID.String(), authTime, acr, ttl, amr...)
+	return j.issueAccessWithActor(userID, "", tenantID.String(), homeTenantID.String(), authTime, acr, ttl, mode, amr...)
 }
 
 // issueAccess is the one mint behind IssueAccess and IssueAccessEntered,
 // so the two cannot drift apart in anything but the claims they differ
 // on by design.
 func (j *JWTService) issueAccess(userID, tid, htid string, authTime int64, acr string, ttl time.Duration, amr ...string) (string, error) {
-	return j.issueAccessWithActor(userID, "", tid, htid, authTime, acr, ttl, amr...)
+	return j.issueAccessWithActor(userID, "", tid, htid, authTime, acr, ttl, "", amr...)
 }
 
 // issueAccessWithActor is the one mint body: act is empty for every token shape
 // but an impersonated one, so the attribution claim cannot be set by accident
 // and the shapes cannot drift.
-func (j *JWTService) issueAccessWithActor(userID, act, tid, htid string, authTime int64, acr string, ttl time.Duration, amr ...string) (string, error) {
+func (j *JWTService) issueAccessWithActor(userID, act, tid, htid string, authTime int64, acr string, ttl time.Duration, mode EnterMode, amr ...string) (string, error) {
 	if userID == "" {
 		return "", fmt.Errorf("%w: sub is empty", ErrInvalidToken)
 	}
@@ -577,6 +594,7 @@ func (j *JWTService) issueAccessWithActor(userID, act, tid, htid string, authTim
 		TenantID:     tid,
 		HomeTenantID: htid,
 		ActorID:      act,
+		EnterMode:    mode,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    j.issuer,
@@ -801,6 +819,16 @@ func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	if claims.ActorID != "" && (claims.HomeTenantID == "" || claims.ActorID == claims.Subject) {
 		return nil, invalidToken(errBadImpersonator)
 	}
+	// Every entered token carries a valid em; no other shape may carry one.
+	// There is no legacy "missing em means guest" reading: such a token was
+	// not minted by this service and its mode must not be guessed.
+	if claims.Entered() {
+		if !claims.EnterMode.Valid() {
+			return nil, invalidToken(errBadEnterMode)
+		}
+	} else if claims.EnterMode != "" {
+		return nil, invalidToken(errBadEnterMode)
+	}
 	return claims, nil
 }
 
@@ -815,6 +843,18 @@ func (j *JWTService) ParseAccess(tokenStr string) (*AccessClaims, error) {
 // and accepted only where a route opts into impersonation. Reporting both as
 // entered would make that opt-in meaningless.
 func (c *AccessClaims) Entered() bool { return c.HomeTenantID != "" && c.ActorID == "" }
+
+// Member reports whether this is an entered token for a direct member. An
+// entered token without a valid `em` is refused by ParseAccess, so this method
+// never has to guess a missing mode.
+func (c *AccessClaims) Member() bool {
+	return c.Entered() && c.EnterMode == EnterModeMember
+}
+
+// Guest reports whether this is an entered token for a guest.
+func (c *AccessClaims) Guest() bool {
+	return c.Entered() && c.EnterMode == EnterModeGuest
+}
 
 // Impersonated reports whether the token is an impersonated one: minted by
 // IssueAccessImpersonated, where Subject is the user being impersonated and

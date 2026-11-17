@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/tenant"
 )
@@ -43,7 +44,7 @@ type tenantStore struct {
 	// memberships: user id -> the OTHER tenants that user may enter
 	// (identity.MembershipStore). A real app keeps this in its own table,
 	// written by whatever grants a platform admin access to a customer.
-	memberships map[string]map[tenant.ID]bool
+	memberships map[string]map[tenant.ID]crypto.EnterMode
 
 	// sessionReadErr, when set, fails every RefreshSessionByHash (test
 	// support: an outage must read as an outage, not as a bad session).
@@ -60,7 +61,7 @@ func newTenantStore() *tenantStore {
 		users: map[string]identity.User{}, sessions: map[string]identity.RefreshSession{},
 		byHash: map[string]string{}, idents: map[string]identity.Identity{},
 		bootstrapped: map[string]bool{},
-		memberships:  map[string]map[tenant.ID]bool{},
+		memberships:  map[string]map[tenant.ID]crypto.EnterMode{},
 	}
 }
 
@@ -343,9 +344,9 @@ func (s *tenantStore) grantMembership(userID string, tenantID tenant.ID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.memberships[userID] == nil {
-		s.memberships[userID] = map[tenant.ID]bool{}
+		s.memberships[userID] = map[tenant.ID]crypto.EnterMode{}
 	}
-	s.memberships[userID][tenantID] = true
+	s.memberships[userID][tenantID] = crypto.EnterModeMember
 }
 
 // revokeMembership takes it away. It stops the NEXT entry; a token that
@@ -356,19 +357,20 @@ func (s *tenantStore) revokeMembership(userID string, tenantID tenant.ID) {
 	delete(s.memberships[userID], tenantID)
 }
 
-// IsMember is deny-by-default: an unknown user or tenant is false.
-func (s *tenantStore) IsMember(_ context.Context, userID string, tenantID tenant.ID) (bool, error) {
+// Membership is deny-by-default: an unknown user or tenant is false.
+func (s *tenantStore) Membership(_ context.Context, userID string, tenantID tenant.ID) (crypto.EnterMode, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.memberships[userID][tenantID], nil
+	mode, ok := s.memberships[userID][tenantID]
+	return mode, ok, nil
 }
 
-func (s *tenantStore) MembershipsFor(_ context.Context, userID string) ([]tenant.ID, error) {
+func (s *tenantStore) MembershipsFor(_ context.Context, userID string) ([]identity.Membership, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]tenant.ID, 0, len(s.memberships[userID]))
-	for id := range s.memberships[userID] {
-		out = append(out, id)
+	out := make([]identity.Membership, 0, len(s.memberships[userID]))
+	for id, mode := range s.memberships[userID] {
+		out = append(out, identity.Membership{Tenant: id, Mode: mode})
 	}
 	return out, nil
 }

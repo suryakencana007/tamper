@@ -24,7 +24,7 @@ const tenantPlatform = "platform"
 func enteredToken(t *testing.T, j *crypto.JWTService, target string) string {
 	t.Helper()
 	tok, err := j.IssueAccessEntered("u-1", tenant.New(target), tenant.New(tenantPlatform),
-		time.Now().Unix(), crypto.ACRLocalPassword, 0)
+		time.Now().Unix(), crypto.ACRLocalPassword, 0, crypto.EnterModeGuest)
 	if err != nil {
 		t.Fatalf("IssueAccessEntered: %v", err)
 	}

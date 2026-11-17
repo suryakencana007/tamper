@@ -64,7 +64,7 @@ site; the working record (phase sketches, tech-debt) deliberately is not.
 ## Install
 
 ```sh
-go get github.com/suryakencana007/tamper@v0.14.2
+go get github.com/suryakencana007/tamper@v0.15.0
 ```
 
 ## What's shipped

@@ -115,6 +115,7 @@ type Invitation struct{ ... }
 type InvitationStore interface{ ... }
 type MemStore struct{ ... }
 func NewMemStore() *MemStore
+type Membership struct{ ... }
 type MembershipStore interface{ ... }
 type NewIdentity struct{ ... }
 type NewUser struct{ ... }
@@ -186,6 +187,8 @@ func VerifyPassword(hash, plain string) error
 func VerifyStub(plain string) error
 func VerifyTOTPCode(secretBase32, code string) error
 type AccessClaims struct{ ... }
+type EnterMode string
+    const EnterModeMember EnterMode = "member" ...
 type JWTConfig struct{ ... }
 type JWTOption func(*JWTService)
 func WithSigner(s Signer) JWTOption

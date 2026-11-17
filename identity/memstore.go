@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/tenant"
 )
 
@@ -30,8 +31,8 @@ type MemStore struct {
 	// row by id without holding the token.
 	invitations map[string]Invitation
 	invHashToID map[string]string
-	// memberships: user id -> the tenants that user may enter.
-	memberships map[string]map[tenant.ID]struct{}
+	// memberships: user id -> tenant -> member/guest mode.
+	memberships map[string]map[tenant.ID]crypto.EnterMode
 }
 
 var (
@@ -56,7 +57,7 @@ func NewMemStore() *MemStore {
 		identities:  make(map[string]Identity),
 		invitations: make(map[string]Invitation),
 		invHashToID: make(map[string]string),
-		memberships: make(map[string]map[tenant.ID]struct{}),
+		memberships: make(map[string]map[tenant.ID]crypto.EnterMode),
 	}
 }
 
@@ -476,14 +477,19 @@ func (m *MemStore) MarkAccepted(_ context.Context, id string, at time.Time) erro
 
 // --- memberships (Phase 8) ---------------------------------------------
 
-// AddMembership lets userID enter tenantID.
+// AddMembership lets userID enter tenantID as a member.
 func (m *MemStore) AddMembership(userID string, tenantID tenant.ID) {
+	m.AddMembershipWithMode(userID, tenantID, crypto.EnterModeMember)
+}
+
+// AddMembershipWithMode is AddMembership with an explicit member/guest mode.
+func (m *MemStore) AddMembershipWithMode(userID string, tenantID tenant.ID, mode crypto.EnterMode) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.memberships[userID] == nil {
-		m.memberships[userID] = make(map[tenant.ID]struct{})
+		m.memberships[userID] = make(map[tenant.ID]crypto.EnterMode)
 	}
-	m.memberships[userID][tenantID] = struct{}{}
+	m.memberships[userID][tenantID] = mode
 }
 
 // RemoveMembership takes the right away again. Removing one that does
@@ -494,21 +500,22 @@ func (m *MemStore) RemoveMembership(userID string, tenantID tenant.ID) {
 	delete(m.memberships[userID], tenantID)
 }
 
-// IsMember implements MembershipStore.
-func (m *MemStore) IsMember(_ context.Context, userID string, tenantID tenant.ID) (bool, error) {
+// Membership implements MembershipStore.
+func (m *MemStore) Membership(_ context.Context, userID string, tenantID tenant.ID) (crypto.EnterMode, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	_, ok := m.memberships[userID][tenantID]
-	return ok, nil
+	mode, ok := m.memberships[userID][tenantID]
+	return mode, ok, nil
 }
 
 // MembershipsFor implements MembershipStore.
-func (m *MemStore) MembershipsFor(_ context.Context, userID string) ([]tenant.ID, error) {
+func (m *MemStore) MembershipsFor(_ context.Context, userID string) ([]Membership, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]tenant.ID, 0, len(m.memberships[userID]))
-	for id := range m.memberships[userID] {
-		out = append(out, id)
+	out := make([]Membership, 0, len(m.memberships[userID]))
+	for id, mode := range m.memberships[userID] {
+		out = append(out, Membership{Tenant: id, Mode: mode})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Tenant.String() < out[j].Tenant.String() })
 	return out, nil
 }

@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -137,11 +138,11 @@ func TestEnterTenant_RemovedMembershipIsRefused(t *testing.T) {
 // failingMemberships fails every lookup.
 type failingMemberships struct{ err error }
 
-func (f failingMemberships) IsMember(context.Context, string, tenant.ID) (bool, error) {
-	return true, f.err // true on purpose: the error must win
+func (f failingMemberships) Membership(context.Context, string, tenant.ID) (crypto.EnterMode, bool, error) {
+	return crypto.EnterModeMember, true, f.err // true on purpose: the error must win
 }
-func (f failingMemberships) MembershipsFor(context.Context, string) ([]tenant.ID, error) {
-	return []tenant.ID{tAcme}, f.err
+func (f failingMemberships) MembershipsFor(context.Context, string) ([]Membership, error) {
+	return []Membership{{Tenant: tAcme, Mode: crypto.EnterModeMember}}, f.err
 }
 
 // A lookup that fails is a deny. It is not a "not found" either: the
@@ -365,7 +366,7 @@ func TestEnterTenant_TTLOption(t *testing.T) {
 	ctx := context.Background()
 	c, store := enterCore(t, WithEnterTenantTTL(5*time.Minute)) // the JWT service TTL is one hour
 	admin := platformAdmin(t, c)
-	store.AddMembership(admin.ID, tAcme)
+	store.AddMembershipWithMode(admin.ID, tAcme, crypto.EnterModeGuest)
 
 	tok, err := c.EnterTenant(ctx, sess(admin.ID, tPlatform, time.Now().Unix(), testACR), tAcme)
 	if err != nil {
@@ -484,5 +485,74 @@ func TestEnterTenant_AccessTokenIsNotARefreshToken(t *testing.T) {
 	}
 	if _, _, err := c.Refresh(ctx, tenant.Single, tok.Access); !errors.Is(err, ErrInvalidSession) {
 		t.Errorf("Refresh with an entered access token: err = %v, want ErrInvalidSession", err)
+	}
+}
+
+// MUTATION PROOF: EnterTenant must take the mode (and therefore the TTL and
+// em claim) from the store, not from the caller. Flipping the store row from
+// member to guest must flip both; a caller has no mode argument to override.
+func TestEnterTenant_ModeAndTTLComeFromStore(t *testing.T) {
+	ctx := context.Background()
+	c, store := enterCore(t, WithEnterTenantTTL(5*time.Minute))
+	admin := platformAdmin(t, c)
+	s := sess(admin.ID, tPlatform, time.Now().Unix(), testACR)
+
+	store.AddMembershipWithMode(admin.ID, tAcme, crypto.EnterModeMember)
+	member, err := c.EnterTenant(ctx, s, tAcme)
+	if err != nil {
+		t.Fatalf("member enter: %v", err)
+	}
+	mc, err := c.jwt.VerifyAccess(member.Access, tAcme)
+	if err != nil {
+		t.Fatalf("verify member token: %v", err)
+	}
+	if !mc.Member() || mc.Guest() || mc.EnterMode != crypto.EnterModeMember {
+		t.Fatalf("member claims: Member=%v Guest=%v em=%q", mc.Member(), mc.Guest(), mc.EnterMode)
+	}
+	if got := mc.ExpiresAt.Sub(mc.IssuedAt.Time); got != time.Hour {
+		t.Fatalf("member lifetime = %v, want the ordinary access TTL (1h)", got)
+	}
+
+	// Same user, same call, same session — only the store's mode changes.
+	store.AddMembershipWithMode(admin.ID, tAcme, crypto.EnterModeGuest)
+	guest, err := c.EnterTenant(ctx, s, tAcme)
+	if err != nil {
+		t.Fatalf("guest enter: %v", err)
+	}
+	gc, err := c.jwt.VerifyAccess(guest.Access, tAcme)
+	if err != nil {
+		t.Fatalf("verify guest token: %v", err)
+	}
+	if !gc.Guest() || gc.Member() || gc.EnterMode != crypto.EnterModeGuest {
+		t.Fatalf("guest claims: Member=%v Guest=%v em=%q", gc.Member(), gc.Guest(), gc.EnterMode)
+	}
+	if got := gc.ExpiresAt.Sub(gc.IssuedAt.Time); got != 5*time.Minute {
+		t.Fatalf("guest lifetime = %v, want the enter TTL (5m)", got)
+	}
+}
+
+// MUTATION PROOF: an empty or unknown mode from the store fails closed, and
+// no token is minted. A Core that defaulted an invalid mode to guest would
+// fail this test.
+func TestEnterTenant_InvalidStoreModeFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	c, store := enterCore(t)
+	admin := platformAdmin(t, c)
+	s := sess(admin.ID, tPlatform, time.Now().Unix(), testACR)
+
+	for _, mode := range []crypto.EnterMode{"", crypto.EnterMode("owner")} {
+		t.Run(fmt.Sprintf("mode=%q", mode), func(t *testing.T) {
+			store.AddMembershipWithMode(admin.ID, tGlobex, mode)
+			tok, err := c.EnterTenant(ctx, s, tGlobex)
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("EnterTenant err = %v, want ErrInvalidInput", err)
+			}
+			if tok.Access != "" {
+				t.Fatal("an invalid store mode minted a token")
+			}
+			if _, err := c.EnterableTenants(ctx, admin.ID); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("EnterableTenants err = %v, want ErrInvalidInput", err)
+			}
+		})
 	}
 }

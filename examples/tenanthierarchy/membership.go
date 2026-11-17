@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/suryakencana007/tamper/authz"
+	"github.com/suryakencana007/tamper/crypto"
 	"github.com/suryakencana007/tamper/identity"
 	"github.com/suryakencana007/tamper/tenant"
 )
@@ -69,13 +70,19 @@ func NewMembership(store IntentReader, hier OrgHierarchy, opts ...MembershipOpti
 	return m
 }
 
-// IsMember reports whether userID may enter target: a user intent row exists in
-// the scope of target's parent tenant-group. A root org (no parent) and an
-// unknown org have no group, so there is nothing to be a member of and the
-// answer is false. The row's subject type must be the configured user type, so
-// another subject of the same id is not a membership. An OrgHierarchy error is
-// returned, never read as allow.
-func (m *Membership) IsMember(ctx context.Context, userID string, target tenant.ID) (bool, error) {
+// Membership reports the mode of userID's right to enter target. This example
+// derives rights from tenant-group intents, so every membership is a guest
+// (the same origin a Console admin has); a direct-member store would return
+// crypto.EnterModeMember instead.
+func (m *Membership) Membership(ctx context.Context, userID string, target tenant.ID) (crypto.EnterMode, bool, error) {
+	ok, err := m.mayEnter(ctx, userID, target)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return crypto.EnterModeGuest, true, nil
+}
+
+func (m *Membership) mayEnter(ctx context.Context, userID string, target tenant.ID) (bool, error) {
 	if userID == "" || !target.Valid() || target.IsSingle() {
 		return false, nil
 	}
@@ -103,9 +110,8 @@ func (m *Membership) IsMember(ctx context.Context, userID string, target tenant.
 }
 
 // MembershipsFor lists every child org of every tenant-group in which userID
-// holds a user intent row, sorted. It never returns a tenant the user cannot
-// actually enter: the orgs come from the groups the user administers.
-func (m *Membership) MembershipsFor(ctx context.Context, userID string) ([]tenant.ID, error) {
+// holds a user intent row, sorted, with the guest mode this example derives.
+func (m *Membership) MembershipsFor(ctx context.Context, userID string) ([]identity.Membership, error) {
 	if userID == "" {
 		return nil, nil
 	}
@@ -114,7 +120,7 @@ func (m *Membership) MembershipsFor(ctx context.Context, userID string) ([]tenan
 		return nil, fmt.Errorf("tenanthierarchy: groups for %s: %w", userID, err)
 	}
 	seen := make(map[tenant.ID]bool)
-	var out []tenant.ID
+	var out []identity.Membership
 	for _, group := range groups {
 		children, err := m.hier.ChildrenOf(ctx, group.String())
 		if err != nil {
@@ -126,9 +132,9 @@ func (m *Membership) MembershipsFor(ctx context.Context, userID string) ([]tenan
 				continue
 			}
 			seen[org] = true
-			out = append(out, org)
+			out = append(out, identity.Membership{Tenant: org, Mode: crypto.EnterModeGuest})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	sort.Slice(out, func(i, j int) bool { return out[i].Tenant.String() < out[j].Tenant.String() })
 	return out, nil
 }

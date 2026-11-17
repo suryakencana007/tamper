@@ -276,7 +276,7 @@ POST /t/platform/auth/enter/acme        (application route, home token)
       ├─ Store.UserByID ─> missing ─────────────┤
       ├─ claims.tid is not the stored tenant ───┤─> ErrNotFound (one error)
       ├─ single tenant, or acme is home ────────┤
-      ├─ MembershipStore.IsMember ─> false ─────┘
+      ├─ MembershipStore.Membership ─> false ─────┘
       │                           ─> error ─> error (never a yes)
       ├─ inactive ─> ErrUserInactive
       ├─ IssueAccessEntered ─> access {sub, tid=acme, htid=platform}

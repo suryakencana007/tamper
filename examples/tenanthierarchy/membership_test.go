@@ -73,10 +73,10 @@ func homeClaims(t *testing.T, jwt *crypto.JWTService) *crypto.AccessClaims {
 }
 
 // ---------------------------------------------------------------------
-// IsMember is derived from the intent rows plus parentage.
+// Membership is derived from the intent rows plus parentage.
 // ---------------------------------------------------------------------
 
-func TestIsMember_CoversEveryChildOrg(t *testing.T) {
+func TestMembership_CoversEveryChildOrg(t *testing.T) {
 	h := newHierarchy()
 	p, s := newP(t, h, roleMap())
 	if err := p.GrantGroupAdmin(ctx, bob, tg, groupRole()); err != nil {
@@ -86,15 +86,15 @@ func TestIsMember_CoversEveryChildOrg(t *testing.T) {
 	for _, org := range []tenant.ID{org1, org2, org3} {
 		ok, err := membershipOK(ctx, m, "bob", org)
 		if err != nil {
-			t.Fatalf("IsMember(bob, %s): %v", org, err)
+			t.Fatalf("Membership(bob, %s): %v", org, err)
 		}
 		if !ok {
-			t.Fatalf("IsMember(bob, %s) = false, want true", org)
+			t.Fatalf("Membership(bob, %s) = false, want true", org)
 		}
 	}
 }
 
-func TestIsMember_FalseOutsideTheGroup(t *testing.T) {
+func TestMembership_FalseOutsideTheGroup(t *testing.T) {
 	h := newHierarchy()
 	p, s := newP(t, h, roleMap())
 	if err := p.GrantGroupAdmin(ctx, bob, tg, groupRole()); err != nil {
@@ -104,19 +104,19 @@ func TestIsMember_FalseOutsideTheGroup(t *testing.T) {
 
 	// org-9 belongs to tg-other; bob administers only tg-acme.
 	if ok, err := membershipOK(ctx, m, "bob", org9); err != nil || ok {
-		t.Fatalf("IsMember(bob, org-9) = (%v, %v), want false", ok, err)
+		t.Fatalf("Membership(bob, org-9) = (%v, %v), want false", ok, err)
 	}
 	// An unknown org has no parent, so there is no group to be a member of.
 	if ok, err := membershipOK(ctx, m, "bob", tenant.New("org-unknown")); err != nil || ok {
-		t.Fatalf("IsMember(bob, unknown) = (%v, %v), want false", ok, err)
+		t.Fatalf("Membership(bob, unknown) = (%v, %v), want false", ok, err)
 	}
 	// A user with no intent anywhere.
 	if ok, err := membershipOK(ctx, m, "erin", org1); err != nil || ok {
-		t.Fatalf("IsMember(erin, org-1) = (%v, %v), want false", ok, err)
+		t.Fatalf("Membership(erin, org-1) = (%v, %v), want false", ok, err)
 	}
 }
 
-func TestIsMember_HierarchyErrorPropagates(t *testing.T) {
+func TestMembership_HierarchyErrorPropagatesFromRead(t *testing.T) {
 	h := newHierarchy()
 	p, s := newP(t, h, roleMap())
 	if err := p.GrantGroupAdmin(ctx, bob, tg, groupRole()); err != nil {
@@ -232,7 +232,7 @@ func TestEnterTenant_DoesNotMintOnHierarchyError(t *testing.T) {
 // is not a user membership, and the user type is configurable.
 // ---------------------------------------------------------------------
 
-func TestIsMember_MatchesTheUserSubjectTypeOnly(t *testing.T) {
+func TestMembership_MatchesTheUserSubjectTypeOnly(t *testing.T) {
 	h := newHierarchy()
 	s := newStore()
 	sa := authz.Subject{Tenant: tg, Type: "service_account", ID: "bob"}
@@ -242,7 +242,7 @@ func TestIsMember_MatchesTheUserSubjectTypeOnly(t *testing.T) {
 
 	m := NewMembership(s, h)
 	if ok, err := membershipOK(ctx, m, "bob", org1); err != nil || ok {
-		t.Fatalf("IsMember(bob) = (%v, %v) — a service_account named bob is not a user membership", ok, err)
+		t.Fatalf("Membership(bob) = (%v, %v) — a service_account named bob is not a user membership", ok, err)
 	}
 	if got, err := m.MembershipsFor(ctx, "bob"); err != nil || len(got) != 0 {
 		t.Fatalf("MembershipsFor(bob) = (%v, %v), want empty", memberIDs(got), err)
@@ -255,7 +255,7 @@ func TestIsMember_MatchesTheUserSubjectTypeOnly(t *testing.T) {
 		t.Fatalf("seed staff intent: %v", err)
 	}
 	if ok, err := membershipOK(ctx, m2, "bob", org1); err != nil || !ok {
-		t.Fatalf("IsMember(bob) with staff user type = (%v, %v), want true", ok, err)
+		t.Fatalf("Membership(bob) with staff user type = (%v, %v), want true", ok, err)
 	}
 }
 

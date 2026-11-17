@@ -115,6 +115,7 @@ type Invitation struct{ ... }
 type InvitationStore interface{ ... }
 type MemStore struct{ ... }
 func NewMemStore() *MemStore
+type Membership struct{ ... }
 type MembershipStore interface{ ... }
 type NewIdentity struct{ ... }
 type NewUser struct{ ... }

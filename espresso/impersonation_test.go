@@ -163,7 +163,7 @@ func TestImpersonation_LeavesOrdinaryTokensAlone(t *testing.T) {
 // two single-shape gates refuses every token, which is the trap the doc names.
 func TestTenantGates_BothShapesNeedTheCombinedGate(t *testing.T) {
 	j := tenantJWT(t)
-	entered, err := j.IssueAccessEntered("ops", impAcme, impPlatform, time.Now().Unix(), crypto.ACRLocalPassword, time.Hour)
+	entered, err := j.IssueAccessEntered("ops", impAcme, impPlatform, time.Now().Unix(), crypto.ACRLocalPassword, time.Hour, crypto.EnterModeGuest)
 	if err != nil {
 		t.Fatalf("IssueAccessEntered: %v", err)
 	}

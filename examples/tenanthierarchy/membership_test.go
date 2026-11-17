@@ -1,6 +1,7 @@
 package tenanthierarchy
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -21,6 +22,23 @@ func ids(xs []tenant.ID) []string {
 		out[i] = x.String()
 	}
 	return out
+}
+
+func memberIDs(xs []identity.Membership) []string {
+	out := make([]string, len(xs))
+	for i, x := range xs {
+		out[i] = x.Tenant.String()
+	}
+	return out
+}
+
+// membershipOK adapts the store's mode-returning method for the assertions
+// that only care about allow/deny.
+func membershipOK(ctx context.Context, m *Membership, user string, target tenant.ID) (bool, error) {
+	if _, ok, err := m.Membership(ctx, user, target); err != nil || !ok {
+		return ok, err
+	}
+	return true, nil
 }
 
 func newCore(t *testing.T, m *Membership) (*identity.Core, *crypto.JWTService) {
@@ -66,7 +84,7 @@ func TestIsMember_CoversEveryChildOrg(t *testing.T) {
 	}
 	m := NewMembership(s, h)
 	for _, org := range []tenant.ID{org1, org2, org3} {
-		ok, err := m.IsMember(ctx, "bob", org)
+		ok, err := membershipOK(ctx, m, "bob", org)
 		if err != nil {
 			t.Fatalf("IsMember(bob, %s): %v", org, err)
 		}
@@ -85,15 +103,15 @@ func TestIsMember_FalseOutsideTheGroup(t *testing.T) {
 	m := NewMembership(s, h)
 
 	// org-9 belongs to tg-other; bob administers only tg-acme.
-	if ok, err := m.IsMember(ctx, "bob", org9); err != nil || ok {
+	if ok, err := membershipOK(ctx, m, "bob", org9); err != nil || ok {
 		t.Fatalf("IsMember(bob, org-9) = (%v, %v), want false", ok, err)
 	}
 	// An unknown org has no parent, so there is no group to be a member of.
-	if ok, err := m.IsMember(ctx, "bob", tenant.New("org-unknown")); err != nil || ok {
+	if ok, err := membershipOK(ctx, m, "bob", tenant.New("org-unknown")); err != nil || ok {
 		t.Fatalf("IsMember(bob, unknown) = (%v, %v), want false", ok, err)
 	}
 	// A user with no intent anywhere.
-	if ok, err := m.IsMember(ctx, "erin", org1); err != nil || ok {
+	if ok, err := membershipOK(ctx, m, "erin", org1); err != nil || ok {
 		t.Fatalf("IsMember(erin, org-1) = (%v, %v), want false", ok, err)
 	}
 }
@@ -108,7 +126,7 @@ func TestIsMember_HierarchyErrorPropagates(t *testing.T) {
 	boom := errors.New("hierarchy down")
 	h.err = boom
 
-	if _, err := m.IsMember(ctx, "bob", org1); !errors.Is(err, boom) {
+	if _, err := membershipOK(ctx, m, "bob", org1); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the hierarchy error", err)
 	}
 }
@@ -128,20 +146,20 @@ func TestMembershipsFor_ListsChildOrgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MembershipsFor(bob): %v", err)
 	}
-	if !reflect.DeepEqual(ids(got), []string{"org-1", "org-2", "org-3"}) {
-		t.Fatalf("MembershipsFor(bob) = %v", ids(got))
+	if !reflect.DeepEqual(memberIDs(got), []string{"org-1", "org-2", "org-3"}) {
+		t.Fatalf("MembershipsFor(bob) = %v", memberIDs(got))
 	}
 
 	got, err = m.MembershipsFor(ctx, "erin")
 	if err != nil {
 		t.Fatalf("MembershipsFor(erin): %v", err)
 	}
-	if !reflect.DeepEqual(ids(got), []string{"org-9"}) {
-		t.Fatalf("MembershipsFor(erin) = %v", ids(got))
+	if !reflect.DeepEqual(memberIDs(got), []string{"org-9"}) {
+		t.Fatalf("MembershipsFor(erin) = %v", memberIDs(got))
 	}
 
 	if got, err := m.MembershipsFor(ctx, "nobody"); err != nil || len(got) != 0 {
-		t.Fatalf("MembershipsFor(nobody) = (%v, %v), want empty", ids(got), err)
+		t.Fatalf("MembershipsFor(nobody) = (%v, %v), want empty", memberIDs(got), err)
 	}
 }
 
@@ -223,11 +241,11 @@ func TestIsMember_MatchesTheUserSubjectTypeOnly(t *testing.T) {
 	}
 
 	m := NewMembership(s, h)
-	if ok, err := m.IsMember(ctx, "bob", org1); err != nil || ok {
+	if ok, err := membershipOK(ctx, m, "bob", org1); err != nil || ok {
 		t.Fatalf("IsMember(bob) = (%v, %v) — a service_account named bob is not a user membership", ok, err)
 	}
 	if got, err := m.MembershipsFor(ctx, "bob"); err != nil || len(got) != 0 {
-		t.Fatalf("MembershipsFor(bob) = (%v, %v), want empty", ids(got), err)
+		t.Fatalf("MembershipsFor(bob) = (%v, %v), want empty", memberIDs(got), err)
 	}
 
 	// The app's own taxonomy may name users something else.
@@ -236,7 +254,7 @@ func TestIsMember_MatchesTheUserSubjectTypeOnly(t *testing.T) {
 	if err := s.GrantFrom(ctx, intentBinding(staff, tg, groupRole()), GroupOrigin(tg)); err != nil {
 		t.Fatalf("seed staff intent: %v", err)
 	}
-	if ok, err := m2.IsMember(ctx, "bob", org1); err != nil || !ok {
+	if ok, err := membershipOK(ctx, m2, "bob", org1); err != nil || !ok {
 		t.Fatalf("IsMember(bob) with staff user type = (%v, %v), want true", ok, err)
 	}
 }

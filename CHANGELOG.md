@@ -7,18 +7,46 @@ All notable changes to tamper are recorded here. Versions follow
 ---
 
 
-## [Unreleased]
+## [0.15.0] — 2026-11-16
 
-### Added
+**A breaking release: every entered token now carries a required member/guest
+mode, and the mode comes from the application's `MembershipStore`, never from
+the caller.** This is the Phase 8 amendment merged as #170, implemented in
+#169. It lets an application give a direct member an ordinary access-token
+lifetime while a Console guest keeps the shorter `WithEnterTenantTTL`, and lets
+a route tell the two apart without reading the bindings table.
 
-- **Entered-token mode and per-mode TTL.** `crypto.EnterMode` (`member` |
-  `guest`) now travels on an entered access token as the optional `em` claim.
-  `identity.Core.EnterTenantWithMode` mints a member token with the ordinary
-  access-token TTL and a guest token with `WithEnterTenantTTL`; the existing
-  `EnterTenant` is unchanged (no `em`, guest TTL) and legacy tokens remain
-  valid. `AccessClaims.Member`/`Guest` expose the mode, with a legacy token
-  read as a guest — the more restrictive answer. `ParseAccess` refuses an
-  `em` without an `htid`, beside an `act`, or with an unknown value.
+### Changed (breaking)
+
+- **`MembershipStore` now answers the mode.** `IsMember(ctx, user, tenant)
+  (bool, error)` is replaced by `Membership(ctx, user, tenant)
+  (crypto.EnterMode, bool, error)`, and `MembershipsFor` returns
+  `[]identity.Membership` (`Tenant` + `Mode`) instead of `[]tenant.ID`. Every
+  implementation must be updated; `MemStore` and `examples/multitenant` are.
+- **One `Core.EnterTenant`.** `EnterTenantWithMode` is gone; `EnterTenant`
+  has no mode parameter. It reads the mode from `MembershipStore`; `false` is
+  the usual collapsed `ErrNotFound`, an error is returned wrapped, and an
+  empty or unknown mode is `ErrInvalidInput` with **no token**. A caller
+  cannot force a long member token.
+- **One `crypto.JWTService.IssueAccessEntered`.** `IssueAccessEnteredMode` is
+  gone. `IssueAccessEntered` takes `mode crypto.EnterMode`, refuses an invalid
+  mode, and **always writes `em`**; its `amr` variadic parameter is retained.
+  Callers that only mint a plain entered token pass `EnterModeGuest` (or
+  `Member` when that is their store's answer).
+- **The wire shape of entered tokens changed.** `AccessClaims.EnterMode`
+  (`em`) is required: `ParseAccess`/`VerifyAccess` refuse an entered token
+  without `em`, an empty/unknown `em`, or `em` on a non-entered/impersonated
+  token. Outstanding entered tokens minted by v0.14.x become invalid; they are
+  short-lived and have no refresh session, so the client simply enters again.
+  There is no legacy "missing em means guest" reading; `AccessClaims.Guest()`
+  is true only for `em=guest`.
+- **TTL** is derived from the store's mode: `member` uses the ordinary access
+  token TTL, `guest` uses `WithEnterTenantTTL`. `WithEnterTenantTTL` is the
+  guest knob and is still capped by the access TTL.
+
+Phase 8's other decisions are unchanged: entering mints an access token only
+(no refresh session, no session row), and no token is valid for more than one
+tenant. `IssueTokensForUser` remains home-only.
 
 ## [0.14.2] — 2026-11-15
 

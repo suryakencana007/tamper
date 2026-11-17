@@ -248,3 +248,118 @@ application, and the route shape is the application's.
   application's console must not depend on them.
 - **SCIM and service accounts** are not part of this. They authenticate with
   their own credentials.
+
+> **Amendment, 2026-11-16 — entered tokens carry a required member/guest
+> mode; the store, not the caller, chooses it (#169, for `kubuskotak/aio`
+> #61).**
+>
+> Phase 8 gave every entered token one lifetime (`WithEnterTenantTTL`). That
+> is no longer enough: ADR-0007 §3–4 in `kubuskotak/aio` separates a direct
+> **member** of the tenant from a Console **guest**. A member's token must live
+> as long as an ordinary access token, a guest's must keep the shorter
+> `WithEnterTenantTTL`, and a route must be able to tell the two apart without
+> reading the application's bindings table on every request.
+>
+> The first draft of #169 added the mode as a caller argument and kept the old
+> shapes beside the new ones. Review rejected that under standing rule 1. This
+> amendment is the decision the code follows; no compatibility mode survives
+> v0.15.0.
+>
+> **1. `em` is mandatory on every entered token.** `crypto.AccessClaims` gains
+>
+> ```go
+> EnterMode EnterMode `json:"em"`
+> ```
+>
+> with `EnterMode` values `member` and `guest`. `Purpose` still says `access`;
+> `em` refines an entered token, it does not create a second token shape for
+> `RequireAuth`. `AccessClaims.Member()` is true only for an entered token
+> with `em=member`; `Guest()` only for `em=guest`. There is no `""` fallback:
+> an entered token without `em`, with an empty mode, or with an unknown mode
+> is refused by `ParseAccess`/`VerifyAccess`. The only tokens that become
+> invalid are outstanding entered tokens at upgrade time; they are short-lived
+> and have no refresh session, so re-entering is the recovery.
+>
+> **2. One mint, and it always writes `em`.**
+>
+> ```go
+> func (j *JWTService) IssueAccessEntered(userID string, tenantID, homeTenantID tenant.ID,
+>     authTime int64, acr string, ttl time.Duration, mode crypto.EnterMode) (string, error)
+> ```
+>
+> `IssueAccessEnteredMode` is gone. `IssueAccessEntered` refuses an invalid
+> mode (`ErrInvalidToken`), and writes `em` (never omitted) on every token it
+> returns. `IssueAccess` and `IssueAccessImpersonated` are unchanged and never
+> write `em`.
+>
+> **3. The mode comes from `MembershipStore`, never from the caller.**
+>
+> ```go
+> type Membership struct {
+>     Tenant tenant.ID
+>     Mode   crypto.EnterMode
+> }
+>
+> type MembershipStore interface {
+>     // Membership reports the subject's mode in tenantID. (`false, nil`)
+>     // is the deny-by-default miss; an error is a failed lookup, never a
+>     // yes. The mode must be member or guest.
+>     Membership(ctx context.Context, userID string, tenantID tenant.ID) (crypto.EnterMode, bool, error)
+>     // MembershipsFor lists the subject's memberships (tenant + mode).
+>     MembershipsFor(ctx context.Context, userID string) ([]Membership, error)
+> }
+> ```
+>
+> `IsMember` is replaced by `Membership`; `MembershipsFor` keeps its name but
+> returns modes. `Core.EnterTenant` has **no mode parameter** and no way for a
+> caller to choose one:
+>
+> - `Membership` returns `false` → the existing collapsed `ErrNotFound`.
+> - `Membership` returns an error → returned wrapped, never a yes.
+> - mode is empty or not `member`/`guest` → `ErrInvalidInput`, no token. This
+>   is a store bug, not a caller preference; it must fail closed.
+> - otherwise mint with that mode.
+>
+> A caller that wants a long member token cannot ask for one: it must hold a
+> membership row whose store-returned mode is `member`.
+>
+> `EnterableTenants` reads `MembershipsFor`, returns the tenant ids, and
+> fails closed on an empty/unknown mode rather than listing a tenant whose
+> rights it cannot classify.
+>
+> **4. TTL follows the store's mode.**
+>
+> - `member`: the ordinary access-token TTL (`JWTService.AccessTTL()`), the
+>   same lifetime as the home session.
+> - `guest`: `WithEnterTenantTTL`, or the service TTL when the option is not
+>   configured. `WithEnterTenantTTL` remains the guest knob and is still
+>   refused by `New` when longer than the access TTL.
+>
+> There is one `EnterTenant`; the old entered-token bytes are not preserved.
+>
+> **5. Phase 8's decisions that do not move.**
+>
+> - Entering gives an **access token only**: no refresh session, no session
+>   row. When it expires, the caller enters again with the home session and
+>   the membership (and mode) are checked again.
+> - **One token, one tenant.** `tid` is the tenant the token is for, `htid`
+>   the subject's home; no token is valid for two tenants, and `RequireTenant`
+>   still refuses entered tokens unless a route opts in.
+> - `auth_time` and `acr` are copied from the home session; entering never
+>   makes an old login look fresh.
+> - A deny and a missing membership remain the same error.
+>
+> **6. Migration and tests.**
+>
+> This is a **breaking** change, recorded under `### Changed` for **v0.15.0**:
+> every `MembershipStore` implementation, `MemStore`, the
+> `examples/multitenant` store, and every caller of `IssueAccessEntered` must
+> change in the same release. Tests must prove:
+>
+> - a store returning `guest` yields `em=guest` and the enter TTL, even if a
+>   caller tried to ask for member (there is no caller mode);
+> - a store returning `member` yields `em=member` and the access TTL;
+> - an empty/unknown mode from the store yields `ErrInvalidInput` and no token;
+> - `ParseAccess` refuses an entered token with no `em`, empty `em`, or an
+>   unknown `em`, and refuses `em` on a non-entered/impersonated token;
+> - the legacy "no `em` means guest" behaviour is gone.
